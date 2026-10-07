@@ -5,6 +5,7 @@ import {
   buildRuntimeWithLogs,
   cleanupDockerRuntime,
   deleteModelFile,
+  deleteOllamaModelStorage,
   deleteOllamaModel,
   downloadModel,
   enhancePromptWithOllama,
@@ -14,6 +15,7 @@ import {
   getAppSettings,
   getOllamaStatus,
   initNativeRuntime,
+  installOllama,
   installNativeRuntime,
   pullOllamaModel,
   runTestGeneration,
@@ -29,6 +31,7 @@ import {
   stopDockerEngine,
   stopNativeRuntime,
   stopOllama,
+  uninstallOllama,
   stopRuntime,
   stopRuntimeWithLogs,
   type AppSettings,
@@ -126,6 +129,15 @@ function registerIpc(): void {
       }
       if (request.operation === "docker-cleanup") {
         return await cleanupDockerRuntime((log) => sendLog(log.level, log.line));
+      }
+      if (request.operation === "ollama-install") {
+        return await installOllama((log) => sendLog(log.level, log.line));
+      }
+      if (request.operation === "ollama-uninstall") {
+        return await uninstallOllama((log) => sendLog(log.level, log.line));
+      }
+      if (request.operation === "ollama-delete-storage") {
+        return await deleteOllamaModelStorage((log) => sendLog(log.level, log.line));
       }
       if (request.operation === "ollama-pull") {
         return await pullOllamaModel(request.ollamaUrl ?? "http://127.0.0.1:11434", request.model ?? "", (log) =>

@@ -188,13 +188,26 @@ label {
 
 .environment-layout {
   display: grid;
-  grid-template-columns: 390px minmax(420px, 1fr);
+  grid-template-columns: 360px minmax(420px, 1fr) 420px;
   gap: 14px;
   margin-top: 14px;
 }
 
+.setup-panel {
+  order: 1;
+}
+
+.model-panel {
+  order: 2;
+}
+
+.llm-panel {
+  order: 3;
+}
+
 .environment-log {
   grid-column: 1 / -1;
+  order: 4;
 }
 
 .generate-layout {
@@ -462,6 +475,50 @@ label {
 .catalog-card button {
   min-height: 32px;
   margin-top: 8px;
+}
+
+.catalog-search {
+  margin-top: 14px;
+}
+
+.llm-catalog-list {
+  display: grid;
+  gap: 8px;
+  max-height: 220px;
+  overflow: auto;
+  margin-bottom: 14px;
+}
+
+.llm-catalog-card {
+  border: 1px solid #1c2d53;
+  border-radius: 8px;
+  background: #081125;
+  padding: 10px;
+}
+
+.llm-catalog-card button {
+  width: 100%;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  text-align: left;
+  min-height: 38px;
+}
+
+.llm-catalog-card span {
+  overflow-wrap: anywhere;
+}
+
+.llm-catalog-card small {
+  color: #91a3c9;
+  font-weight: 800;
+  white-space: nowrap;
+}
+
+.llm-catalog-card p {
+  margin: 8px 0 0;
+  color: #91a3c9;
+  font-size: 12px;
+  line-height: 1.45;
 }
 
 .preview-panel {

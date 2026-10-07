@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { closeSync, createReadStream, createWriteStream, openSync } from "node:fs";
 import { access, mkdir, readFile, readdir, rm, stat, unlink, writeFile } from "node:fs/promises";
 import { basename, join } from "node:path";
+import { homedir } from "node:os";
 import { Transform } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import { execFile, spawn, type ChildProcess, type ChildProcessWithoutNullStreams, type ExecFileOptions } from "node:child_process";
@@ -172,6 +173,7 @@ const settingsPath = join(appDataRoot, "settings.json");
 const comfyPort = Number(process.env.ILLUSTMK_COMFY_PORT ?? "8188");
 let nativeProcess: ChildProcess | null = null;
 const dockerDesktopPaths = ["/Applications/Docker.app", "/Applications/Utilities/Docker.app"];
+const ollamaAppPaths = ["/Applications/Ollama.app", "/Applications/Utilities/Ollama.app", join(homedir(), "Applications", "Ollama.app")];
 const dockerDesktopBinPaths = dockerDesktopPaths.map((path) => join(path, "Contents", "Resources", "bin"));
 const dockerCommandPath = [
   ...dockerDesktopBinPaths,
@@ -716,9 +718,60 @@ export async function startOllama(): Promise<string> {
   return "Ollama.app を起動しました。";
 }
 
+export async function installOllama(onLog: RuntimeLogSink): Promise<string> {
+  const current = await findOllamaApp();
+  if (current) {
+    onLog({ level: "info", line: `Ollama.app は既に存在します: ${current}` });
+    return "Ollama.app は既にインストール済みです。";
+  }
+
+  const paths = await ensureRuntimeFiles();
+  const dmgPath = join(paths.downloads, "Ollama.dmg");
+  onLog({ level: "info", line: "Ollama.dmg を公式サイトからダウンロードします。" });
+  await downloadFileWithProgress("https://ollama.com/download/Ollama.dmg", dmgPath, onLog);
+
+  onLog({ level: "info", line: "Ollama.dmg をマウントします。" });
+  const { stdout } = await execFileAsync("hdiutil", ["attach", dmgPath, "-nobrowse", "-readonly"], { timeout: 60000 });
+  const mountPoint = parseMountPoint(stdout);
+  if (!mountPoint) {
+    throw new Error("Ollama.dmg のマウント先を特定できませんでした。");
+  }
+
+  try {
+    const sourceApp = join(mountPoint, "Ollama.app");
+    const destination = await copyOllamaApp(sourceApp, onLog);
+    return `Ollama.app をインストールしました: ${destination}`;
+  } finally {
+    await execFileAsync("hdiutil", ["detach", mountPoint], { timeout: 60000 }).catch((error) =>
+      onLog({ level: "stderr", line: normalizeCommandError(error) })
+    );
+  }
+}
+
 export async function stopOllama(): Promise<string> {
   await execFileAsync("osascript", ["-e", 'tell application "Ollama" to quit'], { timeout: 10000 });
   return "Ollama.app を終了しました。";
+}
+
+export async function uninstallOllama(onLog: RuntimeLogSink): Promise<string> {
+  await stopOllama().catch((error) => onLog({ level: "stderr", line: normalizeCommandError(error) }));
+  let removed = 0;
+  for (const appPath of ollamaAppPaths) {
+    if (await exists(appPath)) {
+      onLog({ level: "info", line: `削除: ${appPath}` });
+      await rm(appPath, { recursive: true, force: true });
+      removed += 1;
+    }
+  }
+  return removed ? "Ollama.app をアンインストールしました。" : "削除対象のOllama.appは見つかりませんでした。";
+}
+
+export async function deleteOllamaModelStorage(onLog: RuntimeLogSink): Promise<string> {
+  await stopOllama().catch((error) => onLog({ level: "stderr", line: normalizeCommandError(error) }));
+  const modelsPath = join(homedir(), ".ollama", "models");
+  onLog({ level: "info", line: `Ollamaモデル保存先を削除します: ${modelsPath}` });
+  await rm(modelsPath, { recursive: true, force: true });
+  return "Ollamaのモデル保存先を削除しました。";
 }
 
 export async function pullOllamaModel(ollamaUrl: string, model: string, onLog: RuntimeLogSink): Promise<string> {
@@ -1066,7 +1119,7 @@ async function findDockerDesktop(): Promise<string | null> {
 }
 
 async function findOllamaApp(): Promise<string | null> {
-  for (const path of ["/Applications/Ollama.app", "/Applications/Utilities/Ollama.app"]) {
+  for (const path of ollamaAppPaths) {
     if (await exists(path)) return path;
   }
   return null;
@@ -1324,6 +1377,52 @@ async function sha256File(path: string): Promise<string> {
   const hash = createHash("sha256");
   await pipeline(createReadStream(path), hash);
   return hash.digest("hex");
+}
+
+async function downloadFileWithProgress(url: string, targetPath: string, onLog: RuntimeLogSink): Promise<void> {
+  const response = await fetch(url, { headers: { "User-Agent": "illustMK/0.1" } });
+  if (!response.ok || !response.body) {
+    throw new Error(`ダウンロードに失敗しました: HTTP ${response.status}`);
+  }
+  const totalBytes = Number(response.headers.get("content-length") ?? 0);
+  let receivedBytes = 0;
+  let lastProgressLog = 0;
+  const progressStream = new Transform({
+    transform(chunk: Buffer, _encoding, callback) {
+      receivedBytes += chunk.length;
+      const now = Date.now();
+      if (now - lastProgressLog >= 1000) {
+        lastProgressLog = now;
+        onLog({ level: "info", line: downloadProgressLine(receivedBytes, totalBytes) });
+      }
+      callback(null, chunk);
+    }
+  });
+  await pipeline(response.body as unknown as NodeJS.ReadableStream, progressStream, createWriteStream(targetPath));
+  onLog({ level: "info", line: downloadProgressLine(receivedBytes, totalBytes) });
+}
+
+function parseMountPoint(output: string): string | null {
+  const matches = [...output.matchAll(/(\/Volumes\/[^\n]+)/g)].map((match) => match[1].trim());
+  return matches.at(-1) ?? null;
+}
+
+async function copyOllamaApp(sourceApp: string, onLog: RuntimeLogSink): Promise<string> {
+  const destinations = ["/Applications/Ollama.app", join(homedir(), "Applications", "Ollama.app")];
+  let lastError: unknown = null;
+  for (const destination of destinations) {
+    try {
+      await mkdir(destination.replace(/\/Ollama\.app$/, ""), { recursive: true });
+      onLog({ level: "info", line: `コピー: ${sourceApp} -> ${destination}` });
+      await rm(destination, { recursive: true, force: true });
+      await execFileAsync("cp", ["-R", sourceApp, destination], { timeout: 120000 });
+      return destination;
+    } catch (error) {
+      lastError = error;
+      onLog({ level: "stderr", line: normalizeCommandError(error) });
+    }
+  }
+  throw new Error(`Ollama.app のコピーに失敗しました: ${normalizeCommandError(lastError)}`);
 }
 
 function sanitizeFileName(name: string): string {

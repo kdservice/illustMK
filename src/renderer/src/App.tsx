@@ -53,10 +53,15 @@ const allBaseFilters = [
   { name: "Qwen Image", status: "現在は非対応" }
 ];
 const recommendedLlmModels = [
-  "qwen2.5:3b-instruct",
-  "qwen2.5:7b-instruct",
-  "gemma3:4b",
-  "hf.co/soyaakinohara/Spark-X2.5-4B-Heretic-JP-GGUF"
+  { name: "qwen2.5:3b-instruct", source: "Ollama", size: "軽量", note: "まず試す用。日本語もそこそこ。" },
+  { name: "qwen2.5:7b-instruct", source: "Ollama", size: "標準", note: "日本語prompt整形の本命寄り。" },
+  { name: "gemma3:4b", source: "Ollama", size: "軽量", note: "4B級の候補。応答が軽い。" },
+  {
+    name: "hf.co/soyaakinohara/Spark-X2.5-4B-Heretic-JP-GGUF",
+    source: "Hugging Face GGUF",
+    size: "軽量",
+    note: "日本語性能狙い。Ollamaのhf.co指定で取得を試す候補。"
+  }
 ];
 
 function App() {
@@ -75,6 +80,7 @@ function App() {
   const [ollamaUrl, setOllamaUrl] = useState("http://127.0.0.1:11434");
   const [ollamaModel, setOllamaModel] = useState("qwen2.5:3b-instruct");
   const [ollamaStatus, setOllamaStatus] = useState<OllamaStatus | null>(null);
+  const [llmCatalogQuery, setLlmCatalogQuery] = useState("");
   const [japanesePrompt, setJapanesePrompt] = useState("");
   const [promptNotes, setPromptNotes] = useState("");
   const [selectedCheckpoint, setSelectedCheckpoint] = useState("");
@@ -96,6 +102,13 @@ function App() {
     [selectedCheckpoint, status?.checkpoints]
   );
   const canGenerate = Boolean(status?.comfyReachable && selectedCheckpointInfo?.simpleWorkflowReady && !action.busy);
+  const filteredLlmModels = useMemo(() => {
+    const query = llmCatalogQuery.trim().toLowerCase();
+    if (!query) return recommendedLlmModels;
+    return recommendedLlmModels.filter((model) =>
+      [model.name, model.source, model.size, model.note].some((value) => value.toLowerCase().includes(query))
+    );
+  }, [llmCatalogQuery]);
 
   const stateLabel = useMemo(() => {
     if (!status) return "未確認";
@@ -166,11 +179,13 @@ function App() {
       appendLog("info", result, id);
       setAction({ busy: false, message: "完了しました", error: null });
       await refreshStatus();
+      await refreshOllamaStatus();
     } catch (error) {
       const errorText = error instanceof Error ? error.message : String(error);
       appendLog("stderr", errorText, id);
       setAction({ busy: false, message: "失敗しました", error: errorText });
       await refreshStatus();
+      await refreshOllamaStatus();
     }
   }
 
@@ -453,7 +468,7 @@ function App() {
             </div>
           </section>
 
-          <section className="panel">
+          <section className="panel llm-panel">
             <PanelTitle icon={<Bot size={18} />} title="LLM / Ollama" />
             <div className="status-grid compact">
               <div>
@@ -479,11 +494,15 @@ function App() {
               <input list="llm-models" value={ollamaModel} onChange={(event) => setOllamaModel(event.target.value)} />
               <datalist id="llm-models">
                 {recommendedLlmModels.map((model) => (
-                  <option key={model} value={model} />
+                  <option key={model.name} value={model.name} />
                 ))}
               </datalist>
             </div>
             <div className="button-grid">
+              <button onClick={() => void runStreamOperation("ollama-install", "Ollama環境をインストール中")}>
+                <Download size={17} />
+                インストール
+              </button>
               <button onClick={() => void runAction("Ollamaを起動中", () => window.illustMK.ollama.start(), () => void refreshOllamaStatus())}>
                 <Play size={17} />
                 起動
@@ -500,6 +519,43 @@ function App() {
                 <CheckCircle2 size={17} />
                 保存
               </button>
+              <button
+                className="danger"
+                onClick={() => {
+                  if (window.confirm("Ollama.appをアンインストールします。モデル保存先は残します。")) {
+                    void runStreamOperation("ollama-uninstall", "Ollama.appをアンインストール中");
+                  }
+                }}
+              >
+                <Trash2 size={17} />
+                App削除
+              </button>
+              <button
+                className="danger"
+                onClick={() => {
+                  if (window.confirm("OllamaのDL済みモデル保存先を削除します。元に戻せません。")) {
+                    void runStreamOperation("ollama-delete-storage", "Ollamaモデル保存先を削除中");
+                  }
+                }}
+              >
+                <Trash2 size={17} />
+                モデル全削除
+              </button>
+            </div>
+            <div className="field catalog-search">
+              <label>LLM Catalog</label>
+              <input placeholder="qwen, gemma, spark..." value={llmCatalogQuery} onChange={(event) => setLlmCatalogQuery(event.target.value)} />
+            </div>
+            <div className="llm-catalog-list">
+              {filteredLlmModels.map((model) => (
+                <article className="llm-catalog-card" key={model.name}>
+                  <button onClick={() => setOllamaModel(model.name)}>
+                    <span>{model.name}</span>
+                    <small>{model.source} / {model.size}</small>
+                  </button>
+                  <p>{model.note}</p>
+                </article>
+              ))}
             </div>
             <div className="model-list">
               <h2>DL済みLLM</h2>
@@ -530,7 +586,7 @@ function App() {
             </div>
           </section>
 
-          <section className="panel">
+          <section className="panel model-panel">
             <PanelTitle icon={<Download size={18} />} title="モデル追加 / 管理" />
             <div className="field">
               <label>Civitai API Key</label>
