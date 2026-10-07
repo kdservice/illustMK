@@ -274,6 +274,112 @@ label {
   align-items: start;
 }
 
+.llm-chat-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 14px;
+  margin-top: 14px;
+  min-height: 0;
+}
+
+.llm-chat-panel {
+  display: grid;
+  grid-template-rows: auto minmax(320px, 1fr) auto;
+  min-height: min(720px, calc(100vh - 360px));
+}
+
+.chat-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 14px;
+}
+
+.chat-meta {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.chat-meta span {
+  border: 1px solid #243b69;
+  border-radius: 999px;
+  padding: 7px 10px;
+  color: #b9c8e8;
+  background: #0d1930;
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.chat-history {
+  min-height: 0;
+  overflow: auto;
+  display: grid;
+  align-content: start;
+  gap: 10px;
+  border: 1px solid #132342;
+  border-radius: 8px;
+  background: #030712;
+  padding: 12px;
+}
+
+.chat-message {
+  border: 1px solid #1c2d53;
+  border-radius: 8px;
+  background: #081125;
+  padding: 12px;
+}
+
+.chat-message.user {
+  border-color: #244b79;
+  background: #0a1830;
+}
+
+.chat-message header {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+  margin-bottom: 8px;
+}
+
+.chat-message header strong {
+  color: #7fe4ff;
+  font-size: 12px;
+}
+
+.chat-message header span,
+.chat-message header time {
+  color: #8293b8;
+  font-size: 12px;
+}
+
+.chat-message p {
+  margin: 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  color: #dbe7ff;
+  line-height: 1.55;
+  font-size: 14px;
+}
+
+.chat-composer {
+  display: grid;
+  gap: 10px;
+  margin-top: 12px;
+}
+
+.chat-composer textarea {
+  min-height: 120px;
+}
+
+.chat-actions {
+  display: grid;
+  grid-template-columns: minmax(160px, 1fr) 140px 140px;
+  gap: 8px;
+}
+
 .panel {
   border: 1px solid #18294d;
   border-radius: 8px;
@@ -631,6 +737,10 @@ label {
   gap: 10px;
   color: #6f7d9a;
   text-align: center;
+}
+
+.placeholder.compact {
+  min-height: 260px;
 }
 
 .generate {

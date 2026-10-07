@@ -13,6 +13,7 @@ import {
   getRuntimePaths,
   getStatus,
   getAppSettings,
+  getLlmChatHistory,
   getOllamaStatus,
   initNativeRuntime,
   installOllama,
@@ -21,6 +22,7 @@ import {
   runTestGeneration,
   searchCivitaiModels,
   saveAppSettings,
+  sendLlmChatPrompt,
   showComfyContainerLogs,
   showNativeLogs,
   startNativeRuntime,
@@ -32,11 +34,13 @@ import {
   stopNativeRuntime,
   stopOllama,
   uninstallOllama,
+  clearLlmChatHistory,
   stopRuntime,
   stopRuntimeWithLogs,
   type AppSettings,
   type DeleteModelRequest,
   type DownloadRequest,
+  type LlmChatRequest,
   type PromptEnhanceRequest,
   type TestGenerationRequest
 } from "./runtime";
@@ -169,5 +173,8 @@ function registerIpc(): void {
     deleteOllamaModel(request.ollamaUrl, request.model)
   );
   ipcMain.handle("ollama:enhance-prompt", (_event, request: PromptEnhanceRequest) => enhancePromptWithOllama(request));
+  ipcMain.handle("ollama:chat-history", () => getLlmChatHistory());
+  ipcMain.handle("ollama:clear-chat-history", () => clearLlmChatHistory());
+  ipcMain.handle("ollama:chat", (_event, request: LlmChatRequest) => sendLlmChatPrompt(request));
   ipcMain.handle("app:open-path", (_event, path: string) => shell.openPath(path));
 }

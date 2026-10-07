@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { closeSync, createReadStream, createWriteStream, openSync } from "node:fs";
 import { access, cp, lstat, mkdir, readFile, readlink, readdir, rename, rm, stat, symlink, unlink, writeFile } from "node:fs/promises";
 import { basename, join, resolve } from "node:path";
@@ -148,6 +148,20 @@ export type PromptEnhanceResult = {
   notes: string;
 };
 
+export type LlmChatMessage = {
+  id: string;
+  role: "user" | "assistant";
+  content: string;
+  model: string;
+  createdAt: string;
+};
+
+export type LlmChatRequest = {
+  ollamaUrl: string;
+  model: string;
+  prompt: string;
+};
+
 export type TestGenerationRequest = {
   prompt: string;
   negativePrompt: string;
@@ -178,6 +192,7 @@ export type RuntimeLogSink = (event: RuntimeLogEvent) => void;
 const runtimeRoot = process.env.ILLUSTMK_RUNTIME_ROOT ?? "/Volumes/ARC-8050T2/illustMK";
 const appDataRoot = process.env.ILLUSTMK_APP_DATA_ROOT ?? join(process.cwd(), ".illustmk");
 const settingsPath = join(appDataRoot, "settings.json");
+const llmChatHistoryPath = join(appDataRoot, "llm-chat-history.json");
 const comfyPort = Number(process.env.ILLUSTMK_COMFY_PORT ?? "8188");
 let nativeProcess: ChildProcess | null = null;
 let ollamaProcess: ChildProcess | null = null;
@@ -938,9 +953,86 @@ export async function enhancePromptWithOllama(request: PromptEnhanceRequest): Pr
   return parsePromptEnhanceResponse(json.response ?? "");
 }
 
+export async function getLlmChatHistory(): Promise<LlmChatMessage[]> {
+  try {
+    const text = await readFile(llmChatHistoryPath, "utf8");
+    const parsed = JSON.parse(text) as LlmChatMessage[];
+    return Array.isArray(parsed) ? parsed.filter(isLlmChatMessage) : [];
+  } catch {
+    return [];
+  }
+}
+
+export async function clearLlmChatHistory(): Promise<LlmChatMessage[]> {
+  await mkdir(appDataRoot, { recursive: true });
+  await writeFile(llmChatHistoryPath, "[]", "utf8");
+  return [];
+}
+
+export async function sendLlmChatPrompt(request: LlmChatRequest): Promise<LlmChatMessage[]> {
+  const prompt = request.prompt.trim();
+  if (!prompt) throw new Error("LLMへ送るプロンプトを入力してください。");
+  if (!request.model.trim()) throw new Error("Ollamaモデル名を入力してください。");
+  const status = await getOllamaStatus(request.ollamaUrl);
+  if (!status.dataLinked) {
+    throw new Error("Ollama保存先がDataPathに向いていません。先に環境タブのLLM / Ollamaパネルで「起動」を実行してください。");
+  }
+  if (!status.reachable) {
+    throw new Error("Ollama APIに接続できません。先に環境タブのLLM / Ollamaパネルで「起動」を実行してください。");
+  }
+
+  const userMessage: LlmChatMessage = {
+    id: randomUUID(),
+    role: "user",
+    content: prompt,
+    model: request.model,
+    createdAt: new Date().toISOString()
+  };
+  const response = await fetch(`${request.ollamaUrl.replace(/\/$/, "")}/api/generate`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      model: request.model,
+      stream: false,
+      prompt
+    })
+  });
+  if (!response.ok) {
+    throw new Error(`Ollama LLMテストに失敗しました: HTTP ${response.status}`);
+  }
+  const json = (await response.json()) as { response?: string };
+  const assistantMessage: LlmChatMessage = {
+    id: randomUUID(),
+    role: "assistant",
+    content: String(json.response ?? ""),
+    model: request.model,
+    createdAt: new Date().toISOString()
+  };
+  const history = [...(await getLlmChatHistory()), userMessage, assistantMessage].slice(-200);
+  await saveLlmChatHistory(history);
+  return history;
+}
+
 async function civitaiAuthHeader(): Promise<Record<string, string>> {
   const settings = await getAppSettings();
   return settings.civitaiApiKey ? { Authorization: `Bearer ${settings.civitaiApiKey}` } : {};
+}
+
+async function saveLlmChatHistory(history: LlmChatMessage[]): Promise<void> {
+  await mkdir(appDataRoot, { recursive: true });
+  await writeFile(llmChatHistoryPath, JSON.stringify(history, null, 2), "utf8");
+}
+
+function isLlmChatMessage(value: unknown): value is LlmChatMessage {
+  if (!value || typeof value !== "object") return false;
+  const message = value as Partial<LlmChatMessage>;
+  return (
+    typeof message.id === "string" &&
+    (message.role === "user" || message.role === "assistant") &&
+    typeof message.content === "string" &&
+    typeof message.model === "string" &&
+    typeof message.createdAt === "string"
+  );
 }
 
 async function huggingFaceAuthHeader(): Promise<Record<string, string>> {

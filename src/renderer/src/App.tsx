@@ -19,6 +19,7 @@ import {
 import type {
   CivitaiModelCard,
   DownloadRequest,
+  LlmChatMessage,
   OllamaStatus,
   RuntimePaths,
   RuntimeStatus,
@@ -82,6 +83,8 @@ function App() {
   const [ollamaModel, setOllamaModel] = useState("qwen2.5:3b-instruct");
   const [ollamaStatus, setOllamaStatus] = useState<OllamaStatus | null>(null);
   const [llmCatalogQuery, setLlmCatalogQuery] = useState("");
+  const [llmPrompt, setLlmPrompt] = useState("");
+  const [llmChatHistory, setLlmChatHistory] = useState<LlmChatMessage[]>([]);
   const [japanesePrompt, setJapanesePrompt] = useState("");
   const [promptNotes, setPromptNotes] = useState("");
   const [selectedCheckpoint, setSelectedCheckpoint] = useState("");
@@ -104,6 +107,15 @@ function App() {
   );
   const canGenerate = Boolean(status?.comfyReachable && selectedCheckpointInfo?.simpleWorkflowReady && !action.busy);
   const canDownloadLlm = Boolean(ollamaStatus?.reachable && ollamaStatus.dataLinked && ollamaModel.trim() && !action.busy);
+  const canSendLlmPrompt = Boolean(ollamaStatus?.reachable && ollamaStatus.dataLinked && ollamaModel.trim() && llmPrompt.trim() && !action.busy);
+  const llmPromptDisabledReason = useMemo(() => {
+    if (action.busy) return "処理中です。";
+    if (!ollamaStatus?.reachable) return "Ollama APIが未接続です。";
+    if (!ollamaStatus.dataLinked) return "Ollama保存先がDataPathに切替わっていません。";
+    if (!ollamaModel.trim()) return "LLMモデルを選択してください。";
+    if (!llmPrompt.trim()) return "LLMプロンプトを入力してください。";
+    return "送信できます。";
+  }, [action.busy, llmPrompt, ollamaModel, ollamaStatus]);
   const canEnhancePrompt = Boolean(ollamaStatus?.reachable && ollamaStatus.dataLinked && ollamaModel.trim() && japanesePrompt.trim() && !action.busy);
   const enhancePromptDisabledReason = useMemo(() => {
     if (action.busy) return "処理中です。";
@@ -132,6 +144,7 @@ function App() {
   useEffect(() => {
     void refreshStatus();
     void loadSettings();
+    void loadLlmChatHistory();
   }, []);
 
   useEffect(() => {
@@ -344,6 +357,29 @@ function App() {
     await runAction("設定を保存中", () =>
       window.illustMK.settings.save({ civitaiApiKey, huggingFaceApiKey, ollamaUrl, ollamaModel })
     );
+  }
+
+  async function loadLlmChatHistory(): Promise<void> {
+    setLlmChatHistory(await window.illustMK.ollama.chatHistory());
+  }
+
+  async function sendLlmPrompt(): Promise<void> {
+    const promptText = llmPrompt;
+    await runAction(
+      "LLMへプロンプトを送信中",
+      () => window.illustMK.ollama.chat({ ollamaUrl, model: ollamaModel, prompt: promptText }),
+      (history) => {
+        setLlmChatHistory(history);
+        setLlmPrompt("");
+      }
+    );
+  }
+
+  async function clearLlmChat(): Promise<void> {
+    if (!window.confirm("LLMチャット履歴を削除します。元に戻せません。")) return;
+    await runAction("LLMチャット履歴を削除中", () => window.illustMK.ollama.clearChatHistory(), (history) => {
+      setLlmChatHistory(history);
+    });
   }
 
   async function enhanceJapanesePrompt(): Promise<void> {
@@ -791,86 +827,57 @@ function App() {
           </section>
         </section>
       ) : mainTab === "llm" ? (
-        <section className="llm-workbench-layout">
-          <section className="panel prompt-panel">
-            <PanelTitle icon={<Bot size={18} />} title="プロンプト変換テスト" />
-            <PromptTransformPanel
-              japanesePrompt={japanesePrompt}
-              setJapanesePrompt={setJapanesePrompt}
-              prompt={prompt}
-              setPrompt={setPrompt}
-              negativePrompt={negativePrompt}
-              setNegativePrompt={setNegativePrompt}
-              promptNotes={promptNotes}
-              canEnhancePrompt={canEnhancePrompt}
-              disabledReason={enhancePromptDisabledReason}
-              onEnhance={() => void enhanceJapanesePrompt()}
-            />
-          </section>
-          <section className="panel llm-test-panel">
-            <PanelTitle icon={<Bot size={18} />} title="LLM接続" />
-            <div className="status-grid compact">
-              <div>
-                <span>Ollama.app</span>
-                <strong>{ollamaStatus?.installed ? "検出" : "未検出"}</strong>
-              </div>
-              <div>
-                <span>API</span>
-                <strong>{ollamaStatus?.reachable ? "接続OK" : "未接続"}</strong>
-              </div>
-              <div>
-                <span>DataPath</span>
-                <strong>{ollamaStatus?.dataLinked ? "OK" : "未切替"}</strong>
-              </div>
-              <div>
-                <span>Models</span>
-                <strong>{ollamaStatus?.models.length ?? 0}</strong>
+        <section className="llm-chat-layout">
+          <section className="panel llm-chat-panel">
+            <div className="chat-header">
+              <PanelTitle icon={<Bot size={18} />} title="LLMチャット / ログ" />
+              <div className="chat-meta">
+                <span>{ollamaStatus?.reachable && ollamaStatus.dataLinked ? "接続OK" : "未接続"}</span>
+                <span>{ollamaModel || "モデル未選択"}</span>
               </div>
             </div>
-            <div className="field">
-              <label>Ollama API</label>
-              <div className="inline">
-                <input value={ollamaUrl} onChange={(event) => setOllamaUrl(event.target.value)} />
-                <button className="icon-button" onClick={() => void refreshOllamaStatus()} title="再確認">
-                  <RefreshCw size={17} />
-                </button>
-              </div>
-            </div>
-            <div className="field">
-              <label>LLM Model</label>
-              <input list="llm-models" value={ollamaModel} onChange={(event) => setOllamaModel(event.target.value)} />
-              <datalist id="llm-models">
-                {recommendedLlmModels.map((model) => (
-                  <option key={model.name} value={model.name} />
-                ))}
-              </datalist>
-            </div>
-            <div className="button-grid">
-              <button onClick={() => void runAction("Ollamaを起動中", () => window.illustMK.ollama.start(), () => void refreshOllamaStatus())}>
-                <Play size={17} />
-                起動
-              </button>
-              <button onClick={() => void saveSettings()}>
-                <CheckCircle2 size={17} />
-                保存
-              </button>
-            </div>
-            <div className="paths">
-              <p>保存先: {ollamaStatus?.modelPath ?? paths?.ollamaModels ?? "/Volumes/ARC-8050T2/illustMK/llm/ollama/models"}</p>
-              <p>状態: {enhancePromptDisabledReason}</p>
-            </div>
-            <div className="model-list">
-              <h2>DL済みLLM</h2>
-              {ollamaStatus?.models.length ? (
-                ollamaStatus.models.map((model) => (
-                  <button className={ollamaModel === model.name ? "model selected" : "model"} key={model.name} onClick={() => setOllamaModel(model.name)}>
-                    <span>{model.name}</span>
-                    <small>{model.sizeLabel}</small>
-                  </button>
+            <div className="chat-history">
+              {llmChatHistory.length ? (
+                llmChatHistory.map((message) => (
+                  <article className={`chat-message ${message.role}`} key={message.id}>
+                    <header>
+                      <strong>{message.role === "user" ? "USER" : "LLM"}</strong>
+                      <span>{message.model}</span>
+                      <time>{new Date(message.createdAt).toLocaleString("ja-JP", { hour12: false })}</time>
+                    </header>
+                    <p>{message.content}</p>
+                  </article>
                 ))
               ) : (
-                <p className="empty">{ollamaStatus?.message ?? "Ollamaの状態を確認してください。"}</p>
+                <div className="placeholder compact">
+                  <Bot size={36} />
+                  <p>LLMへの入力と結果がここに残ります。</p>
+                </div>
               )}
+            </div>
+            <div className="chat-composer">
+              <textarea
+                placeholder="LLMへそのまま送るプロンプトを入力"
+                value={llmPrompt}
+                onChange={(event) => setLlmPrompt(event.target.value)}
+              />
+              <div className="chat-actions">
+                <button className="primary" disabled={!canSendLlmPrompt} onClick={() => void sendLlmPrompt()}>
+                  <Bot size={17} />
+                  送信
+                </button>
+                <button onClick={() => void loadLlmChatHistory()}>
+                  <RefreshCw size={17} />
+                  再読込
+                </button>
+                <button className="danger" disabled={!llmChatHistory.length || action.busy} onClick={() => void clearLlmChat()}>
+                  <Trash2 size={17} />
+                  履歴削除
+                </button>
+              </div>
+              <p className={canSendLlmPrompt ? "result-message ready" : "result-message"}>
+                {llmPromptDisabledReason}
+              </p>
             </div>
           </section>
         </section>

@@ -5,6 +5,8 @@ import type {
   DeleteModelRequest,
   DownloadRequest,
   DownloadResult,
+  LlmChatMessage,
+  LlmChatRequest,
   OllamaStatus,
   PromptEnhanceRequest,
   PromptEnhanceResult,
@@ -62,7 +64,10 @@ const api = {
     deleteModel: (request: { ollamaUrl: string; model: string }): Promise<string> =>
       ipcRenderer.invoke("ollama:delete-model", request),
     enhancePrompt: (request: PromptEnhanceRequest): Promise<PromptEnhanceResult> =>
-      ipcRenderer.invoke("ollama:enhance-prompt", request)
+      ipcRenderer.invoke("ollama:enhance-prompt", request),
+    chatHistory: (): Promise<LlmChatMessage[]> => ipcRenderer.invoke("ollama:chat-history"),
+    clearChatHistory: (): Promise<LlmChatMessage[]> => ipcRenderer.invoke("ollama:clear-chat-history"),
+    chat: (request: LlmChatRequest): Promise<LlmChatMessage[]> => ipcRenderer.invoke("ollama:chat", request)
   },
   app: {
     openPath: (path: string): Promise<string> => ipcRenderer.invoke("app:open-path", path)
