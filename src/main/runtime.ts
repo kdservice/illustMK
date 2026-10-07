@@ -1,0 +1,1340 @@
+import { createHash } from "node:crypto";
+import { closeSync, createReadStream, createWriteStream, openSync } from "node:fs";
+import { access, mkdir, readFile, readdir, rm, stat, unlink, writeFile } from "node:fs/promises";
+import { basename, join } from "node:path";
+import { Transform } from "node:stream";
+import { pipeline } from "node:stream/promises";
+import { execFile, spawn, type ChildProcess, type ChildProcessWithoutNullStreams, type ExecFileOptions } from "node:child_process";
+import { promisify } from "node:util";
+
+const execFileAsync = promisify(execFile);
+
+export type RuntimePaths = {
+  root: string;
+  models: string;
+  checkpoints: string;
+  loras: string;
+  vae: string;
+  outputs: string;
+  workflows: string;
+  native: string;
+  nativeComfy: string;
+  nativeVenv: string;
+  nativePython: string;
+  nativeLog: string;
+  nativePid: string;
+  docker: string;
+  logs: string;
+  downloads: string;
+  composeFile: string;
+};
+
+export type RuntimeStatus = {
+  runtimeRoot: string;
+  activeRuntime: "macos" | "docker";
+  nativeReady: boolean;
+  nativeInstalled: boolean;
+  nativeRunning: boolean;
+  nativePid: number | null;
+  dockerDesktopInstalled: boolean;
+  dockerDesktopPath: string | null;
+  dockerAvailable: boolean;
+  dockerVersion: string | null;
+  dockerDaemonReady: boolean;
+  dockerDaemonMessage: string | null;
+  composeAvailable: boolean;
+  composeCommand: string | null;
+  pathsReady: boolean;
+  composeReady: boolean;
+  comfyReachable: boolean;
+  comfyUrl: string;
+  containerState: string;
+  checkpoints: ModelFileInfo[];
+  outputs: string[];
+};
+
+export type ModelFileInfo = {
+  name: string;
+  sizeBytes: number;
+  sizeLabel: string;
+  hasClip: boolean;
+  hasVae: boolean;
+  simpleWorkflowReady: boolean;
+  compatibilityLabel: string;
+};
+
+export type DownloadRequest = {
+  url: string;
+  targetType: "checkpoints" | "loras" | "vae";
+  fileName?: string;
+  sha256?: string;
+  source?: "civitai" | "direct";
+  operationId?: string;
+};
+
+export type DeleteModelRequest = {
+  targetType: "checkpoints" | "loras" | "vae";
+  fileName: string;
+};
+
+export type DownloadResult = {
+  ok: boolean;
+  path: string;
+  sha256: string;
+  message: string;
+};
+
+export type CivitaiModelCard = {
+  id: number;
+  name: string;
+  type: string;
+  nsfw: boolean;
+  creator: string;
+  versionId: number;
+  versionName: string;
+  baseModel: string;
+  fileName: string;
+  sizeKB: number;
+  downloadUrl: string;
+  pageUrl: string;
+  imageUrl: string | null;
+  downloadCount: number;
+  rating: number;
+  sha256?: string;
+};
+
+export type AppSettings = {
+  civitaiApiKey: string;
+};
+
+export type TestGenerationRequest = {
+  prompt: string;
+  negativePrompt: string;
+  checkpoint: string;
+  width: number;
+  height: number;
+  steps: number;
+  cfg: number;
+  seed: number;
+  comfyUrl: string;
+};
+
+export type TestGenerationResult = {
+  ok: boolean;
+  message: string;
+  imagePath?: string;
+  imageDataUrl?: string;
+  promptId?: string;
+};
+
+export type RuntimeLogEvent = {
+  level: "info" | "stdout" | "stderr";
+  line: string;
+};
+
+export type RuntimeLogSink = (event: RuntimeLogEvent) => void;
+
+const runtimeRoot = process.env.ILLUSTMK_RUNTIME_ROOT ?? "/Volumes/ARC-8050T2/illustMK";
+const appDataRoot = process.env.ILLUSTMK_APP_DATA_ROOT ?? join(process.cwd(), ".illustmk");
+const settingsPath = join(appDataRoot, "settings.json");
+const comfyPort = Number(process.env.ILLUSTMK_COMFY_PORT ?? "8188");
+let nativeProcess: ChildProcess | null = null;
+const dockerDesktopPaths = ["/Applications/Docker.app", "/Applications/Utilities/Docker.app"];
+const dockerDesktopBinPaths = dockerDesktopPaths.map((path) => join(path, "Contents", "Resources", "bin"));
+const dockerCommandPath = [
+  ...dockerDesktopBinPaths,
+  "/opt/homebrew/bin",
+  "/usr/local/bin",
+  "/usr/bin",
+  "/bin",
+  "/usr/sbin",
+  "/sbin"
+].join(":");
+
+export function getRuntimePaths(): RuntimePaths {
+  const root = runtimeRoot;
+  const native = join(root, "native");
+  const docker = join(root, "docker", "comfyui");
+  return {
+    root,
+    models: join(root, "models"),
+    checkpoints: join(root, "models", "checkpoints"),
+    loras: join(root, "models", "loras"),
+    vae: join(root, "models", "vae"),
+    outputs: join(root, "outputs"),
+    workflows: join(root, "workflows"),
+    native,
+    nativeComfy: join(native, "ComfyUI"),
+    nativeVenv: join(native, "venv"),
+    nativePython: join(native, "venv", "bin", "python"),
+    nativeLog: join(native, "logs", "comfyui.log"),
+    nativePid: join(native, "comfyui.pid"),
+    docker,
+    logs: join(root, "logs"),
+    downloads: join(root, "downloads"),
+    composeFile: join(docker, "docker-compose.yml")
+  };
+}
+
+export async function ensureRuntimeFiles(): Promise<RuntimePaths> {
+  const paths = getRuntimePaths();
+  await Promise.all([
+    mkdir(paths.checkpoints, { recursive: true }),
+    mkdir(paths.loras, { recursive: true }),
+    mkdir(paths.vae, { recursive: true }),
+    mkdir(paths.outputs, { recursive: true }),
+    mkdir(paths.workflows, { recursive: true }),
+    mkdir(paths.native, { recursive: true }),
+    mkdir(join(paths.native, "logs"), { recursive: true }),
+    mkdir(paths.docker, { recursive: true }),
+    mkdir(paths.logs, { recursive: true }),
+    mkdir(paths.downloads, { recursive: true })
+  ]);
+  await writeFile(join(paths.docker, "Dockerfile"), dockerfileText(), "utf8");
+  await writeFile(paths.composeFile, composeText(paths), "utf8");
+  await writeFile(join(paths.workflows, "phase1-test-generation.json"), JSON.stringify(testWorkflowTemplate(), null, 2), "utf8");
+  return paths;
+}
+
+export async function getAppSettings(): Promise<AppSettings> {
+  try {
+    const text = await readFile(settingsPath, "utf8");
+    const parsed = JSON.parse(text) as Partial<AppSettings>;
+    return {
+      civitaiApiKey: parsed.civitaiApiKey ?? ""
+    };
+  } catch {
+    return { civitaiApiKey: "" };
+  }
+}
+
+export async function saveAppSettings(settings: AppSettings): Promise<AppSettings> {
+  await mkdir(appDataRoot, { recursive: true });
+  const safeSettings: AppSettings = {
+    civitaiApiKey: settings.civitaiApiKey.trim()
+  };
+  await writeFile(settingsPath, JSON.stringify(safeSettings, null, 2), "utf8");
+  return safeSettings;
+}
+
+export async function getStatus(comfyUrl = `http://127.0.0.1:${comfyPort}`): Promise<RuntimeStatus> {
+  const paths = getRuntimePaths();
+  const [
+    dockerDesktopPath,
+    docker,
+    daemon,
+    compose,
+    pathsReady,
+    nativeInstalled,
+    nativeRunning,
+    composeReady,
+    comfyReachable,
+    checkpoints,
+    outputs,
+    containerState
+  ] =
+    await Promise.all([
+      findDockerDesktop(),
+      commandVersion("docker", ["--version"]),
+      getDockerDaemonStatus(),
+      getComposeCommand(),
+      exists(paths.models),
+      exists(paths.nativePython),
+      isNativeRunning(),
+      exists(paths.composeFile),
+      checkComfy(comfyUrl),
+      listModelFiles(paths.checkpoints),
+      listFiles(paths.outputs),
+      getContainerState()
+    ]);
+
+  return {
+    runtimeRoot: paths.root,
+    activeRuntime: "macos",
+    nativeReady: pathsReady && nativeInstalled,
+    nativeInstalled,
+    nativeRunning,
+    nativePid: await readNativePid(),
+    dockerDesktopInstalled: Boolean(dockerDesktopPath),
+    dockerDesktopPath,
+    dockerAvailable: docker.ok,
+    dockerVersion: docker.text,
+    dockerDaemonReady: daemon.ok,
+    dockerDaemonMessage: daemon.text,
+    composeAvailable: Boolean(compose),
+    composeCommand: compose?.join(" ") ?? null,
+    pathsReady,
+    composeReady,
+    comfyReachable,
+    comfyUrl,
+    containerState,
+    checkpoints,
+    outputs
+  };
+}
+
+export async function initNativeRuntime(onLog: RuntimeLogSink): Promise<string> {
+  const paths = await ensureRuntimeFiles();
+  onLog({ level: "info", line: `macOS runtime: ${paths.native}` });
+  onLog({ level: "info", line: "共有モデルディレクトリと出力先を準備しました。" });
+  return "macOSランタイムを初期化しました。";
+}
+
+export async function installNativeRuntime(onLog: RuntimeLogSink): Promise<string> {
+  const paths = await ensureRuntimeFiles();
+  if (!(await exists(paths.nativeComfy))) {
+    await spawnNativeCommand("git", ["clone", "--depth", "1", "https://github.com/comfyanonymous/ComfyUI.git", paths.nativeComfy], onLog);
+  } else {
+    onLog({ level: "info", line: "ComfyUI は既に存在します。" });
+  }
+
+  if (!(await exists(paths.nativePython))) {
+    await spawnNativeCommand("python3", ["-m", "venv", paths.nativeVenv], onLog);
+  } else {
+    onLog({ level: "info", line: "venv は既に存在します。" });
+  }
+
+  await writeNativeExtraModelPaths(paths);
+  await spawnNativeCommand(paths.nativePython, ["-m", "pip", "install", "--upgrade", "pip"], onLog);
+  await spawnNativeCommand(paths.nativePython, ["-m", "pip", "install", "-r", join(paths.nativeComfy, "requirements.txt")], onLog);
+  return "macOS ComfyUI環境のインストールが完了しました。";
+}
+
+export async function startNativeRuntime(onLog: RuntimeLogSink): Promise<string> {
+  const paths = await ensureRuntimeFiles();
+  if (!(await exists(paths.nativePython)) || !(await exists(join(paths.nativeComfy, "main.py")))) {
+    throw new Error("macOS ComfyUI環境が未インストールです。先に「インストール」を実行してください。");
+  }
+  if (await checkComfy(`http://127.0.0.1:${comfyPort}`)) {
+    return "ComfyUI は既に接続可能です。";
+  }
+
+  await writeNativeExtraModelPaths(paths);
+  await writeFile(paths.nativeLog, "", "utf8");
+  onLog({ level: "info", line: "macOS ComfyUI を起動します。" });
+  const logFd = openSync(paths.nativeLog, "a");
+  const child = spawn(
+    paths.nativePython,
+    [
+      "main.py",
+      "--listen",
+      "127.0.0.1",
+      "--port",
+      String(comfyPort),
+      "--output-directory",
+      paths.outputs
+    ],
+    {
+      cwd: paths.nativeComfy,
+      detached: true,
+      stdio: ["ignore", logFd, logFd],
+      env: {
+        ...process.env,
+        PYTORCH_ENABLE_MPS_FALLBACK: "1",
+        PYTHONUNBUFFERED: "1"
+      }
+    }
+  );
+  closeSync(logFd);
+  nativeProcess = child;
+  await writeFile(paths.nativePid, String(child.pid ?? ""), "utf8");
+  onLog({ level: "info", line: `ComfyUIログ: ${paths.nativeLog}` });
+  child.unref();
+
+  const ready = await waitForComfy(`http://127.0.0.1:${comfyPort}`, 120000);
+  if (!ready) {
+    throw new Error("ComfyUI の起動を待ちましたが、API接続を確認できませんでした。ログを確認してください。");
+  }
+  return "macOS ComfyUI を起動しました。";
+}
+
+export async function stopNativeRuntime(onLog: RuntimeLogSink): Promise<string> {
+  const pid = await readNativePid();
+  if (!pid) {
+    return "macOS ComfyUI のPIDはありません。";
+  }
+  onLog({ level: "info", line: `macOS ComfyUI を停止します: pid=${pid}` });
+  try {
+    process.kill(pid, "SIGTERM");
+  } catch (error) {
+    onLog({ level: "stderr", line: normalizeCommandError(error) });
+  }
+  await delay(1500);
+  await unlink(getRuntimePaths().nativePid).catch(() => undefined);
+  nativeProcess = null;
+  return "macOS ComfyUI を停止しました。";
+}
+
+export async function showNativeLogs(onLog: RuntimeLogSink): Promise<string> {
+  const paths = getRuntimePaths();
+  if (!(await exists(paths.nativeLog))) {
+    onLog({ level: "info", line: "macOS ComfyUIログはまだありません。" });
+    return "macOS ComfyUIログはまだありません。";
+  }
+  const text = await readFile(paths.nativeLog, "utf8");
+  for (const line of text.split(/\r?\n/).slice(-200)) {
+    if (line.trim()) onLog({ level: line.includes("Traceback") || line.includes("Error") ? "stderr" : "stdout", line });
+  }
+  return "macOS ComfyUIログを取得しました。";
+}
+
+export async function cleanupNativeRuntime(onLog: RuntimeLogSink): Promise<string> {
+  onLog({ level: "info", line: "macOS ComfyUI環境を削除します。" });
+  await stopNativeRuntime(onLog).catch((error) => onLog({ level: "stderr", line: normalizeCommandError(error) }));
+  await rm(getRuntimePaths().native, { recursive: true, force: true });
+  return "macOS ComfyUI環境を削除しました。モデル/出力は残しています。";
+}
+
+export async function cleanupDockerRuntime(onLog: RuntimeLogSink): Promise<string> {
+  const paths = getRuntimePaths();
+  onLog({ level: "info", line: "Dockerコンテナ/イメージ/生成ファイルを後始末します。" });
+  if ((await getDockerDaemonStatus()).ok) {
+    await spawnDockerFile("docker", ["rm", "-f", "illustmk-comfyui"], onLog).catch((error) =>
+      onLog({ level: "stderr", line: normalizeCommandError(error) })
+    );
+    await spawnDockerFile("docker", ["rmi", "illustmk-comfyui:phase1"], onLog).catch((error) =>
+      onLog({ level: "stderr", line: normalizeCommandError(error) })
+    );
+  } else {
+    onLog({ level: "info", line: "Docker daemon未接続のため、コンテナ/イメージ削除はスキップします。" });
+  }
+  await rm(join(paths.root, "docker"), { recursive: true, force: true });
+  return "Dockerランタイム資産を後始末しました。Docker Desktop本体は削除していません。";
+}
+
+export async function startDockerEngine(): Promise<string> {
+  const dockerDesktopPath = await findDockerDesktop();
+  if (!dockerDesktopPath) {
+    throw new Error("Docker Desktop.app が見つかりません。/Applications に Docker Desktop をインストールしてください。");
+  }
+
+  const current = await getDockerDaemonStatus();
+  if (current.ok) {
+    return "Docker daemon はすでに接続可能です。";
+  }
+
+  await execFileAsync("open", [dockerDesktopPath], { timeout: 10000 });
+  const ready = await waitForDockerDaemon(true, 120000);
+  if (!ready.ok) {
+    throw new Error(
+      [
+        "Docker Desktop の起動を要求しましたが、Docker daemon 接続を確認できませんでした。",
+        "初回起動の確認画面や権限確認が Docker Desktop 側に出ていないか確認してください。",
+        ready.text ? `詳細: ${ready.text}` : null
+      ]
+        .filter(Boolean)
+        .join("\n")
+    );
+  }
+
+  return "Docker Desktop を起動し、Docker daemon 接続を確認しました。";
+}
+
+export async function stopDockerEngine(): Promise<string> {
+  const dockerDesktopPath = await findDockerDesktop();
+  if (!dockerDesktopPath) {
+    throw new Error("Docker Desktop.app が見つかりません。");
+  }
+
+  const current = await getDockerDaemonStatus();
+  if (!current.ok) {
+    return "Docker daemon はすでに未接続です。";
+  }
+
+  await execFileAsync("osascript", ["-e", 'tell application "Docker" to quit'], { timeout: 10000 });
+  const stopped = await waitForDockerDaemon(false, 60000);
+  if (!stopped.ok) {
+    throw new Error("Docker Desktop に終了要求を出しましたが、Docker daemon がまだ接続可能です。");
+  }
+
+  return "Docker Desktop を終了しました。";
+}
+
+export async function buildRuntime(): Promise<string> {
+  const paths = await ensureRuntimeFiles();
+  await assertDockerDaemonReady();
+  const { stdout, stderr } = await execDockerFile("docker", ["build", "-t", "illustmk-comfyui:phase1", paths.docker], {
+    maxBuffer: 1024 * 1024 * 20
+  });
+  return [stdout, stderr].filter(Boolean).join("\n");
+}
+
+export async function buildRuntimeWithLogs(onLog: RuntimeLogSink): Promise<string> {
+  const paths = await ensureRuntimeFiles();
+  onLog({ level: "info", line: `Runtime: ${paths.root}` });
+  await assertDockerDaemonReady();
+  onLog({ level: "info", line: "docker build を開始します。" });
+  await spawnDockerFile("docker", ["build", "--progress=plain", "-t", "illustmk-comfyui:phase1", paths.docker], onLog);
+  onLog({ level: "info", line: "docker build が完了しました。" });
+  return "Dockerイメージの構築が完了しました。";
+}
+
+export async function startRuntime(): Promise<string> {
+  const paths = await ensureRuntimeFiles();
+  await assertDockerDaemonReady();
+  await buildRuntime();
+  const state = await getContainerState();
+  if (state === "exited" || state === "created") {
+    const { stdout, stderr } = await execDockerFile("docker", ["start", "illustmk-comfyui"], {
+      maxBuffer: 1024 * 1024 * 20
+    });
+    return [stdout, stderr].filter(Boolean).join("\n");
+  }
+  if (state === "running") {
+    return "illustmk-comfyui is already running.";
+  }
+  const { stdout, stderr } = await execDockerFile("docker", dockerRunArgs(paths), { maxBuffer: 1024 * 1024 * 20 });
+  return [stdout, stderr].filter(Boolean).join("\n");
+}
+
+export async function startRuntimeWithLogs(onLog: RuntimeLogSink): Promise<string> {
+  const paths = await ensureRuntimeFiles();
+  await assertDockerDaemonReady();
+  await buildRuntimeWithLogs(onLog);
+  const state = await getContainerState();
+  onLog({ level: "info", line: `Container state: ${state}` });
+  if (state === "exited" || state === "created") {
+    await spawnDockerFile("docker", ["start", "illustmk-comfyui"], onLog);
+    return "ComfyUIコンテナを起動しました。";
+  }
+  if (state === "running") {
+    return "ComfyUIコンテナはすでに起動中です。";
+  }
+  await spawnDockerFile("docker", dockerRunArgs(paths), onLog);
+  return "ComfyUIコンテナを作成して起動しました。";
+}
+
+export async function stopRuntime(): Promise<string> {
+  await assertDockerDaemonReady();
+  const { stdout, stderr } = await execDockerFile("docker", ["stop", "illustmk-comfyui"], { maxBuffer: 1024 * 1024 * 20 });
+  return [stdout, stderr].filter(Boolean).join("\n");
+}
+
+export async function stopRuntimeWithLogs(onLog: RuntimeLogSink): Promise<string> {
+  await assertDockerDaemonReady();
+  onLog({ level: "info", line: "ComfyUIコンテナを停止します。" });
+  await spawnDockerFile("docker", ["stop", "illustmk-comfyui"], onLog);
+  return "ComfyUIコンテナを停止しました。";
+}
+
+export async function showComfyContainerLogs(onLog: RuntimeLogSink): Promise<string> {
+  await assertDockerDaemonReady();
+  onLog({ level: "info", line: "ComfyUIコンテナログを取得します。" });
+  await spawnDockerFile("docker", ["logs", "--tail", "200", "illustmk-comfyui"], onLog);
+  return "ComfyUIコンテナログを取得しました。";
+}
+
+export async function downloadModel(request: DownloadRequest, onLog?: RuntimeLogSink): Promise<DownloadResult> {
+  const paths = await ensureRuntimeFiles();
+  const targetDir = paths[request.targetType];
+  const url = new URL(request.url);
+  const fileName = sanitizeFileName(request.fileName || basename(url.pathname));
+  if (!fileName) {
+    throw new Error("保存ファイル名を決定できません。");
+  }
+
+  const targetPath = join(targetDir, fileName);
+  const headers: Record<string, string> = {
+    "User-Agent": "illustMK/0.1",
+    ...(request.source === "civitai" || url.hostname.includes("civitai.com") ? await civitaiAuthHeader() : {})
+  };
+  const response = await fetch(await withCivitaiToken(url), { headers });
+  if (!response.ok || !response.body) {
+    throw new Error(downloadErrorMessage(response.status, url));
+  }
+
+  const totalBytes = Number(response.headers.get("content-length") ?? 0);
+  let receivedBytes = 0;
+  let lastProgressLog = 0;
+  onLog?.({ level: "info", line: `保存先: ${targetPath}` });
+  onLog?.({
+    level: "info",
+    line: totalBytes > 0 ? `ダウンロード開始: 0 B / ${formatBytes(totalBytes)}` : "ダウンロード開始: サイズ不明"
+  });
+
+  const progressStream = new Transform({
+    transform(chunk: Buffer, _encoding, callback) {
+      receivedBytes += chunk.length;
+      const now = Date.now();
+      if (now - lastProgressLog >= 1000) {
+        lastProgressLog = now;
+        onLog?.({ level: "info", line: downloadProgressLine(receivedBytes, totalBytes) });
+      }
+      callback(null, chunk);
+    }
+  });
+
+  await pipeline(response.body as unknown as NodeJS.ReadableStream, progressStream, createWriteStream(targetPath));
+  onLog?.({ level: "info", line: downloadProgressLine(receivedBytes, totalBytes) });
+  const digest = await sha256File(targetPath);
+  if (request.sha256 && digest.toLowerCase() !== request.sha256.toLowerCase()) {
+    throw new Error(`SHA256が一致しません: ${digest}`);
+  }
+  onLog?.({ level: "info", line: `SHA256: ${digest}` });
+
+  return {
+    ok: true,
+    path: targetPath,
+    sha256: digest,
+    message: "ダウンロードが完了しました。"
+  };
+}
+
+export async function deleteModelFile(request: DeleteModelRequest): Promise<string> {
+  const paths = getRuntimePaths();
+  const targetDir = paths[request.targetType];
+  const fileName = sanitizeFileName(request.fileName);
+  if (!fileName || fileName !== request.fileName) {
+    throw new Error("削除対象のファイル名が不正です。");
+  }
+
+  await rm(join(targetDir, fileName), { force: true });
+  return `${fileName} を削除しました。`;
+}
+
+export async function searchCivitaiModels(options: {
+  query?: string;
+  sort?: "Most Downloaded" | "Highest Rated" | "Newest";
+  period?: "AllTime" | "Year" | "Month" | "Week" | "Day";
+  limit?: number;
+  nsfw?: boolean;
+  baseModels?: string[];
+}): Promise<CivitaiModelCard[]> {
+  const params = new URLSearchParams({
+    limit: String(Math.max(options.limit ?? 10, 50)),
+    types: "Checkpoint",
+    sort: options.sort ?? "Most Downloaded",
+    period: options.period ?? "Month",
+    nsfw: String(options.nsfw ?? false),
+    primaryFileOnly: "true"
+  });
+  if (options.query?.trim()) {
+    params.set("query", options.query.trim());
+  }
+
+  const response = await fetch(`https://civitai.com/api/v1/models?${params.toString()}`, {
+    headers: {
+      Accept: "application/json",
+      "User-Agent": "illustMK/0.1",
+      ...(await civitaiAuthHeader())
+    }
+  });
+  if (!response.ok) {
+    throw new Error(`Civitai API取得に失敗しました: HTTP ${response.status}`);
+  }
+
+  const json = (await response.json()) as { items?: unknown[] };
+  return (json.items ?? [])
+    .flatMap(normalizeCivitaiModel)
+    .filter((model) => isAllowedBaseModel(model, options.baseModels ?? defaultBaseModelFilters))
+    .slice(0, options.limit ?? 10);
+}
+
+async function civitaiAuthHeader(): Promise<Record<string, string>> {
+  const settings = await getAppSettings();
+  return settings.civitaiApiKey ? { Authorization: `Bearer ${settings.civitaiApiKey}` } : {};
+}
+
+async function withCivitaiToken(url: URL): Promise<URL> {
+  if (!url.hostname.includes("civitai.com")) return url;
+  const settings = await getAppSettings();
+  if (settings.civitaiApiKey && !url.searchParams.has("token")) {
+    url.searchParams.set("token", settings.civitaiApiKey);
+  }
+  return url;
+}
+
+function downloadErrorMessage(status: number, url: URL): string {
+  if (status === 401 && url.hostname.includes("civitai.com")) {
+    return [
+      "CivitaiのダウンロードがHTTP 401で拒否されました。",
+      "Civitai APIキーを保存してから再試行してください。",
+      "保存済みでも失敗する場合、そのモデルはログイン、年齢確認、または利用権限が必要な可能性があります。"
+    ].join("\n");
+  }
+  return `ダウンロードに失敗しました: HTTP ${status}`;
+}
+
+export async function runTestGeneration(request: TestGenerationRequest): Promise<TestGenerationResult> {
+  const paths = getRuntimePaths();
+  const modelInfo = await inspectModelFile(join(paths.checkpoints, request.checkpoint));
+  if (!modelInfo.simpleWorkflowReady) {
+    return {
+      ok: false,
+      message: [
+        "このCheckpointは現在の簡易テスト生成では使えません。",
+        `Checkpoint: ${request.checkpoint}`,
+        `判定: ${modelInfo.compatibilityLabel}`,
+        "理由: promptを読むCLIP/text encoder、または画像復元用VAEがCheckpoint内にありません。",
+        "今後のPhaseでは外部CLIP/VAEを選択するworkflowに対応させます。今はCLIP/VAE入りのSDXL/Pony/Illustrious系Checkpointを選んでください。"
+      ].join("\n")
+    };
+  }
+  const workflow = testWorkflowTemplate();
+  workflow["4"].inputs.ckpt_name = request.checkpoint;
+  workflow["6"].inputs.text = request.prompt;
+  workflow["7"].inputs.text = request.negativePrompt;
+  workflow["5"].inputs.width = request.width;
+  workflow["5"].inputs.height = request.height;
+  workflow["5"].inputs.batch_size = 1;
+  workflow["3"].inputs.seed = normalizeSeed(request.seed);
+  workflow["3"].inputs.steps = request.steps;
+  workflow["3"].inputs.cfg = request.cfg;
+
+  const promptResponse = await fetch(`${request.comfyUrl.replace(/\/$/, "")}/prompt`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ prompt: workflow })
+  });
+  if (!promptResponse.ok) {
+    const errorText = await promptResponse.text();
+    return { ok: false, message: `ComfyUIへの投入に失敗しました: HTTP ${promptResponse.status}\n${errorText}` };
+  }
+
+  const promptJson = (await promptResponse.json()) as { prompt_id?: string };
+  const promptId = promptJson.prompt_id;
+  if (!promptId) {
+    return { ok: false, message: "ComfyUIからprompt_idが返りませんでした。" };
+  }
+
+  const before = new Set(await listFiles(paths.outputs));
+  const deadline = Date.now() + 1000 * 300;
+  while (Date.now() < deadline) {
+    await delay(1500);
+    const history = await getPromptHistory(request.comfyUrl, promptId);
+    const errorMessage = extractPromptError(history);
+    if (errorMessage) {
+      return {
+        ok: false,
+        message: errorMessage,
+        promptId
+      };
+    }
+    const outputs = await listFiles(paths.outputs);
+    const fresh = outputs.find((name) => !before.has(name) && /\.(png|jpe?g|webp)$/i.test(name));
+    if (fresh) {
+      const imagePath = join(paths.outputs, fresh);
+      return {
+        ok: true,
+        message: "テスト生成が完了しました。",
+        imagePath,
+        imageDataUrl: await imageDataUrl(imagePath),
+        promptId
+      };
+    }
+  }
+
+  return {
+    ok: false,
+    message: "生成完了を待機しましたが、新しい画像を確認できませんでした。",
+    promptId
+  };
+}
+
+async function imageDataUrl(path: string): Promise<string> {
+  const ext = path.toLowerCase().split(".").pop();
+  const mime = ext === "jpg" || ext === "jpeg" ? "image/jpeg" : ext === "webp" ? "image/webp" : "image/png";
+  const data = await readFile(path);
+  return `data:${mime};base64,${data.toString("base64")}`;
+}
+
+async function getPromptHistory(comfyUrl: string, promptId: string): Promise<unknown> {
+  try {
+    const response = await fetch(`${comfyUrl.replace(/\/$/, "")}/history/${promptId}`);
+    if (!response.ok) return null;
+    return response.json();
+  } catch {
+    return null;
+  }
+}
+
+function extractPromptError(history: unknown): string | null {
+  if (!history || typeof history !== "object") return null;
+  const root = history as Record<string, unknown>;
+  const entry = Object.values(root)[0] as Record<string, unknown> | undefined;
+  const status = entry?.status as Record<string, unknown> | undefined;
+  if (status?.status_str !== "error") return null;
+  const messages = Array.isArray(status.messages) ? status.messages : [];
+  const errorTuple = messages.find((message) => Array.isArray(message) && message[0] === "execution_error") as unknown[] | undefined;
+  const error = errorTuple?.[1] as Record<string, unknown> | undefined;
+  const nodeId = error?.node_id ? `node ${String(error.node_id)}` : "node unknown";
+  const nodeType = error?.node_type ? String(error.node_type) : "unknown";
+  const exception = error?.exception_message ? String(error.exception_message) : "ComfyUI実行エラー";
+  if (String(error?.exception_type ?? "") === "BrokenPipeError" || exception.includes("Broken pipe")) {
+    return [
+      `ComfyUI実行エラー: ${nodeId} / ${nodeType}`,
+      "ComfyUIのログ出力先パイプが切れています。",
+      "環境タブでmacOS ComfyUIを停止してから、アプリを再起動し、もう一度開始してください。"
+    ].join("\n");
+  }
+  return [`ComfyUI実行エラー: ${nodeId} / ${nodeType}`, exception].join("\n");
+}
+
+async function commandVersion(command: string, args: string[]): Promise<{ ok: boolean; text: string | null }> {
+  try {
+    const { stdout, stderr } = await execDockerFile(command, args, { timeout: 10000 });
+    return { ok: true, text: String(stdout || stderr).trim() };
+  } catch {
+    return { ok: false, text: null };
+  }
+}
+
+async function getDockerDaemonStatus(): Promise<{ ok: boolean; text: string | null }> {
+  try {
+    await execDockerFile("docker", ["info"], { timeout: 10000, maxBuffer: 1024 * 1024 });
+    return { ok: true, text: "Docker daemon 接続OK" };
+  } catch (error) {
+    return { ok: false, text: normalizeCommandError(error) };
+  }
+}
+
+async function waitForDockerDaemon(expectReady: boolean, timeoutMs: number): Promise<{ ok: boolean; text: string | null }> {
+  const deadline = Date.now() + timeoutMs;
+  let last: { ok: boolean; text: string | null } = { ok: false, text: null };
+  while (Date.now() < deadline) {
+    last = await getDockerDaemonStatus();
+    if (last.ok === expectReady) {
+      return { ok: true, text: last.text };
+    }
+    await delay(2000);
+  }
+  return { ok: false, text: last.text };
+}
+
+async function assertDockerDaemonReady(): Promise<void> {
+  const daemon = await getDockerDaemonStatus();
+  if (!daemon.ok) {
+    throw new Error(
+      [
+        "Docker daemon に接続できません。",
+        "Docker Desktop または Docker Engine を起動してから、もう一度 Build / Start を押してください。",
+        daemon.text ? `詳細: ${daemon.text}` : null
+      ]
+        .filter(Boolean)
+        .join("\n")
+    );
+  }
+}
+
+function normalizeCommandError(error: unknown): string {
+  if (error && typeof error === "object") {
+    const maybe = error as { stderr?: string; stdout?: string; message?: string };
+    return (maybe.stderr || maybe.stdout || maybe.message || String(error)).trim();
+  }
+  return String(error);
+}
+
+async function getComposeCommand(): Promise<string[] | null> {
+  const plugin = await commandVersion("docker", ["compose", "version"]);
+  if (plugin.ok) {
+    return ["docker", "compose"];
+  }
+
+  const standalone = await commandVersion("docker-compose", ["version"]);
+  if (standalone.ok) {
+    return ["docker-compose"];
+  }
+
+  return null;
+}
+
+async function composeArgs(composeFile: string, tail: string[]): Promise<{ command: string; args: string[] } | null> {
+  const compose = await getComposeCommand();
+  if (!compose) {
+    return null;
+  }
+
+  const [command, ...baseArgs] = compose;
+  return { command, args: [...baseArgs, "-f", composeFile, ...tail] };
+}
+
+function dockerRunArgs(paths: RuntimePaths): string[] {
+  return [
+    "run",
+    "-d",
+    "--name",
+    "illustmk-comfyui",
+    "--restart",
+    "unless-stopped",
+    "-p",
+    `${comfyPort}:8188`,
+    "-v",
+    `${paths.checkpoints}:/opt/ComfyUI/models/checkpoints:ro`,
+    "-v",
+    `${paths.loras}:/opt/ComfyUI/models/loras:ro`,
+    "-v",
+    `${paths.vae}:/opt/ComfyUI/models/vae:ro`,
+    "-v",
+    `${paths.outputs}:/data/outputs:rw`,
+    "--security-opt",
+    "no-new-privileges:true",
+    "--cap-drop",
+    "ALL",
+    "illustmk-comfyui:phase1"
+  ];
+}
+
+async function exists(path: string): Promise<boolean> {
+  try {
+    await access(path);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function findDockerDesktop(): Promise<string | null> {
+  for (const path of dockerDesktopPaths) {
+    if (await exists(path)) {
+      return path;
+    }
+  }
+  return null;
+}
+
+async function listFiles(path: string): Promise<string[]> {
+  try {
+    const entries = await readdir(path);
+    const files = await Promise.all(
+      entries.map(async (entry) => {
+        const entryPath = join(path, entry);
+        const entryStat = await stat(entryPath);
+        return entryStat.isFile() ? entry : null;
+      })
+    );
+    return files.filter((file): file is string => Boolean(file)).sort();
+  } catch {
+    return [];
+  }
+}
+
+async function listModelFiles(path: string): Promise<ModelFileInfo[]> {
+  try {
+    const entries = await readdir(path);
+    const files = await Promise.all(
+      entries.map(async (entry) => {
+        const entryPath = join(path, entry);
+        const entryStat = await stat(entryPath);
+        if (!entryStat.isFile()) return null;
+        const modelInfo = await inspectModelFile(entryPath);
+        return {
+          ...modelInfo,
+          name: entry,
+          sizeBytes: entryStat.size,
+          sizeLabel: formatBytes(entryStat.size)
+        };
+      })
+    );
+    return files
+      .filter((file): file is ModelFileInfo => Boolean(file))
+      .sort((left, right) => left.name.localeCompare(right.name));
+  } catch {
+    return [];
+  }
+}
+
+async function inspectModelFile(path: string): Promise<Omit<ModelFileInfo, "name" | "sizeBytes" | "sizeLabel">> {
+  try {
+    const fd = await openForHeader(path);
+    try {
+      const lengthBuffer = Buffer.alloc(8);
+      await fd.read(lengthBuffer, 0, lengthBuffer.length, 0);
+      const headerLength = Number(lengthBuffer.readBigUInt64LE(0));
+      if (!Number.isFinite(headerLength) || headerLength <= 0 || headerLength > 128 * 1024 * 1024) {
+        return modelCompatibility(false, false);
+      }
+      const headerBuffer = Buffer.alloc(headerLength);
+      await fd.read(headerBuffer, 0, headerBuffer.length, 8);
+      const header = JSON.parse(headerBuffer.toString("utf8")) as Record<string, unknown>;
+      const keys = Object.keys(header).filter((key) => key !== "__metadata__");
+      const hasClip = keys.some(isClipTensorKey);
+      const hasVae = keys.some(isVaeTensorKey);
+      return modelCompatibility(hasClip, hasVae);
+    } finally {
+      await fd.close();
+    }
+  } catch {
+    return modelCompatibility(false, false);
+  }
+}
+
+async function openForHeader(path: string) {
+  const { open } = await import("node:fs/promises");
+  return open(path, "r");
+}
+
+function modelCompatibility(hasClip: boolean, hasVae: boolean): Omit<ModelFileInfo, "name" | "sizeBytes" | "sizeLabel"> {
+  const simpleWorkflowReady = hasClip && hasVae;
+  return {
+    hasClip,
+    hasVae,
+    simpleWorkflowReady,
+    compatibilityLabel: simpleWorkflowReady
+      ? "簡易生成OK"
+      : `外部${[hasClip ? null : "CLIP", hasVae ? null : "VAE"].filter(Boolean).join("+")}が必要`
+  };
+}
+
+function isClipTensorKey(key: string): boolean {
+  return /(^|\.)cond_stage_model\.|(^|\.)conditioner\.|(^|\.)text_model\.|(^|\.)clip_l\.|(^|\.)clip_g\.|text_encoder/i.test(key);
+}
+
+function isVaeTensorKey(key: string): boolean {
+  return /(^|\.)first_stage_model\.|(^|\.)vae\./i.test(key);
+}
+
+async function checkComfy(comfyUrl: string): Promise<boolean> {
+  try {
+    const response = await fetch(`${comfyUrl.replace(/\/$/, "")}/system_stats`, { signal: AbortSignal.timeout(3000) });
+    return response.ok;
+  } catch {
+    return false;
+  }
+}
+
+async function getContainerState(): Promise<string> {
+  try {
+    const { stdout } = await execDockerFile("docker", ["inspect", "-f", "{{.State.Status}}", "illustmk-comfyui"], {
+      timeout: 10000
+    });
+    return String(stdout).trim();
+  } catch {
+    return "not_created";
+  }
+}
+
+function execDockerFile(command: string, args: string[], options: ExecFileOptions = {}) {
+  return execFileAsync(command, args, {
+    ...options,
+    env: {
+      ...process.env,
+      ...options.env,
+      PATH: `${dockerCommandPath}:${process.env.PATH ?? ""}`
+    }
+  });
+}
+
+function spawnDockerFile(command: string, args: string[], onLog: RuntimeLogSink): Promise<void> {
+  return new Promise((resolve, reject) => {
+    onLog({ level: "info", line: `$ ${command} ${args.join(" ")}` });
+    const child = spawn(command, args, {
+      env: {
+        ...process.env,
+        PATH: `${dockerCommandPath}:${process.env.PATH ?? ""}`
+      }
+    });
+
+    let stderr = "";
+    child.stdout.setEncoding("utf8");
+    child.stderr.setEncoding("utf8");
+    child.stdout.on("data", (chunk: string) => {
+      for (const line of chunk.split(/\r?\n/)) {
+        if (line.trim()) onLog({ level: "stdout", line });
+      }
+    });
+    child.stderr.on("data", (chunk: string) => {
+      stderr += chunk;
+      for (const line of chunk.split(/\r?\n/)) {
+        if (line.trim()) onLog({ level: "stderr", line });
+      }
+    });
+    child.on("error", reject);
+    child.on("close", (code) => {
+      if (code === 0) {
+        resolve();
+      } else {
+        reject(new Error(stderr.trim() || `${command} exited with code ${code}`));
+      }
+    });
+  });
+}
+
+function spawnNativeCommand(command: string, args: string[], onLog: RuntimeLogSink): Promise<void> {
+  return new Promise((resolve, reject) => {
+    onLog({ level: "info", line: `$ ${command} ${args.join(" ")}` });
+    const child = spawn(command, args, {
+      env: {
+        ...process.env,
+        PYTORCH_ENABLE_MPS_FALLBACK: "1",
+        PATH: `/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:${process.env.PATH ?? ""}`
+      }
+    });
+    let stderr = "";
+    child.stdout.setEncoding("utf8");
+    child.stderr.setEncoding("utf8");
+    child.stdout.on("data", (chunk: string) => emitChunk("stdout", chunk, onLog));
+    child.stderr.on("data", (chunk: string) => {
+      stderr += chunk;
+      emitChunk("stderr", chunk, onLog);
+    });
+    child.on("error", reject);
+    child.on("close", (code) => {
+      if (code === 0) resolve();
+      else reject(new Error(stderr.trim() || `${command} exited with code ${code}`));
+    });
+  });
+}
+
+function pipeProcessToLog(child: ChildProcessWithoutNullStreams, logPath: string, onLog: RuntimeLogSink): void {
+  const logStream = createWriteStream(logPath, { flags: "a" });
+  child.stdout.setEncoding("utf8");
+  child.stderr.setEncoding("utf8");
+  child.stdout.on("data", (chunk: string) => {
+    logStream.write(chunk);
+    emitChunk("stdout", chunk, onLog);
+  });
+  child.stderr.on("data", (chunk: string) => {
+    logStream.write(chunk);
+    emitChunk("stderr", chunk, onLog);
+  });
+  child.on("close", (code) => {
+    logStream.write(`\n[illustMK] ComfyUI exited with code ${code}\n`);
+    logStream.end();
+  });
+}
+
+function emitChunk(level: RuntimeLogEvent["level"], chunk: string, onLog: RuntimeLogSink): void {
+  for (const line of chunk.split(/\r?\n/)) {
+    if (line.trim()) onLog({ level, line });
+  }
+}
+
+async function writeNativeExtraModelPaths(paths: RuntimePaths): Promise<void> {
+  if (!(await exists(paths.nativeComfy))) return;
+  const yaml = `illustmk:
+  base_path: ${paths.root}
+  checkpoints: models/checkpoints
+  loras: models/loras
+  vae: models/vae
+`;
+  await writeFile(join(paths.nativeComfy, "extra_model_paths.yaml"), yaml, "utf8");
+}
+
+async function waitForComfy(comfyUrl: string, timeoutMs: number): Promise<boolean> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (await checkComfy(comfyUrl)) return true;
+    await delay(2000);
+  }
+  return false;
+}
+
+async function readNativePid(): Promise<number | null> {
+  try {
+    const text = await readFile(getRuntimePaths().nativePid, "utf8");
+    const pid = Number(text.trim());
+    return Number.isFinite(pid) && pid > 0 ? pid : null;
+  } catch {
+    return null;
+  }
+}
+
+async function isNativeRunning(): Promise<boolean> {
+  const pid = await readNativePid();
+  if (!pid) return false;
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function sha256File(path: string): Promise<string> {
+  const hash = createHash("sha256");
+  await pipeline(createReadStream(path), hash);
+  return hash.digest("hex");
+}
+
+function sanitizeFileName(name: string): string {
+  return name.replace(/[^\w.\-+()[\] ]/g, "_").trim();
+}
+
+function formatBytes(bytes: number): string {
+  if (!Number.isFinite(bytes) || bytes <= 0) return "0 B";
+  const units = ["B", "KB", "MB", "GB", "TB"];
+  let value = bytes;
+  let unitIndex = 0;
+  while (value >= 1024 && unitIndex < units.length - 1) {
+    value /= 1024;
+    unitIndex += 1;
+  }
+  return `${value >= 10 || unitIndex === 0 ? value.toFixed(0) : value.toFixed(1)} ${units[unitIndex]}`;
+}
+
+function downloadProgressLine(receivedBytes: number, totalBytes: number): string {
+  if (totalBytes > 0) {
+    const percent = Math.min(100, (receivedBytes / totalBytes) * 100);
+    return `ダウンロード中: ${formatBytes(receivedBytes)} / ${formatBytes(totalBytes)} (${percent.toFixed(1)}%)`;
+  }
+  return `ダウンロード中: ${formatBytes(receivedBytes)}`;
+}
+
+function normalizeCivitaiModel(item: unknown): CivitaiModelCard[] {
+  if (!item || typeof item !== "object") return [];
+  const model = item as Record<string, unknown>;
+  const versions = Array.isArray(model.modelVersions) ? model.modelVersions : [];
+  const version = versions[0] as Record<string, unknown> | undefined;
+  if (!version) return [];
+  const files = Array.isArray(version.files) ? version.files : [];
+  const file = files.find((candidate) => {
+    const record = candidate as Record<string, unknown>;
+    return String(record.name ?? "").toLowerCase().endsWith(".safetensors");
+  }) as Record<string, unknown> | undefined;
+  const downloadUrl = String(version.downloadUrl ?? "");
+  if (!file || !downloadUrl) return [];
+
+  const stats = (model.stats ?? {}) as Record<string, unknown>;
+  const versionStats = (version.stats ?? {}) as Record<string, unknown>;
+  const creator = (model.creator ?? {}) as Record<string, unknown>;
+  const images = Array.isArray(version.images) ? version.images : [];
+  const image = images[0] as Record<string, unknown> | undefined;
+  const hashes = (file.hashes ?? {}) as Record<string, unknown>;
+  const modelId = Number(model.id ?? 0);
+  const versionId = Number(version.id ?? 0);
+  return [
+    {
+      id: modelId,
+      name: String(model.name ?? "Unknown"),
+      type: String(model.type ?? "Checkpoint"),
+      nsfw: Boolean(model.nsfw),
+      creator: String(creator.username ?? "unknown"),
+      versionId,
+      versionName: String(version.name ?? ""),
+      baseModel: String(version.baseModel ?? ""),
+      fileName: String(file.name ?? `${modelId}-${versionId}.safetensors`),
+      sizeKB: Number(file.sizeKB ?? 0),
+      downloadUrl,
+      pageUrl: `https://civitai.com/models/${modelId}?modelVersionId=${versionId}`,
+      imageUrl: image?.url ? String(image.url) : null,
+      downloadCount: Number(stats.downloadCount ?? versionStats.downloadCount ?? 0),
+      rating: Number(stats.rating ?? 0),
+      sha256: hashes.SHA256 ? String(hashes.SHA256) : undefined
+    }
+  ];
+}
+
+const defaultBaseModelFilters = ["SDXL", "Pony", "Illustrious", "Animagine"];
+
+function isAllowedBaseModel(model: CivitaiModelCard, filters: string[]): boolean {
+  if (!filters.length) return true;
+  const base = model.baseModel.toLowerCase();
+  return filters.some((filter) => base.includes(filter.toLowerCase()));
+}
+
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function normalizeSeed(seed: number): number {
+  if (Number.isFinite(seed) && seed >= 0) return Math.floor(seed);
+  return Math.floor(Math.random() * Number.MAX_SAFE_INTEGER);
+}
+
+function dockerfileText(): string {
+  return `FROM python:3.12-slim
+
+ENV DEBIAN_FRONTEND=noninteractive
+WORKDIR /opt
+
+RUN apt-get update \\
+  && apt-get install -y --no-install-recommends git ffmpeg libgl1 libglib2.0-0 \\
+  && rm -rf /var/lib/apt/lists/*
+
+RUN git clone --depth 1 https://github.com/comfyanonymous/ComfyUI.git /opt/ComfyUI
+WORKDIR /opt/ComfyUI
+RUN pip install --no-cache-dir --upgrade pip \\
+  && pip install --no-cache-dir -r requirements.txt
+
+RUN useradd -m -u 1000 comfy
+RUN chown -R comfy:comfy /opt/ComfyUI
+USER comfy
+
+EXPOSE 8188
+CMD ["python", "main.py", "--listen", "0.0.0.0", "--port", "8188", "--output-directory", "/data/outputs"]
+`;
+}
+
+function composeText(paths: RuntimePaths): string {
+  return `services:
+  comfyui:
+    build:
+      context: .
+    image: illustmk-comfyui:phase1
+    container_name: illustmk-comfyui
+    restart: unless-stopped
+    ports:
+      - "${comfyPort}:8188"
+    volumes:
+      - "${paths.checkpoints}:/opt/ComfyUI/models/checkpoints:ro"
+      - "${paths.loras}:/opt/ComfyUI/models/loras:ro"
+      - "${paths.vae}:/opt/ComfyUI/models/vae:ro"
+      - "${paths.outputs}:/data/outputs:rw"
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+`;
+}
+
+function testWorkflowTemplate(): Record<string, { class_type: string; inputs: Record<string, unknown> }> {
+  return {
+    "3": {
+      class_type: "KSampler",
+      inputs: {
+        seed: -1,
+        steps: 20,
+        cfg: 7,
+        sampler_name: "euler",
+        scheduler: "normal",
+        denoise: 1,
+        model: ["4", 0],
+        positive: ["6", 0],
+        negative: ["7", 0],
+        latent_image: ["5", 0]
+      }
+    },
+    "4": {
+      class_type: "CheckpointLoaderSimple",
+      inputs: {
+        ckpt_name: ""
+      }
+    },
+    "5": {
+      class_type: "EmptyLatentImage",
+      inputs: {
+        width: 768,
+        height: 1024,
+        batch_size: 1
+      }
+    },
+    "6": {
+      class_type: "CLIPTextEncode",
+      inputs: {
+        text: "masterpiece, best quality, 1girl, anime style",
+        clip: ["4", 1]
+      }
+    },
+    "7": {
+      class_type: "CLIPTextEncode",
+      inputs: {
+        text: "low quality, worst quality",
+        clip: ["4", 1]
+      }
+    },
+    "8": {
+      class_type: "VAEDecode",
+      inputs: {
+        samples: ["3", 0],
+        vae: ["4", 2]
+      }
+    },
+    "9": {
+      class_type: "SaveImage",
+      inputs: {
+        filename_prefix: "illustmk_phase1",
+        images: ["8", 0]
+      }
+    }
+  };
+}
