@@ -12,6 +12,11 @@ const execFileAsync = promisify(execFile);
 
 export type RuntimePaths = {
   root: string;
+  llm: string;
+  ollama: string;
+  ollamaModels: string;
+  ollamaLog: string;
+  ollamaPid: string;
   models: string;
   checkpoints: string;
   loras: string;
@@ -123,6 +128,7 @@ export type OllamaStatus = {
   reachable: boolean;
   installed: boolean;
   appPath: string | null;
+  modelPath: string;
   models: OllamaModelInfo[];
   message: string | null;
 };
@@ -173,6 +179,7 @@ const appDataRoot = process.env.ILLUSTMK_APP_DATA_ROOT ?? join(process.cwd(), ".
 const settingsPath = join(appDataRoot, "settings.json");
 const comfyPort = Number(process.env.ILLUSTMK_COMFY_PORT ?? "8188");
 let nativeProcess: ChildProcess | null = null;
+let ollamaProcess: ChildProcess | null = null;
 const dockerDesktopPaths = ["/Applications/Docker.app", "/Applications/Utilities/Docker.app"];
 const ollamaAppPaths = ["/Applications/Ollama.app", "/Applications/Utilities/Ollama.app", join(homedir(), "Applications", "Ollama.app")];
 const dockerDesktopBinPaths = dockerDesktopPaths.map((path) => join(path, "Contents", "Resources", "bin"));
@@ -190,8 +197,14 @@ export function getRuntimePaths(): RuntimePaths {
   const root = runtimeRoot;
   const native = join(root, "native");
   const docker = join(root, "docker", "comfyui");
+  const ollama = join(root, "llm", "ollama");
   return {
     root,
+    llm: join(root, "llm"),
+    ollama,
+    ollamaModels: join(ollama, "models"),
+    ollamaLog: join(ollama, "logs", "ollama.log"),
+    ollamaPid: join(ollama, "ollama.pid"),
     models: join(root, "models"),
     checkpoints: join(root, "models", "checkpoints"),
     loras: join(root, "models", "loras"),
@@ -221,6 +234,8 @@ export async function ensureRuntimeFiles(): Promise<RuntimePaths> {
     mkdir(paths.workflows, { recursive: true }),
     mkdir(paths.native, { recursive: true }),
     mkdir(join(paths.native, "logs"), { recursive: true }),
+    mkdir(paths.ollamaModels, { recursive: true }),
+    mkdir(join(paths.ollama, "logs"), { recursive: true }),
     mkdir(paths.docker, { recursive: true }),
     mkdir(paths.logs, { recursive: true }),
     mkdir(paths.downloads, { recursive: true })
@@ -673,6 +688,7 @@ export async function searchCivitaiModels(options: {
 
 export async function getOllamaStatus(ollamaUrl = "http://127.0.0.1:11434"): Promise<OllamaStatus> {
   const appPath = await findOllamaApp();
+  const paths = getRuntimePaths();
   try {
     const response = await fetch(`${ollamaUrl.replace(/\/$/, "")}/api/tags`, { signal: AbortSignal.timeout(3000) });
     if (!response.ok) {
@@ -681,6 +697,7 @@ export async function getOllamaStatus(ollamaUrl = "http://127.0.0.1:11434"): Pro
         reachable: false,
         installed: Boolean(appPath),
         appPath,
+        modelPath: paths.ollamaModels,
         models: [],
         message: `Ollama API HTTP ${response.status}`
       };
@@ -697,6 +714,7 @@ export async function getOllamaStatus(ollamaUrl = "http://127.0.0.1:11434"): Pro
       reachable: true,
       installed: Boolean(appPath),
       appPath,
+      modelPath: paths.ollamaModels,
       models,
       message: "Ollama API 接続OK"
     };
@@ -706,6 +724,7 @@ export async function getOllamaStatus(ollamaUrl = "http://127.0.0.1:11434"): Pro
       reachable: false,
       installed: Boolean(appPath),
       appPath,
+      modelPath: paths.ollamaModels,
       models: [],
       message: normalizeCommandError(error)
     };
@@ -713,12 +732,39 @@ export async function getOllamaStatus(ollamaUrl = "http://127.0.0.1:11434"): Pro
 }
 
 export async function startOllama(): Promise<string> {
+  const paths = await ensureRuntimeFiles();
+  if ((await getOllamaStatus()).reachable) {
+    return "Ollama API は既に接続可能です。";
+  }
+  const ollamaBin = await findOllamaBinary();
+  if (ollamaBin) {
+    await writeFile(paths.ollamaLog, "", "utf8");
+    const logFd = openSync(paths.ollamaLog, "a");
+    const child = spawn(ollamaBin, ["serve"], {
+      detached: true,
+      stdio: ["ignore", logFd, logFd],
+      env: {
+        ...process.env,
+        OLLAMA_HOST: "127.0.0.1:11434",
+        OLLAMA_MODELS: paths.ollamaModels
+      }
+    });
+    closeSync(logFd);
+    ollamaProcess = child;
+    await writeFile(paths.ollamaPid, String(child.pid ?? ""), "utf8");
+    child.unref();
+    const ready = await waitForOllama("http://127.0.0.1:11434", 30000);
+    if (ready) {
+      return `Ollama API を起動しました。モデル保存先: ${paths.ollamaModels}`;
+    }
+  }
+
   const appPath = await findOllamaApp();
   if (!appPath) {
     throw new Error("Ollama.app が見つかりません。公式サイトからOllamaをインストールしてください。");
   }
   await execFileAsync("open", [appPath], { timeout: 10000 });
-  return "Ollama.app を起動しました。";
+  return "Ollama.app を起動しました。アプリ起動では保存先が標準設定になる場合があります。";
 }
 
 export async function installOllama(onLog: RuntimeLogSink): Promise<string> {
@@ -752,8 +798,18 @@ export async function installOllama(onLog: RuntimeLogSink): Promise<string> {
 }
 
 export async function stopOllama(): Promise<string> {
-  await execFileAsync("osascript", ["-e", 'tell application "Ollama" to quit'], { timeout: 10000 });
-  return "Ollama.app を終了しました。";
+  const pid = await readPidFile(getRuntimePaths().ollamaPid);
+  if (pid) {
+    try {
+      process.kill(pid, "SIGTERM");
+    } catch {
+      // The app fallback may be running without our pid file target.
+    }
+    await unlink(getRuntimePaths().ollamaPid).catch(() => undefined);
+    ollamaProcess = null;
+  }
+  await execFileAsync("osascript", ["-e", 'tell application "Ollama" to quit'], { timeout: 10000 }).catch(() => undefined);
+  return "Ollamaを終了しました。";
 }
 
 export async function uninstallOllama(onLog: RuntimeLogSink): Promise<string> {
@@ -771,15 +827,20 @@ export async function uninstallOllama(onLog: RuntimeLogSink): Promise<string> {
 
 export async function deleteOllamaModelStorage(onLog: RuntimeLogSink): Promise<string> {
   await stopOllama().catch((error) => onLog({ level: "stderr", line: normalizeCommandError(error) }));
-  const modelsPath = join(homedir(), ".ollama", "models");
+  const modelsPath = getRuntimePaths().ollamaModels;
   onLog({ level: "info", line: `Ollamaモデル保存先を削除します: ${modelsPath}` });
   await rm(modelsPath, { recursive: true, force: true });
+  await mkdir(modelsPath, { recursive: true });
   return "Ollamaのモデル保存先を削除しました。";
 }
 
 export async function pullOllamaModel(ollamaUrl: string, model: string, onLog: RuntimeLogSink): Promise<string> {
   const modelName = model.trim();
   if (!modelName) throw new Error("Ollamaモデル名を入力してください。");
+  const status = await getOllamaStatus(ollamaUrl);
+  if (!status.reachable) {
+    throw new Error("Ollama APIに接続できません。先にLLM / Ollamaパネルの「起動」を実行してください。");
+  }
   onLog({ level: "info", line: `Ollama pull: ${modelName}` });
   const response = await fetch(`${ollamaUrl.replace(/\/$/, "")}/api/pull`, {
     method: "POST",
@@ -1133,6 +1194,20 @@ async function findOllamaApp(): Promise<string | null> {
   return null;
 }
 
+async function findOllamaBinary(): Promise<string | null> {
+  const candidates = [
+    "/opt/homebrew/bin/ollama",
+    "/usr/local/bin/ollama",
+    "/usr/bin/ollama",
+    "/bin/ollama",
+    ...ollamaAppPaths.map((path) => join(path, "Contents", "Resources", "ollama"))
+  ];
+  for (const candidate of candidates) {
+    if (await exists(candidate)) return candidate;
+  }
+  return null;
+}
+
 async function listFiles(path: string): Promise<string[]> {
   try {
     const entries = await readdir(path);
@@ -1360,9 +1435,22 @@ async function waitForComfy(comfyUrl: string, timeoutMs: number): Promise<boolea
   return false;
 }
 
+async function waitForOllama(ollamaUrl: string, timeoutMs: number): Promise<boolean> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if ((await getOllamaStatus(ollamaUrl)).reachable) return true;
+    await delay(1000);
+  }
+  return false;
+}
+
 async function readNativePid(): Promise<number | null> {
+  return readPidFile(getRuntimePaths().nativePid);
+}
+
+async function readPidFile(path: string): Promise<number | null> {
   try {
-    const text = await readFile(getRuntimePaths().nativePid, "utf8");
+    const text = await readFile(path, "utf8");
     const pid = Number(text.trim());
     return Number.isFinite(pid) && pid > 0 ? pid : null;
   } catch {

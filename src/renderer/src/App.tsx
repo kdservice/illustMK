@@ -103,6 +103,7 @@ function App() {
     [selectedCheckpoint, status?.checkpoints]
   );
   const canGenerate = Boolean(status?.comfyReachable && selectedCheckpointInfo?.simpleWorkflowReady && !action.busy);
+  const canDownloadLlm = Boolean(ollamaStatus?.reachable && ollamaModel.trim() && !action.busy);
   const filteredLlmModels = useMemo(() => {
     const query = llmCatalogQuery.trim().toLowerCase();
     if (!query) return recommendedLlmModels;
@@ -190,14 +191,20 @@ function App() {
     }
   }
 
-  async function runOllamaPull(): Promise<void> {
+  async function runOllamaPull(modelName = ollamaModel): Promise<void> {
+    if (!ollamaStatus?.reachable) {
+      appendLog("stderr", "Ollama APIに未接続です。先に「起動」を実行してください。");
+      setAction({ busy: false, message: "Ollama未接続", error: "Ollama APIに未接続です。先に「起動」を実行してください。" });
+      return;
+    }
     const id = crypto.randomUUID();
     currentOperationId.current = id;
-    appendLog("info", `${ollamaModel} をpull中`, id);
+    appendLog("info", `${modelName} をダウンロード中`, id);
     setAction({ busy: true, message: "Ollamaモデルをpull中", error: null });
     setDownloadProgress(null);
     try {
-      const result = await window.illustMK.runtime.runOperation({ id, operation: "ollama-pull", model: ollamaModel, ollamaUrl });
+      setOllamaModel(modelName);
+      const result = await window.illustMK.runtime.runOperation({ id, operation: "ollama-pull", model: modelName, ollamaUrl });
       appendLog("info", result, id);
       setAction({ busy: false, message: "完了しました", error: null });
       await refreshOllamaStatus();
@@ -382,11 +389,22 @@ function App() {
           <h1>illustMK</h1>
           <p>AI Illustration Studio</p>
         </div>
+        <div className={action.error ? "header-action error" : "header-action"}>
+          {action.error ? <CircleAlert size={16} /> : <CheckCircle2 size={16} />}
+          <div>
+            <strong>{action.message}</strong>
+            <span>{action.error ?? "ログは下段に集約"}</span>
+          </div>
+        </div>
         <div className="connection-pill">
           <span className={status?.comfyReachable ? "dot ready" : "dot"} />
           {stateLabel}
         </div>
       </header>
+
+      <section className="panel global-status-panel">
+        <StatusGrid status={status} ollamaStatus={ollamaStatus} />
+      </section>
 
       <nav className="main-tabs">
         <button className={mainTab === "environment" ? "tab active" : "tab"} onClick={() => setMainTab("environment")}>
@@ -400,7 +418,7 @@ function App() {
       {mainTab === "environment" ? (
         <section className="environment-layout">
           <section className="panel setup-panel">
-            <PanelTitle icon={<Server size={18} />} title="環境構築" />
+            <PanelTitle icon={<Server size={18} />} title="ComfyUI" />
             <div className="runtime-tabs">
               <button className={runtimeTab === "macos" ? "runtime-tab active" : "runtime-tab"} onClick={() => setRuntimeTab("macos")}>
                 macOS <span>{status?.activeRuntime === "macos" ? "ACTIVE" : ""}</span>
@@ -409,8 +427,6 @@ function App() {
                 Docker <span>LEGACY</span>
               </button>
             </div>
-            <StatusGrid status={status} />
-
             <div className="field">
               <label>ComfyUI API</label>
               <div className="inline">
@@ -462,14 +478,6 @@ function App() {
               <p>ランタイム: {paths?.root ?? "/Volumes/ARC-8050T2/illustMK"}</p>
               <p>macOS ComfyUI: {paths?.nativeComfy ?? "未初期化"}</p>
             </div>
-
-            <div className={action.error ? "action-log error" : "action-log"}>
-              {action.error ? <CircleAlert size={18} /> : <CheckCircle2 size={18} />}
-              <div>
-                <strong>{action.message}</strong>
-                <p>{action.error ?? "環境操作の結果は下段ログに集約します。"}</p>
-              </div>
-            </div>
           </section>
 
           <section className="panel llm-panel">
@@ -490,6 +498,20 @@ function App() {
                 <input value={ollamaUrl} onChange={(event) => setOllamaUrl(event.target.value)} />
                 <button className="icon-button" onClick={() => void refreshOllamaStatus()} title="再確認">
                   <RefreshCw size={17} />
+                </button>
+              </div>
+            </div>
+            <div className="field">
+              <label>Hugging Face API Key</label>
+              <div className="inline">
+                <input
+                  type="password"
+                  placeholder="任意。HF検索/取得で必要な時に使用"
+                  value={huggingFaceApiKey}
+                  onChange={(event) => setHuggingFaceApiKey(event.target.value)}
+                />
+                <button className="icon-button" onClick={() => void saveSettings()} title="保存">
+                  <CheckCircle2 size={17} />
                 </button>
               </div>
             </div>
@@ -515,9 +537,9 @@ function App() {
                 <Square size={17} />
                 停止
               </button>
-              <button onClick={() => void runOllamaPull()} disabled={action.busy || !ollamaModel.trim()}>
+              <button onClick={() => void runOllamaPull()} disabled={!canDownloadLlm} title={ollamaStatus?.reachable ? "Download" : "先にOllamaを起動してください"}>
                 <Download size={17} />
-                Pull
+                Download
               </button>
               <button onClick={() => void saveSettings()}>
                 <CheckCircle2 size={17} />
@@ -553,13 +575,20 @@ function App() {
             <div className="llm-catalog-list">
               {filteredLlmModels.map((model) => (
                 <article className="llm-catalog-card" key={model.name}>
-                  <button onClick={() => setOllamaModel(model.name)}>
+                  <button className="llm-select-button" onClick={() => setOllamaModel(model.name)}>
                     <span>{model.name}</span>
                     <small>{model.source} / {model.size}</small>
                   </button>
                   <p>{model.note}</p>
+                  <button disabled={!ollamaStatus?.reachable || action.busy} onClick={() => void runOllamaPull(model.name)}>
+                    <Download size={15} />
+                    Download
+                  </button>
                 </article>
               ))}
+            </div>
+            <div className="paths">
+              <p>保存先: {ollamaStatus?.modelPath ?? paths?.ollamaModels ?? "/Volumes/ARC-8050T2/illustMK/llm/ollama/models"}</p>
             </div>
             <div className="model-list">
               <h2>DL済みLLM</h2>
@@ -600,20 +629,6 @@ function App() {
                   placeholder="任意。必要なモデル取得時に使用"
                   value={civitaiApiKey}
                   onChange={(event) => setCivitaiApiKey(event.target.value)}
-                />
-                <button className="icon-button" onClick={() => void saveSettings()} title="保存">
-                  <CheckCircle2 size={17} />
-                </button>
-              </div>
-            </div>
-            <div className="field">
-              <label>Hugging Face API Key</label>
-              <div className="inline">
-                <input
-                  type="password"
-                  placeholder="任意。HF検索/取得で必要な時に使用"
-                  value={huggingFaceApiKey}
-                  onChange={(event) => setHuggingFaceApiKey(event.target.value)}
                 />
                 <button className="icon-button" onClick={() => void saveSettings()} title="保存">
                   <CheckCircle2 size={17} />
@@ -755,18 +770,6 @@ function App() {
               )}
             </div>
           </section>
-
-          <section className="log-dock environment-log">
-            <LogPanel
-              action={action}
-              logs={logs}
-              logViewRef={logViewRef}
-              onScroll={handleLogScroll}
-              onLatest={jumpToLatestLog}
-              onClear={() => setLogs([])}
-              downloadProgress={downloadProgress}
-            />
-          </section>
         </section>
       ) : (
         <section className="generate-layout">
@@ -845,6 +848,17 @@ function App() {
           </section>
         </section>
       )}
+      <section className="log-dock global-log">
+        <LogPanel
+          action={action}
+          logs={logs}
+          logViewRef={logViewRef}
+          onScroll={handleLogScroll}
+          onLatest={jumpToLatestLog}
+          onClear={() => setLogs([])}
+          downloadProgress={downloadProgress}
+        />
+      </section>
     </main>
   );
 
@@ -911,7 +925,7 @@ function LogPanel({
   );
 }
 
-function StatusGrid({ status }: { status: RuntimeStatus | null }) {
+function StatusGrid({ status, ollamaStatus }: { status: RuntimeStatus | null; ollamaStatus?: OllamaStatus | null }) {
   const items = [
     ["Desktop", status?.dockerDesktopInstalled ? "OK" : "未検出"],
     ["Docker", status?.dockerAvailable ? "OK" : "未検出"],
@@ -919,7 +933,9 @@ function StatusGrid({ status }: { status: RuntimeStatus | null }) {
     ["Compose", status?.composeCommand ?? "未検出"],
     ["Runtime", status?.pathsReady ? "OK" : "未初期化"],
     ["ComfyUI", status?.comfyReachable ? "接続中" : "未接続"],
-    ["Models", `${status?.checkpoints.length ?? 0}`]
+    ["Image Models", `${status?.checkpoints.length ?? 0}`],
+    ["Ollama", ollamaStatus?.reachable ? "接続OK" : ollamaStatus?.installed ? "未起動" : "未検出"],
+    ["LLM Models", `${ollamaStatus?.models.length ?? 0}`]
   ];
 
   return (

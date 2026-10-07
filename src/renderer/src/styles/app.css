@@ -78,10 +78,12 @@ label {
 .app-shell {
   min-height: 100vh;
   padding: 18px;
+  display: flex;
+  flex-direction: column;
 }
 
 .topbar {
-  height: 64px;
+  min-height: 64px;
   display: flex;
   align-items: center;
   gap: 14px;
@@ -117,9 +119,55 @@ label {
   font-size: 12px;
 }
 
-.connection-pill {
+.header-action {
+  min-width: 260px;
+  max-width: 460px;
   margin-left: auto;
+  display: grid;
+  grid-template-columns: 18px minmax(0, 1fr);
+  align-items: center;
+  gap: 10px;
+  border: 1px solid #243b69;
+  border-radius: 8px;
+  padding: 8px 10px;
+  background: #0d1930;
+}
+
+.header-action svg {
+  color: #2cff8f;
+}
+
+.header-action.error {
+  border-color: #7f3448;
+  background: #1d1020;
+}
+
+.header-action.error svg {
+  color: #ff7894;
+}
+
+.header-action strong,
+.header-action span {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.header-action strong {
+  color: #dbe7ff;
+  font-size: 13px;
+}
+
+.header-action span {
+  color: #91a3c9;
+  font-size: 12px;
+  margin-top: 2px;
+}
+
+.connection-pill {
   min-height: 34px;
+  flex: 0 0 auto;
   display: inline-flex;
   align-items: center;
   gap: 8px;
@@ -245,6 +293,16 @@ label {
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 8px;
   margin-bottom: 14px;
+}
+
+.global-status-panel {
+  margin-top: 14px;
+  padding: 12px;
+}
+
+.global-status-panel .status-grid {
+  grid-template-columns: repeat(9, minmax(0, 1fr));
+  margin-bottom: 0;
 }
 
 .status-grid.compact div {
@@ -496,12 +554,18 @@ label {
   padding: 10px;
 }
 
-.llm-catalog-card button {
+.llm-catalog-card .llm-select-button {
   width: 100%;
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
   text-align: left;
   min-height: 38px;
+}
+
+.llm-catalog-card > button:not(.llm-select-button) {
+  width: 100%;
+  margin-top: 8px;
+  min-height: 34px;
 }
 
 .llm-catalog-card span {
@@ -640,6 +704,13 @@ label {
   background: rgba(6, 13, 28, 0.96);
   padding: 12px;
   margin-top: 14px;
+}
+
+.global-log {
+  width: 100%;
+  height: clamp(180px, 24vh, 340px);
+  margin-top: 14px;
+  flex: 0 0 auto;
 }
 
 .progress-header {
