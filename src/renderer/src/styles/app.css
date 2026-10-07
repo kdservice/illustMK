@@ -507,6 +507,98 @@ label {
   gap: 12px;
 }
 
+.tag-builder {
+  border: 1px solid #1c2d53;
+  border-radius: 8px;
+  background: #081125;
+  padding: 12px;
+}
+
+.tag-builder-header {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  align-items: flex-start;
+  margin-bottom: 10px;
+}
+
+.tag-builder-header h2,
+.tag-builder-header p {
+  margin: 0;
+}
+
+.tag-builder-header h2 {
+  color: #dbe7ff;
+  font-size: 13px;
+}
+
+.tag-builder-header p {
+  color: #91a3c9;
+  font-size: 12px;
+  margin-top: 4px;
+}
+
+.tag-chip-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.tag-chip {
+  display: grid;
+  grid-template-columns: minmax(0, auto) 34px 34px;
+  gap: 5px;
+  align-items: center;
+}
+
+.tag-chip > button:first-child {
+  min-height: 34px;
+  padding: 0 10px;
+}
+
+.tag-chip.selected > button:first-child {
+  border-color: #44bcff;
+  background: #12335f;
+}
+
+.modal-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 20;
+  display: grid;
+  place-items: center;
+  background: rgba(3, 7, 18, 0.72);
+  padding: 24px;
+}
+
+.modal-panel {
+  width: min(860px, 100%);
+  max-height: min(860px, calc(100vh - 48px));
+  overflow: auto;
+  border: 1px solid #244b79;
+  border-radius: 8px;
+  background: #081125;
+  box-shadow: 0 24px 80px rgba(0, 0, 0, 0.48);
+  padding: 16px;
+}
+
+.modal-header,
+.modal-actions {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  align-items: center;
+}
+
+.modal-actions {
+  justify-content: flex-end;
+  margin-top: 14px;
+}
+
+.tag-description {
+  min-height: 150px;
+}
+
 .model-list {
   margin-top: 16px;
 }

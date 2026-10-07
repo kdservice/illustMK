@@ -162,6 +162,37 @@ export type LlmChatRequest = {
   prompt: string;
 };
 
+export type IllustrationTag = {
+  id: string;
+  name: string;
+  sourcePrompt: string;
+  japaneseDescription: string;
+  englishDescription: string;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type TagDescriptionRequest = {
+  ollamaUrl: string;
+  model: string;
+  tagName: string;
+  prompt: string;
+};
+
+export type TagTranslationRequest = {
+  ollamaUrl: string;
+  model: string;
+  japaneseDescription: string;
+};
+
+export type SaveIllustrationTagRequest = {
+  id?: string;
+  name: string;
+  sourcePrompt: string;
+  japaneseDescription: string;
+  englishDescription: string;
+};
+
 export type TestGenerationRequest = {
   prompt: string;
   negativePrompt: string;
@@ -193,6 +224,7 @@ const runtimeRoot = process.env.ILLUSTMK_RUNTIME_ROOT ?? "/Volumes/ARC-8050T2/il
 const appDataRoot = process.env.ILLUSTMK_APP_DATA_ROOT ?? join(process.cwd(), ".illustmk");
 const settingsPath = join(appDataRoot, "settings.json");
 const llmChatHistoryPath = join(appDataRoot, "llm-chat-history.json");
+const illustrationTagsPath = join(appDataRoot, "illustration-tags.json");
 const comfyPort = Number(process.env.ILLUSTMK_COMFY_PORT ?? "8188");
 let nativeProcess: ChildProcess | null = null;
 let ollamaProcess: ChildProcess | null = null;
@@ -1013,9 +1045,129 @@ export async function sendLlmChatPrompt(request: LlmChatRequest): Promise<LlmCha
   return history;
 }
 
+export async function getIllustrationTags(): Promise<IllustrationTag[]> {
+  try {
+    const text = await readFile(illustrationTagsPath, "utf8");
+    const parsed = JSON.parse(text) as IllustrationTag[];
+    return Array.isArray(parsed) ? parsed.filter(isIllustrationTag) : [];
+  } catch {
+    return [];
+  }
+}
+
+export async function generateTagJapaneseDescription(request: TagDescriptionRequest): Promise<string> {
+  const tagName = request.tagName.trim();
+  const prompt = request.prompt.trim();
+  if (!tagName) throw new Error("タグ名を入力してください。");
+  if (!prompt) throw new Error("タグ作成用プロンプトを入力してください。");
+  if (!request.model.trim()) throw new Error("Ollamaモデル名を入力してください。");
+  await assertOllamaReady(request.ollamaUrl);
+
+  const instruction = [
+    "あなたはAIイラスト生成向けのタグ辞書を作る補助AIです。",
+    "ユーザーのタグ名と依頼文を読み、イラスト生成時に役立つ日本語説明文を作ってください。",
+    "衣装、形状、色、素材、雰囲気、避けたい曖昧さを具体化してください。",
+    "出力は日本語本文だけ。Markdown、見出し、箇条書き記号は不要です。"
+  ].join("\n");
+  const response = await generateOllamaText(request.ollamaUrl, request.model, `${instruction}\n\nタグ名: ${tagName}\n依頼文: ${prompt}`);
+  return response.trim();
+}
+
+export async function translateTagDescription(request: TagTranslationRequest): Promise<string> {
+  const japaneseDescription = request.japaneseDescription.trim();
+  if (!japaneseDescription) throw new Error("日本語説明文を入力してください。");
+  if (!request.model.trim()) throw new Error("Ollamaモデル名を入力してください。");
+  await assertOllamaReady(request.ollamaUrl);
+
+  const instruction = [
+    "Translate the following Japanese image-generation tag description into concise English.",
+    "Write it as usable anime image generation prompt fragments.",
+    "Prefer concrete comma-separated phrases. Do not add markdown."
+  ].join("\n");
+  const response = await generateOllamaText(request.ollamaUrl, request.model, `${instruction}\n\n${japaneseDescription}`);
+  return response.trim();
+}
+
+export async function saveIllustrationTag(request: SaveIllustrationTagRequest): Promise<IllustrationTag[]> {
+  const name = request.name.trim();
+  const sourcePrompt = request.sourcePrompt.trim();
+  const japaneseDescription = request.japaneseDescription.trim();
+  const englishDescription = request.englishDescription.trim();
+  if (!name) throw new Error("タグ名を入力してください。");
+  if (!sourcePrompt) throw new Error("タグ作成用プロンプトを入力してください。");
+  if (!japaneseDescription) throw new Error("日本語説明文を入力してください。");
+  if (!englishDescription) throw new Error("英訳説明文を入力してください。");
+
+  const now = new Date().toISOString();
+  const tags = await getIllustrationTags();
+  const existing = request.id ? tags.find((tag) => tag.id === request.id) : null;
+  const nextTag: IllustrationTag = {
+    id: existing?.id ?? randomUUID(),
+    name,
+    sourcePrompt,
+    japaneseDescription,
+    englishDescription,
+    createdAt: existing?.createdAt ?? now,
+    updatedAt: now
+  };
+  const nextTags = existing
+    ? tags.map((tag) => (tag.id === existing.id ? nextTag : tag))
+    : [...tags, nextTag];
+  await saveIllustrationTags(nextTags);
+  return nextTags;
+}
+
+export async function deleteIllustrationTag(id: string): Promise<IllustrationTag[]> {
+  const tags = (await getIllustrationTags()).filter((tag) => tag.id !== id);
+  await saveIllustrationTags(tags);
+  return tags;
+}
+
 async function civitaiAuthHeader(): Promise<Record<string, string>> {
   const settings = await getAppSettings();
   return settings.civitaiApiKey ? { Authorization: `Bearer ${settings.civitaiApiKey}` } : {};
+}
+
+async function assertOllamaReady(ollamaUrl: string): Promise<void> {
+  const status = await getOllamaStatus(ollamaUrl);
+  if (!status.dataLinked) {
+    throw new Error("Ollama保存先がDataPathに向いていません。先に環境タブのLLM / Ollamaパネルで「起動」を実行してください。");
+  }
+  if (!status.reachable) {
+    throw new Error("Ollama APIに接続できません。先に環境タブのLLM / Ollamaパネルで「起動」を実行してください。");
+  }
+}
+
+async function generateOllamaText(ollamaUrl: string, model: string, prompt: string): Promise<string> {
+  const response = await fetch(`${ollamaUrl.replace(/\/$/, "")}/api/generate`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ model, stream: false, prompt })
+  });
+  if (!response.ok) {
+    throw new Error(`Ollama生成に失敗しました: HTTP ${response.status}`);
+  }
+  const json = (await response.json()) as { response?: string };
+  return String(json.response ?? "");
+}
+
+async function saveIllustrationTags(tags: IllustrationTag[]): Promise<void> {
+  await mkdir(appDataRoot, { recursive: true });
+  await writeFile(illustrationTagsPath, JSON.stringify(tags, null, 2), "utf8");
+}
+
+function isIllustrationTag(value: unknown): value is IllustrationTag {
+  if (!value || typeof value !== "object") return false;
+  const tag = value as Partial<IllustrationTag>;
+  return (
+    typeof tag.id === "string" &&
+    typeof tag.name === "string" &&
+    typeof tag.sourcePrompt === "string" &&
+    typeof tag.japaneseDescription === "string" &&
+    typeof tag.englishDescription === "string" &&
+    typeof tag.createdAt === "string" &&
+    typeof tag.updatedAt === "string"
+  );
 }
 
 async function saveLlmChatHistory(history: LlmChatMessage[]): Promise<void> {

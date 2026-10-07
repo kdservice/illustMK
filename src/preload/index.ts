@@ -7,11 +7,15 @@ import type {
   DownloadResult,
   LlmChatMessage,
   LlmChatRequest,
+  IllustrationTag,
   OllamaStatus,
   PromptEnhanceRequest,
   PromptEnhanceResult,
   RuntimePaths,
   RuntimeStatus,
+  SaveIllustrationTagRequest,
+  TagDescriptionRequest,
+  TagTranslationRequest,
   TestGenerationRequest,
   TestGenerationResult
 } from "../main/runtime";
@@ -68,6 +72,13 @@ const api = {
     chatHistory: (): Promise<LlmChatMessage[]> => ipcRenderer.invoke("ollama:chat-history"),
     clearChatHistory: (): Promise<LlmChatMessage[]> => ipcRenderer.invoke("ollama:clear-chat-history"),
     chat: (request: LlmChatRequest): Promise<LlmChatMessage[]> => ipcRenderer.invoke("ollama:chat", request)
+  },
+  tags: {
+    list: (): Promise<IllustrationTag[]> => ipcRenderer.invoke("tags:list"),
+    generateJapanese: (request: TagDescriptionRequest): Promise<string> => ipcRenderer.invoke("tags:generate-ja", request),
+    translateEnglish: (request: TagTranslationRequest): Promise<string> => ipcRenderer.invoke("tags:translate-en", request),
+    save: (request: SaveIllustrationTagRequest): Promise<IllustrationTag[]> => ipcRenderer.invoke("tags:save", request),
+    delete: (id: string): Promise<IllustrationTag[]> => ipcRenderer.invoke("tags:delete", id)
   },
   app: {
     openPath: (path: string): Promise<string> => ipcRenderer.invoke("app:open-path", path)

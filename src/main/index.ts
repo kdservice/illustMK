@@ -5,6 +5,7 @@ import {
   buildRuntimeWithLogs,
   cleanupDockerRuntime,
   deleteModelFile,
+  deleteIllustrationTag,
   deleteOllamaModelStorage,
   deleteOllamaModel,
   downloadModel,
@@ -13,8 +14,10 @@ import {
   getRuntimePaths,
   getStatus,
   getAppSettings,
+  getIllustrationTags,
   getLlmChatHistory,
   getOllamaStatus,
+  generateTagJapaneseDescription,
   initNativeRuntime,
   installOllama,
   installNativeRuntime,
@@ -22,6 +25,7 @@ import {
   runTestGeneration,
   searchCivitaiModels,
   saveAppSettings,
+  saveIllustrationTag,
   sendLlmChatPrompt,
   showComfyContainerLogs,
   showNativeLogs,
@@ -34,6 +38,7 @@ import {
   stopNativeRuntime,
   stopOllama,
   uninstallOllama,
+  translateTagDescription,
   clearLlmChatHistory,
   stopRuntime,
   stopRuntimeWithLogs,
@@ -42,6 +47,9 @@ import {
   type DownloadRequest,
   type LlmChatRequest,
   type PromptEnhanceRequest,
+  type SaveIllustrationTagRequest,
+  type TagDescriptionRequest,
+  type TagTranslationRequest,
   type TestGenerationRequest
 } from "./runtime";
 
@@ -166,6 +174,11 @@ function registerIpc(): void {
   ipcMain.handle("runtime:delete-model", (_event, request: DeleteModelRequest) => deleteModelFile(request));
   ipcMain.handle("runtime:search-civitai", (_event, options) => searchCivitaiModels(options));
   ipcMain.handle("runtime:test-generate", (_event, request: TestGenerationRequest) => runTestGeneration(request));
+  ipcMain.handle("tags:list", () => getIllustrationTags());
+  ipcMain.handle("tags:generate-ja", (_event, request: TagDescriptionRequest) => generateTagJapaneseDescription(request));
+  ipcMain.handle("tags:translate-en", (_event, request: TagTranslationRequest) => translateTagDescription(request));
+  ipcMain.handle("tags:save", (_event, request: SaveIllustrationTagRequest) => saveIllustrationTag(request));
+  ipcMain.handle("tags:delete", (_event, id: string) => deleteIllustrationTag(id));
   ipcMain.handle("ollama:status", (_event, ollamaUrl?: string) => getOllamaStatus(ollamaUrl));
   ipcMain.handle("ollama:start", () => startOllama());
   ipcMain.handle("ollama:stop", () => stopOllama());

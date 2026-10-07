@@ -19,6 +19,7 @@ import {
 import type {
   CivitaiModelCard,
   DownloadRequest,
+  IllustrationTag,
   LlmChatMessage,
   OllamaStatus,
   RuntimePaths,
@@ -85,6 +86,14 @@ function App() {
   const [llmCatalogQuery, setLlmCatalogQuery] = useState("");
   const [llmPrompt, setLlmPrompt] = useState("");
   const [llmChatHistory, setLlmChatHistory] = useState<LlmChatMessage[]>([]);
+  const [illustrationTags, setIllustrationTags] = useState<IllustrationTag[]>([]);
+  const [selectedTagIds, setSelectedTagIds] = useState<string[]>([]);
+  const [tagDialogOpen, setTagDialogOpen] = useState(false);
+  const [tagEditingId, setTagEditingId] = useState<string | null>(null);
+  const [tagName, setTagName] = useState("");
+  const [tagPrompt, setTagPrompt] = useState("");
+  const [tagJapaneseDescription, setTagJapaneseDescription] = useState("");
+  const [tagEnglishDescription, setTagEnglishDescription] = useState("");
   const [japanesePrompt, setJapanesePrompt] = useState("");
   const [promptNotes, setPromptNotes] = useState("");
   const [selectedCheckpoint, setSelectedCheckpoint] = useState("");
@@ -105,6 +114,14 @@ function App() {
     () => status?.checkpoints.find((checkpoint) => checkpoint.name === selectedCheckpoint) ?? null,
     [selectedCheckpoint, status?.checkpoints]
   );
+  const selectedTags = useMemo(
+    () => illustrationTags.filter((tag) => selectedTagIds.includes(tag.id)),
+    [illustrationTags, selectedTagIds]
+  );
+  const effectivePrompt = useMemo(() => {
+    const tagPromptText = selectedTags.map((tag) => tag.englishDescription).filter(Boolean).join(", ");
+    return [prompt, tagPromptText].filter((part) => part.trim()).join(", ");
+  }, [prompt, selectedTags]);
   const canGenerate = Boolean(status?.comfyReachable && selectedCheckpointInfo?.simpleWorkflowReady && !action.busy);
   const canDownloadLlm = Boolean(ollamaStatus?.reachable && ollamaStatus.dataLinked && ollamaModel.trim() && !action.busy);
   const canSendLlmPrompt = Boolean(ollamaStatus?.reachable && ollamaStatus.dataLinked && ollamaModel.trim() && llmPrompt.trim() && !action.busy);
@@ -145,6 +162,7 @@ function App() {
     void refreshStatus();
     void loadSettings();
     void loadLlmChatHistory();
+    void loadIllustrationTags();
   }, []);
 
   useEffect(() => {
@@ -382,6 +400,75 @@ function App() {
     });
   }
 
+  async function loadIllustrationTags(): Promise<void> {
+    setIllustrationTags(await window.illustMK.tags.list());
+  }
+
+  function openNewTagDialog(): void {
+    setTagEditingId(null);
+    setTagName("");
+    setTagPrompt("");
+    setTagJapaneseDescription("");
+    setTagEnglishDescription("");
+    setTagDialogOpen(true);
+  }
+
+  function openEditTagDialog(tag: IllustrationTag): void {
+    setTagEditingId(tag.id);
+    setTagName(tag.name);
+    setTagPrompt(tag.sourcePrompt);
+    setTagJapaneseDescription(tag.japaneseDescription);
+    setTagEnglishDescription(tag.englishDescription);
+    setTagDialogOpen(true);
+  }
+
+  async function runTagJapaneseGeneration(): Promise<void> {
+    await runAction(
+      "タグ説明文を生成中",
+      () => window.illustMK.tags.generateJapanese({ ollamaUrl, model: ollamaModel, tagName, prompt: tagPrompt }),
+      (description) => {
+        setTagJapaneseDescription(description);
+      }
+    );
+  }
+
+  async function saveTagFromDialog(): Promise<void> {
+    await runAction(
+      "タグを保存中",
+      async () => {
+        const englishDescription = await window.illustMK.tags.translateEnglish({
+          ollamaUrl,
+          model: ollamaModel,
+          japaneseDescription: tagJapaneseDescription
+        });
+        setTagEnglishDescription(englishDescription);
+        return window.illustMK.tags.save({
+          id: tagEditingId ?? undefined,
+          name: tagName,
+          sourcePrompt: tagPrompt,
+          japaneseDescription: tagJapaneseDescription,
+          englishDescription
+        });
+      },
+      (tags) => {
+        setIllustrationTags(tags);
+        setTagDialogOpen(false);
+      }
+    );
+  }
+
+  async function deleteIllustrationTag(id: string): Promise<void> {
+    if (!window.confirm("タグを削除します。元に戻せません。")) return;
+    await runAction("タグを削除中", () => window.illustMK.tags.delete(id), (tags) => {
+      setIllustrationTags(tags);
+      setSelectedTagIds((current) => current.filter((tagId) => tagId !== id));
+    });
+  }
+
+  function toggleIllustrationTag(id: string): void {
+    setSelectedTagIds((current) => (current.includes(id) ? current.filter((tagId) => tagId !== id) : [...current, id]));
+  }
+
   async function enhanceJapanesePrompt(): Promise<void> {
     await runAction(
       "日本語プロンプトを生成向けに変換中",
@@ -418,7 +505,7 @@ function App() {
   };
 
   const testRequest: TestGenerationRequest = {
-    prompt,
+    prompt: effectivePrompt,
     negativePrompt,
     checkpoint: selectedCheckpoint,
     width: 768,
@@ -910,6 +997,37 @@ function App() {
               disabledReason={enhancePromptDisabledReason}
               onEnhance={() => void enhanceJapanesePrompt()}
             />
+            <div className="tag-builder">
+              <div className="tag-builder-header">
+                <div>
+                  <h2>タグ</h2>
+                  <p>{selectedTags.length ? `${selectedTags.length}件を生成promptへ追加` : "選択したタグの英訳説明文を生成promptへ追加します。"}</p>
+                </div>
+                <button onClick={openNewTagDialog}>
+                  <WandSparkles size={17} />
+                  タグ追加
+                </button>
+              </div>
+              <div className="tag-chip-list">
+                {illustrationTags.length ? (
+                  illustrationTags.map((tag) => (
+                    <div className={selectedTagIds.includes(tag.id) ? "tag-chip selected" : "tag-chip"} key={tag.id}>
+                      <button onClick={() => toggleIllustrationTag(tag.id)}>
+                        <span>{tag.name}</span>
+                      </button>
+                      <button className="icon-button" onClick={() => openEditTagDialog(tag)} title="編集">
+                        <Bot size={15} />
+                      </button>
+                      <button className="icon-button danger" onClick={() => void deleteIllustrationTag(tag.id)} title="削除">
+                        <Trash2 size={15} />
+                      </button>
+                    </div>
+                  ))
+                ) : (
+                  <p className="empty">まだタグがありません。</p>
+                )}
+              </div>
+            </div>
             <div className="field">
               <label>Checkpoint</label>
               <select value={selectedCheckpoint} onChange={(event) => setSelectedCheckpoint(event.target.value)}>
@@ -949,6 +1067,62 @@ function App() {
           </section>
         </section>
       )}
+      {tagDialogOpen ? (
+        <div className="modal-backdrop">
+          <section className="modal-panel tag-modal">
+            <div className="modal-header">
+              <PanelTitle icon={<WandSparkles size={18} />} title={tagEditingId ? "タグ編集" : "タグ追加"} />
+              <button className="icon-button" onClick={() => setTagDialogOpen(false)} title="閉じる">
+                <Square size={16} />
+              </button>
+            </div>
+            <div className="two-columns">
+              <div className="field">
+                <label>タグ名</label>
+                <input placeholder="制服" value={tagName} onChange={(event) => setTagName(event.target.value)} />
+              </div>
+              <div className="field">
+                <label>LLM Model</label>
+                <input value={ollamaModel} onChange={(event) => setOllamaModel(event.target.value)} />
+              </div>
+            </div>
+            <div className="field">
+              <label>プロンプト</label>
+              <textarea
+                placeholder="例: セーラー服をイラストとして描く時の重要なディテールをまとめて。"
+                value={tagPrompt}
+                onChange={(event) => setTagPrompt(event.target.value)}
+              />
+            </div>
+            <button className="primary" disabled={action.busy || !tagName.trim() || !tagPrompt.trim()} onClick={() => void runTagJapaneseGeneration()}>
+              <Bot size={17} />
+              実行
+            </button>
+            <div className="field">
+              <label>日本語説明文</label>
+              <textarea
+                className="tag-description"
+                placeholder="LLMの結果がここに表示されます。手編集できます。"
+                value={tagJapaneseDescription}
+                onChange={(event) => setTagJapaneseDescription(event.target.value)}
+              />
+            </div>
+            {tagEnglishDescription ? (
+              <div className="field">
+                <label>英訳説明文</label>
+                <textarea className="tag-description" value={tagEnglishDescription} onChange={(event) => setTagEnglishDescription(event.target.value)} />
+              </div>
+            ) : null}
+            <div className="modal-actions">
+              <button onClick={() => setTagDialogOpen(false)}>キャンセル</button>
+              <button className="primary" disabled={action.busy || !tagName.trim() || !tagPrompt.trim() || !tagJapaneseDescription.trim()} onClick={() => void saveTagFromDialog()}>
+                <CheckCircle2 size={17} />
+                保存
+              </button>
+            </div>
+          </section>
+        </div>
+      ) : null}
       <section className="log-dock global-log">
         <LogPanel
           action={action}
