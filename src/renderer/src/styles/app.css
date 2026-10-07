@@ -266,6 +266,14 @@ label {
   align-items: start;
 }
 
+.llm-workbench-layout {
+  display: grid;
+  grid-template-columns: minmax(520px, 1.2fr) minmax(360px, 0.8fr);
+  gap: 14px;
+  margin-top: 14px;
+  align-items: start;
+}
+
 .panel {
   border: 1px solid #18294d;
   border-radius: 8px;
@@ -382,6 +390,15 @@ label {
   line-height: 1.45;
   margin: 6px 0;
   overflow-wrap: anywhere;
+}
+
+.result-message.ready {
+  color: #7fe4ff;
+}
+
+.prompt-transform {
+  display: grid;
+  gap: 12px;
 }
 
 .model-list {

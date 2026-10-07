@@ -93,7 +93,7 @@ function App() {
   const [logs, setLogs] = useState<LogLine[]>([]);
   const [autoFollowLogs, setAutoFollowLogs] = useState(true);
   const [downloadProgress, setDownloadProgress] = useState<number | null>(null);
-  const [mainTab, setMainTab] = useState<"environment" | "generate">("environment");
+  const [mainTab, setMainTab] = useState<"environment" | "llm" | "generate">("environment");
   const [runtimeTab, setRuntimeTab] = useState<"macos" | "docker">("macos");
   const logViewRef = useRef<HTMLDivElement | null>(null);
   const currentOperationId = useRef<string | null>(null);
@@ -104,6 +104,15 @@ function App() {
   );
   const canGenerate = Boolean(status?.comfyReachable && selectedCheckpointInfo?.simpleWorkflowReady && !action.busy);
   const canDownloadLlm = Boolean(ollamaStatus?.reachable && ollamaStatus.dataLinked && ollamaModel.trim() && !action.busy);
+  const canEnhancePrompt = Boolean(ollamaStatus?.reachable && ollamaStatus.dataLinked && ollamaModel.trim() && japanesePrompt.trim() && !action.busy);
+  const enhancePromptDisabledReason = useMemo(() => {
+    if (action.busy) return "処理中です。";
+    if (!ollamaStatus?.reachable) return "Ollama APIが未接続です。";
+    if (!ollamaStatus.dataLinked) return "Ollama保存先がDataPathに切替わっていません。";
+    if (!ollamaModel.trim()) return "LLMモデルを選択してください。";
+    if (!japanesePrompt.trim()) return "日本語プロンプトを入力してください。";
+    return "変換できます。";
+  }, [action.busy, japanesePrompt, ollamaModel, ollamaStatus]);
   const filteredLlmModels = useMemo(() => {
     const query = llmCatalogQuery.trim().toLowerCase();
     if (!query) return recommendedLlmModels;
@@ -412,6 +421,9 @@ function App() {
       <nav className="main-tabs">
         <button className={mainTab === "environment" ? "tab active" : "tab"} onClick={() => setMainTab("environment")}>
           環境
+        </button>
+        <button className={mainTab === "llm" ? "tab active" : "tab"} onClick={() => setMainTab("llm")}>
+          LLM
         </button>
         <button className={mainTab === "generate" ? "tab active" : "tab"} onClick={() => setMainTab("generate")}>
           生成
@@ -778,6 +790,90 @@ function App() {
             </div>
           </section>
         </section>
+      ) : mainTab === "llm" ? (
+        <section className="llm-workbench-layout">
+          <section className="panel prompt-panel">
+            <PanelTitle icon={<Bot size={18} />} title="プロンプト変換テスト" />
+            <PromptTransformPanel
+              japanesePrompt={japanesePrompt}
+              setJapanesePrompt={setJapanesePrompt}
+              prompt={prompt}
+              setPrompt={setPrompt}
+              negativePrompt={negativePrompt}
+              setNegativePrompt={setNegativePrompt}
+              promptNotes={promptNotes}
+              canEnhancePrompt={canEnhancePrompt}
+              disabledReason={enhancePromptDisabledReason}
+              onEnhance={() => void enhanceJapanesePrompt()}
+            />
+          </section>
+          <section className="panel llm-test-panel">
+            <PanelTitle icon={<Bot size={18} />} title="LLM接続" />
+            <div className="status-grid compact">
+              <div>
+                <span>Ollama.app</span>
+                <strong>{ollamaStatus?.installed ? "検出" : "未検出"}</strong>
+              </div>
+              <div>
+                <span>API</span>
+                <strong>{ollamaStatus?.reachable ? "接続OK" : "未接続"}</strong>
+              </div>
+              <div>
+                <span>DataPath</span>
+                <strong>{ollamaStatus?.dataLinked ? "OK" : "未切替"}</strong>
+              </div>
+              <div>
+                <span>Models</span>
+                <strong>{ollamaStatus?.models.length ?? 0}</strong>
+              </div>
+            </div>
+            <div className="field">
+              <label>Ollama API</label>
+              <div className="inline">
+                <input value={ollamaUrl} onChange={(event) => setOllamaUrl(event.target.value)} />
+                <button className="icon-button" onClick={() => void refreshOllamaStatus()} title="再確認">
+                  <RefreshCw size={17} />
+                </button>
+              </div>
+            </div>
+            <div className="field">
+              <label>LLM Model</label>
+              <input list="llm-models" value={ollamaModel} onChange={(event) => setOllamaModel(event.target.value)} />
+              <datalist id="llm-models">
+                {recommendedLlmModels.map((model) => (
+                  <option key={model.name} value={model.name} />
+                ))}
+              </datalist>
+            </div>
+            <div className="button-grid">
+              <button onClick={() => void runAction("Ollamaを起動中", () => window.illustMK.ollama.start(), () => void refreshOllamaStatus())}>
+                <Play size={17} />
+                起動
+              </button>
+              <button onClick={() => void saveSettings()}>
+                <CheckCircle2 size={17} />
+                保存
+              </button>
+            </div>
+            <div className="paths">
+              <p>保存先: {ollamaStatus?.modelPath ?? paths?.ollamaModels ?? "/Volumes/ARC-8050T2/illustMK/llm/ollama/models"}</p>
+              <p>状態: {enhancePromptDisabledReason}</p>
+            </div>
+            <div className="model-list">
+              <h2>DL済みLLM</h2>
+              {ollamaStatus?.models.length ? (
+                ollamaStatus.models.map((model) => (
+                  <button className={ollamaModel === model.name ? "model selected" : "model"} key={model.name} onClick={() => setOllamaModel(model.name)}>
+                    <span>{model.name}</span>
+                    <small>{model.sizeLabel}</small>
+                  </button>
+                ))
+              ) : (
+                <p className="empty">{ollamaStatus?.message ?? "Ollamaの状態を確認してください。"}</p>
+              )}
+            </div>
+          </section>
+        </section>
       ) : (
         <section className="generate-layout">
           <section className="panel preview-panel">
@@ -795,19 +891,18 @@ function App() {
           </section>
 
           <section className="panel generate-panel">
-            <div className="field">
-              <label>Japanese Prompt</label>
-              <textarea
-                placeholder="例: 夕方の教室で、青緑のツインテールの女子高生。少し照れている感じ。"
-                value={japanesePrompt}
-                onChange={(event) => setJapanesePrompt(event.target.value)}
-              />
-            </div>
-            <button className="primary" disabled={action.busy || !japanesePrompt.trim()} onClick={() => void enhanceJapanesePrompt()}>
-              <Bot size={17} />
-              日本語から生成promptへ変換
-            </button>
-            {promptNotes ? <p className="result-message">{promptNotes}</p> : null}
+            <PromptTransformPanel
+              japanesePrompt={japanesePrompt}
+              setJapanesePrompt={setJapanesePrompt}
+              prompt={prompt}
+              setPrompt={setPrompt}
+              negativePrompt={negativePrompt}
+              setNegativePrompt={setNegativePrompt}
+              promptNotes={promptNotes}
+              canEnhancePrompt={canEnhancePrompt}
+              disabledReason={enhancePromptDisabledReason}
+              onEnhance={() => void enhanceJapanesePrompt()}
+            />
             <div className="field">
               <label>Checkpoint</label>
               <select value={selectedCheckpoint} onChange={(event) => setSelectedCheckpoint(event.target.value)}>
@@ -821,14 +916,6 @@ function App() {
                   <option value="">未追加</option>
                 )}
               </select>
-            </div>
-            <div className="field">
-              <label>Positive Prompt</label>
-              <textarea value={prompt} onChange={(event) => setPrompt(event.target.value)} />
-            </div>
-            <div className="field">
-              <label>Negative Prompt</label>
-              <textarea value={negativePrompt} onChange={(event) => setNegativePrompt(event.target.value)} />
             </div>
 
             <button
@@ -876,6 +963,57 @@ function PanelTitle({ icon, title }: { icon: React.ReactNode; title: string }) {
     <div className="panel-title">
       {icon}
       <h2>{title}</h2>
+    </div>
+  );
+}
+
+function PromptTransformPanel({
+  japanesePrompt,
+  setJapanesePrompt,
+  prompt,
+  setPrompt,
+  negativePrompt,
+  setNegativePrompt,
+  promptNotes,
+  canEnhancePrompt,
+  disabledReason,
+  onEnhance
+}: {
+  japanesePrompt: string;
+  setJapanesePrompt: (value: string) => void;
+  prompt: string;
+  setPrompt: (value: string) => void;
+  negativePrompt: string;
+  setNegativePrompt: (value: string) => void;
+  promptNotes: string;
+  canEnhancePrompt: boolean;
+  disabledReason: string;
+  onEnhance: () => void;
+}) {
+  return (
+    <div className="prompt-transform">
+      <div className="field">
+        <label>Japanese Prompt</label>
+        <textarea
+          placeholder="例: 夕方の教室で、青緑のツインテールの女子高生。少し照れている感じ。"
+          value={japanesePrompt}
+          onChange={(event) => setJapanesePrompt(event.target.value)}
+        />
+      </div>
+      <button className="primary" disabled={!canEnhancePrompt} title={disabledReason} onClick={onEnhance}>
+        <Bot size={17} />
+        日本語から生成promptへ変換
+      </button>
+      <p className={canEnhancePrompt ? "result-message ready" : "result-message"}>{disabledReason}</p>
+      {promptNotes ? <p className="result-message">{promptNotes}</p> : null}
+      <div className="field">
+        <label>Positive Prompt</label>
+        <textarea value={prompt} onChange={(event) => setPrompt(event.target.value)} />
+      </div>
+      <div className="field">
+        <label>Negative Prompt</label>
+        <textarea value={negativePrompt} onChange={(event) => setNegativePrompt(event.target.value)} />
+      </div>
     </div>
   );
 }
