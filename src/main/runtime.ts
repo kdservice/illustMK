@@ -106,6 +106,7 @@ export type CivitaiModelCard = {
 
 export type AppSettings = {
   civitaiApiKey: string;
+  huggingFaceApiKey: string;
   ollamaUrl: string;
   ollamaModel: string;
 };
@@ -236,11 +237,12 @@ export async function getAppSettings(): Promise<AppSettings> {
     const parsed = JSON.parse(text) as Partial<AppSettings>;
     return {
       civitaiApiKey: parsed.civitaiApiKey ?? "",
+      huggingFaceApiKey: parsed.huggingFaceApiKey ?? "",
       ollamaUrl: parsed.ollamaUrl ?? "http://127.0.0.1:11434",
       ollamaModel: parsed.ollamaModel ?? "qwen2.5:3b-instruct"
     };
   } catch {
-    return { civitaiApiKey: "", ollamaUrl: "http://127.0.0.1:11434", ollamaModel: "qwen2.5:3b-instruct" };
+    return { civitaiApiKey: "", huggingFaceApiKey: "", ollamaUrl: "http://127.0.0.1:11434", ollamaModel: "qwen2.5:3b-instruct" };
   }
 }
 
@@ -248,6 +250,7 @@ export async function saveAppSettings(settings: AppSettings): Promise<AppSetting
   await mkdir(appDataRoot, { recursive: true });
   const safeSettings: AppSettings = {
     civitaiApiKey: settings.civitaiApiKey.trim(),
+    huggingFaceApiKey: settings.huggingFaceApiKey.trim(),
     ollamaUrl: settings.ollamaUrl.trim() || "http://127.0.0.1:11434",
     ollamaModel: settings.ollamaModel.trim() || "qwen2.5:3b-instruct"
   };
@@ -859,6 +862,11 @@ export async function enhancePromptWithOllama(request: PromptEnhanceRequest): Pr
 async function civitaiAuthHeader(): Promise<Record<string, string>> {
   const settings = await getAppSettings();
   return settings.civitaiApiKey ? { Authorization: `Bearer ${settings.civitaiApiKey}` } : {};
+}
+
+async function huggingFaceAuthHeader(): Promise<Record<string, string>> {
+  const settings = await getAppSettings();
+  return settings.huggingFaceApiKey ? { Authorization: `Bearer ${settings.huggingFaceApiKey}` } : {};
 }
 
 async function withCivitaiToken(url: URL): Promise<URL> {

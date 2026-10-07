@@ -188,7 +188,7 @@ label {
 
 .environment-layout {
   display: grid;
-  grid-template-columns: 360px minmax(420px, 1fr) 420px;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 14px;
   margin-top: 14px;
 }

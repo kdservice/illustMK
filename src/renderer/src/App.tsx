@@ -77,6 +77,7 @@ function App() {
   const [catalogPeriod, setCatalogPeriod] = useState<"Month" | "AllTime">("Month");
   const [baseFilters, setBaseFilters] = useState<string[]>(defaultBaseFilters);
   const [civitaiApiKey, setCivitaiApiKey] = useState("");
+  const [huggingFaceApiKey, setHuggingFaceApiKey] = useState("");
   const [ollamaUrl, setOllamaUrl] = useState("http://127.0.0.1:11434");
   const [ollamaModel, setOllamaModel] = useState("qwen2.5:3b-instruct");
   const [ollamaStatus, setOllamaStatus] = useState<OllamaStatus | null>(null);
@@ -314,13 +315,16 @@ function App() {
   async function loadSettings(): Promise<void> {
     const settings = await window.illustMK.settings.get();
     setCivitaiApiKey(settings.civitaiApiKey);
+    setHuggingFaceApiKey(settings.huggingFaceApiKey);
     setOllamaUrl(settings.ollamaUrl);
     setOllamaModel(settings.ollamaModel);
     setOllamaStatus(await window.illustMK.ollama.status(settings.ollamaUrl));
   }
 
   async function saveSettings(): Promise<void> {
-    await runAction("設定を保存中", () => window.illustMK.settings.save({ civitaiApiKey, ollamaUrl, ollamaModel }));
+    await runAction("設定を保存中", () =>
+      window.illustMK.settings.save({ civitaiApiKey, huggingFaceApiKey, ollamaUrl, ollamaModel })
+    );
   }
 
   async function enhanceJapanesePrompt(): Promise<void> {
@@ -596,6 +600,20 @@ function App() {
                   placeholder="任意。必要なモデル取得時に使用"
                   value={civitaiApiKey}
                   onChange={(event) => setCivitaiApiKey(event.target.value)}
+                />
+                <button className="icon-button" onClick={() => void saveSettings()} title="保存">
+                  <CheckCircle2 size={17} />
+                </button>
+              </div>
+            </div>
+            <div className="field">
+              <label>Hugging Face API Key</label>
+              <div className="inline">
+                <input
+                  type="password"
+                  placeholder="任意。HF検索/取得で必要な時に使用"
+                  value={huggingFaceApiKey}
+                  onChange={(event) => setHuggingFaceApiKey(event.target.value)}
                 />
                 <button className="icon-button" onClick={() => void saveSettings()} title="保存">
                   <CheckCircle2 size={17} />
