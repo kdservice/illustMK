@@ -103,7 +103,7 @@ function App() {
     [selectedCheckpoint, status?.checkpoints]
   );
   const canGenerate = Boolean(status?.comfyReachable && selectedCheckpointInfo?.simpleWorkflowReady && !action.busy);
-  const canDownloadLlm = Boolean(ollamaStatus?.reachable && ollamaModel.trim() && !action.busy);
+  const canDownloadLlm = Boolean(ollamaStatus?.reachable && ollamaStatus.dataLinked && ollamaModel.trim() && !action.busy);
   const filteredLlmModels = useMemo(() => {
     const query = llmCatalogQuery.trim().toLowerCase();
     if (!query) return recommendedLlmModels;
@@ -192,9 +192,12 @@ function App() {
   }
 
   async function runOllamaPull(modelName = ollamaModel): Promise<void> {
-    if (!ollamaStatus?.reachable) {
-      appendLog("stderr", "Ollama APIに未接続です。先に「起動」を実行してください。");
-      setAction({ busy: false, message: "Ollama未接続", error: "Ollama APIに未接続です。先に「起動」を実行してください。" });
+    if (!ollamaStatus?.reachable || !ollamaStatus.dataLinked) {
+      const errorText = !ollamaStatus?.dataLinked
+        ? "Ollama保存先がDataPathに向いていません。先に「起動」を実行してください。"
+        : "Ollama APIに未接続です。先に「起動」を実行してください。";
+      appendLog("stderr", errorText);
+      setAction({ busy: false, message: "Ollama未接続", error: errorText });
       return;
     }
     const id = crypto.randomUUID();
@@ -491,6 +494,10 @@ function App() {
                 <span>API</span>
                 <strong>{ollamaStatus?.reachable ? "接続OK" : "未接続"}</strong>
               </div>
+              <div>
+                <span>DataPath</span>
+                <strong>{ollamaStatus?.dataLinked ? "OK" : "未切替"}</strong>
+              </div>
             </div>
             <div className="field">
               <label>Ollama API</label>
@@ -537,7 +544,7 @@ function App() {
                 <Square size={17} />
                 停止
               </button>
-              <button onClick={() => void runOllamaPull()} disabled={!canDownloadLlm} title={ollamaStatus?.reachable ? "Download" : "先にOllamaを起動してください"}>
+              <button onClick={() => void runOllamaPull()} disabled={!canDownloadLlm} title={canDownloadLlm ? "Download" : "先にOllamaを起動してください"}>
                 <Download size={17} />
                 Download
               </button>
@@ -580,7 +587,7 @@ function App() {
                     <small>{model.source} / {model.size}</small>
                   </button>
                   <p>{model.note}</p>
-                  <button disabled={!ollamaStatus?.reachable || action.busy} onClick={() => void runOllamaPull(model.name)}>
+                  <button disabled={!ollamaStatus?.reachable || !ollamaStatus.dataLinked || action.busy} onClick={() => void runOllamaPull(model.name)}>
                     <Download size={15} />
                     Download
                   </button>
@@ -934,7 +941,7 @@ function StatusGrid({ status, ollamaStatus }: { status: RuntimeStatus | null; ol
     ["Runtime", status?.pathsReady ? "OK" : "未初期化"],
     ["ComfyUI", status?.comfyReachable ? "接続中" : "未接続"],
     ["Image Models", `${status?.checkpoints.length ?? 0}`],
-    ["Ollama", ollamaStatus?.reachable ? "接続OK" : ollamaStatus?.installed ? "未起動" : "未検出"],
+    ["Ollama", ollamaStatus?.reachable && ollamaStatus.dataLinked ? "接続OK" : ollamaStatus?.reachable ? "保存先NG" : ollamaStatus?.installed ? "未起動" : "未検出"],
     ["LLM Models", `${ollamaStatus?.models.length ?? 0}`]
   ];
 

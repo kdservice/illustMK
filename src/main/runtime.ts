@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { closeSync, createReadStream, createWriteStream, openSync } from "node:fs";
-import { access, mkdir, readFile, readdir, rm, stat, unlink, writeFile } from "node:fs/promises";
-import { basename, join } from "node:path";
+import { access, cp, lstat, mkdir, readFile, readlink, readdir, rename, rm, stat, symlink, unlink, writeFile } from "node:fs/promises";
+import { basename, join, resolve } from "node:path";
 import { homedir } from "node:os";
 import { Transform } from "node:stream";
 import { pipeline } from "node:stream/promises";
@@ -128,6 +128,7 @@ export type OllamaStatus = {
   reachable: boolean;
   installed: boolean;
   appPath: string | null;
+  dataLinked: boolean;
   modelPath: string;
   models: OllamaModelInfo[];
   message: string | null;
@@ -182,6 +183,7 @@ let nativeProcess: ChildProcess | null = null;
 let ollamaProcess: ChildProcess | null = null;
 const dockerDesktopPaths = ["/Applications/Docker.app", "/Applications/Utilities/Docker.app"];
 const ollamaAppPaths = ["/Applications/Ollama.app", "/Applications/Utilities/Ollama.app", join(homedir(), "Applications", "Ollama.app")];
+const userOllamaHome = join(homedir(), ".ollama");
 const dockerDesktopBinPaths = dockerDesktopPaths.map((path) => join(path, "Contents", "Resources", "bin"));
 const dockerCommandPath = [
   ...dockerDesktopBinPaths,
@@ -689,6 +691,7 @@ export async function searchCivitaiModels(options: {
 export async function getOllamaStatus(ollamaUrl = "http://127.0.0.1:11434"): Promise<OllamaStatus> {
   const appPath = await findOllamaApp();
   const paths = getRuntimePaths();
+  const dataLinked = await isOllamaDataLinked();
   try {
     const response = await fetch(`${ollamaUrl.replace(/\/$/, "")}/api/tags`, { signal: AbortSignal.timeout(3000) });
     if (!response.ok) {
@@ -697,6 +700,7 @@ export async function getOllamaStatus(ollamaUrl = "http://127.0.0.1:11434"): Pro
         reachable: false,
         installed: Boolean(appPath),
         appPath,
+        dataLinked,
         modelPath: paths.ollamaModels,
         models: [],
         message: `Ollama API HTTP ${response.status}`
@@ -714,6 +718,7 @@ export async function getOllamaStatus(ollamaUrl = "http://127.0.0.1:11434"): Pro
       reachable: true,
       installed: Boolean(appPath),
       appPath,
+      dataLinked,
       modelPath: paths.ollamaModels,
       models,
       message: "Ollama API 接続OK"
@@ -724,6 +729,7 @@ export async function getOllamaStatus(ollamaUrl = "http://127.0.0.1:11434"): Pro
       reachable: false,
       installed: Boolean(appPath),
       appPath,
+      dataLinked,
       modelPath: paths.ollamaModels,
       models: [],
       message: normalizeCommandError(error)
@@ -733,8 +739,13 @@ export async function getOllamaStatus(ollamaUrl = "http://127.0.0.1:11434"): Pro
 
 export async function startOllama(): Promise<string> {
   const paths = await ensureRuntimeFiles();
-  if ((await getOllamaStatus()).reachable) {
+  const linked = await isOllamaDataLinked();
+  if ((await getOllamaStatus()).reachable && linked) {
     return "Ollama API は既に接続可能です。";
+  }
+  if (!linked) {
+    await stopOllama().catch(() => undefined);
+    await ensureOllamaDataLink();
   }
   const ollamaBin = await findOllamaBinary();
   if (ollamaBin) {
@@ -768,10 +779,13 @@ export async function startOllama(): Promise<string> {
 }
 
 export async function installOllama(onLog: RuntimeLogSink): Promise<string> {
+  await ensureRuntimeFiles();
+  await ensureOllamaDataLink(onLog);
+
   const current = await findOllamaApp();
   if (current) {
     onLog({ level: "info", line: `Ollama.app は既に存在します: ${current}` });
-    return "Ollama.app は既にインストール済みです。";
+    return `Ollama.app は既にインストール済みです。Ollamaデータ保存先: ${getRuntimePaths().ollama}`;
   }
 
   const paths = await ensureRuntimeFiles();
@@ -827,6 +841,7 @@ export async function uninstallOllama(onLog: RuntimeLogSink): Promise<string> {
 
 export async function deleteOllamaModelStorage(onLog: RuntimeLogSink): Promise<string> {
   await stopOllama().catch((error) => onLog({ level: "stderr", line: normalizeCommandError(error) }));
+  await ensureOllamaDataLink(onLog);
   const modelsPath = getRuntimePaths().ollamaModels;
   onLog({ level: "info", line: `Ollamaモデル保存先を削除します: ${modelsPath}` });
   await rm(modelsPath, { recursive: true, force: true });
@@ -838,6 +853,9 @@ export async function pullOllamaModel(ollamaUrl: string, model: string, onLog: R
   const modelName = model.trim();
   if (!modelName) throw new Error("Ollamaモデル名を入力してください。");
   const status = await getOllamaStatus(ollamaUrl);
+  if (!status.dataLinked) {
+    throw new Error("Ollama保存先がDataPathに向いていません。先にLLM / Ollamaパネルの「起動」を実行して保存先を切替えてください。");
+  }
   if (!status.reachable) {
     throw new Error("Ollama APIに接続できません。先にLLM / Ollamaパネルの「起動」を実行してください。");
   }
@@ -1206,6 +1224,104 @@ async function findOllamaBinary(): Promise<string | null> {
     if (await exists(candidate)) return candidate;
   }
   return null;
+}
+
+async function isOllamaDataLinked(): Promise<boolean> {
+  try {
+    const entry = await lstat(userOllamaHome);
+    if (!entry.isSymbolicLink()) return false;
+    const target = await readlink(userOllamaHome);
+    return resolve(homedir(), target) === resolve(getRuntimePaths().ollama);
+  } catch {
+    return false;
+  }
+}
+
+async function ensureOllamaDataLink(onLog: RuntimeLogSink = () => undefined): Promise<void> {
+  const paths = getRuntimePaths();
+  await mkdir(paths.ollama, { recursive: true });
+  await mkdir(join(paths.ollama, "logs"), { recursive: true });
+
+  if (await isOllamaDataLinked()) {
+    onLog({ level: "info", line: `Ollamaデータ保存先は設定済みです: ${userOllamaHome} -> ${paths.ollama}` });
+    return;
+  }
+
+  let homeEntry;
+  try {
+    homeEntry = await lstat(userOllamaHome);
+  } catch {
+    await symlink(paths.ollama, userOllamaHome, "dir");
+    onLog({ level: "info", line: `Ollamaデータ保存先を作成しました: ${userOllamaHome} -> ${paths.ollama}` });
+    return;
+  }
+
+  const backupRoot = join(paths.ollama, `previous-dot-ollama-${timestampForPath()}`);
+  if (homeEntry.isSymbolicLink()) {
+    await movePathCrossDevice(userOllamaHome, backupRoot);
+    await symlink(paths.ollama, userOllamaHome, "dir");
+    onLog({ level: "info", line: `既存の ~/.ollama リンクを退避しました: ${backupRoot}` });
+    onLog({ level: "info", line: `Ollamaデータ保存先を切替えました: ${userOllamaHome} -> ${paths.ollama}` });
+    return;
+  }
+
+  if (homeEntry.isDirectory()) {
+    onLog({ level: "info", line: `既存の ~/.ollama を外部DataPathへ移動します: ${paths.ollama}` });
+    await mergeDirectoryIntoTarget(userOllamaHome, paths.ollama, backupRoot, onLog);
+    await rm(userOllamaHome, { recursive: true, force: true });
+    await symlink(paths.ollama, userOllamaHome, "dir");
+    onLog({ level: "info", line: `Ollamaデータ保存先を切替えました: ${userOllamaHome} -> ${paths.ollama}` });
+    return;
+  }
+
+  await movePathCrossDevice(userOllamaHome, backupRoot);
+  await symlink(paths.ollama, userOllamaHome, "dir");
+  onLog({ level: "info", line: `既存の ~/.ollama を退避しました: ${backupRoot}` });
+  onLog({ level: "info", line: `Ollamaデータ保存先を切替えました: ${userOllamaHome} -> ${paths.ollama}` });
+}
+
+async function mergeDirectoryIntoTarget(source: string, target: string, backupRoot: string, onLog: RuntimeLogSink): Promise<void> {
+  await mkdir(target, { recursive: true });
+  const entries = await readdir(source);
+  for (const entry of entries) {
+    const sourcePath = join(source, entry);
+    const targetPath = join(target, entry);
+    if (!(await exists(targetPath))) {
+      await movePathCrossDevice(sourcePath, targetPath);
+      continue;
+    }
+
+    const [sourceEntry, targetEntry] = await Promise.all([lstat(sourcePath), lstat(targetPath)]);
+    if (sourceEntry.isDirectory() && targetEntry.isDirectory()) {
+      await mergeDirectoryIntoTarget(sourcePath, targetPath, join(backupRoot, entry), onLog);
+      await rm(sourcePath, { recursive: true, force: true });
+      continue;
+    }
+
+    const backupPath = join(backupRoot, entry);
+    await mkdir(backupRoot, { recursive: true });
+    await movePathCrossDevice(sourcePath, backupPath);
+    onLog({ level: "info", line: `同名ファイルを退避しました: ${backupPath}` });
+  }
+}
+
+async function movePathCrossDevice(source: string, target: string): Promise<void> {
+  await mkdir(resolve(target, ".."), { recursive: true });
+  try {
+    await rename(source, target);
+  } catch (error) {
+    if (!isCrossDeviceError(error)) throw error;
+    await cp(source, target, { recursive: true, errorOnExist: true, force: false, preserveTimestamps: true });
+    await rm(source, { recursive: true, force: true });
+  }
+}
+
+function isCrossDeviceError(error: unknown): boolean {
+  return Boolean(error && typeof error === "object" && "code" in error && (error as { code?: string }).code === "EXDEV");
+}
+
+function timestampForPath(): string {
+  return new Date().toISOString().replace(/[:.]/g, "-");
 }
 
 async function listFiles(path: string): Promise<string[]> {
