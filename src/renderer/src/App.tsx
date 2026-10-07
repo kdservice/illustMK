@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import {
   Boxes,
+  Bot,
   CheckCircle2,
   CircleAlert,
   Download,
@@ -18,6 +19,8 @@ import {
 import type {
   CivitaiModelCard,
   DownloadRequest,
+  LlmChatMessage,
+  OllamaStatus,
   RuntimePaths,
   RuntimeStatus,
   TestGenerationRequest,
@@ -50,6 +53,17 @@ const allBaseFilters = [
   { name: "Flux", status: "現在は非対応" },
   { name: "Qwen Image", status: "現在は非対応" }
 ];
+const recommendedLlmModels = [
+  { name: "qwen2.5:3b-instruct", source: "Ollama", size: "軽量", note: "まず試す用。日本語もそこそこ。" },
+  { name: "qwen2.5:7b-instruct", source: "Ollama", size: "標準", note: "日本語prompt整形の本命寄り。" },
+  { name: "gemma3:4b", source: "Ollama", size: "軽量", note: "4B級の候補。応答が軽い。" },
+  {
+    name: "hf.co/soyaakinohara/Spark-X2.5-4B-Heretic-JP-GGUF",
+    source: "Hugging Face GGUF",
+    size: "軽量",
+    note: "日本語性能狙い。Ollamaのhf.co指定で取得を試す候補。"
+  }
+];
 
 function App() {
   const [paths, setPaths] = useState<RuntimePaths | null>(null);
@@ -64,6 +78,15 @@ function App() {
   const [catalogPeriod, setCatalogPeriod] = useState<"Month" | "AllTime">("Month");
   const [baseFilters, setBaseFilters] = useState<string[]>(defaultBaseFilters);
   const [civitaiApiKey, setCivitaiApiKey] = useState("");
+  const [huggingFaceApiKey, setHuggingFaceApiKey] = useState("");
+  const [ollamaUrl, setOllamaUrl] = useState("http://127.0.0.1:11434");
+  const [ollamaModel, setOllamaModel] = useState("qwen2.5:3b-instruct");
+  const [ollamaStatus, setOllamaStatus] = useState<OllamaStatus | null>(null);
+  const [llmCatalogQuery, setLlmCatalogQuery] = useState("");
+  const [llmPrompt, setLlmPrompt] = useState("");
+  const [llmChatHistory, setLlmChatHistory] = useState<LlmChatMessage[]>([]);
+  const [japanesePrompt, setJapanesePrompt] = useState("");
+  const [promptNotes, setPromptNotes] = useState("");
   const [selectedCheckpoint, setSelectedCheckpoint] = useState("");
   const [prompt, setPrompt] = useState("masterpiece, best quality, 1girl, anime style, soft light");
   const [negativePrompt, setNegativePrompt] = useState("low quality, worst quality, blurry, bad anatomy");
@@ -73,7 +96,7 @@ function App() {
   const [logs, setLogs] = useState<LogLine[]>([]);
   const [autoFollowLogs, setAutoFollowLogs] = useState(true);
   const [downloadProgress, setDownloadProgress] = useState<number | null>(null);
-  const [mainTab, setMainTab] = useState<"environment" | "generate">("environment");
+  const [mainTab, setMainTab] = useState<"environment" | "llm" | "generate">("environment");
   const [runtimeTab, setRuntimeTab] = useState<"macos" | "docker">("macos");
   const logViewRef = useRef<HTMLDivElement | null>(null);
   const currentOperationId = useRef<string | null>(null);
@@ -83,6 +106,32 @@ function App() {
     [selectedCheckpoint, status?.checkpoints]
   );
   const canGenerate = Boolean(status?.comfyReachable && selectedCheckpointInfo?.simpleWorkflowReady && !action.busy);
+  const canDownloadLlm = Boolean(ollamaStatus?.reachable && ollamaStatus.dataLinked && ollamaModel.trim() && !action.busy);
+  const canSendLlmPrompt = Boolean(ollamaStatus?.reachable && ollamaStatus.dataLinked && ollamaModel.trim() && llmPrompt.trim() && !action.busy);
+  const llmPromptDisabledReason = useMemo(() => {
+    if (action.busy) return "処理中です。";
+    if (!ollamaStatus?.reachable) return "Ollama APIが未接続です。";
+    if (!ollamaStatus.dataLinked) return "Ollama保存先がDataPathに切替わっていません。";
+    if (!ollamaModel.trim()) return "LLMモデルを選択してください。";
+    if (!llmPrompt.trim()) return "LLMプロンプトを入力してください。";
+    return "送信できます。";
+  }, [action.busy, llmPrompt, ollamaModel, ollamaStatus]);
+  const canEnhancePrompt = Boolean(ollamaStatus?.reachable && ollamaStatus.dataLinked && ollamaModel.trim() && japanesePrompt.trim() && !action.busy);
+  const enhancePromptDisabledReason = useMemo(() => {
+    if (action.busy) return "処理中です。";
+    if (!ollamaStatus?.reachable) return "Ollama APIが未接続です。";
+    if (!ollamaStatus.dataLinked) return "Ollama保存先がDataPathに切替わっていません。";
+    if (!ollamaModel.trim()) return "LLMモデルを選択してください。";
+    if (!japanesePrompt.trim()) return "日本語プロンプトを入力してください。";
+    return "変換できます。";
+  }, [action.busy, japanesePrompt, ollamaModel, ollamaStatus]);
+  const filteredLlmModels = useMemo(() => {
+    const query = llmCatalogQuery.trim().toLowerCase();
+    if (!query) return recommendedLlmModels;
+    return recommendedLlmModels.filter((model) =>
+      [model.name, model.source, model.size, model.note].some((value) => value.toLowerCase().includes(query))
+    );
+  }, [llmCatalogQuery]);
 
   const stateLabel = useMemo(() => {
     if (!status) return "未確認";
@@ -95,6 +144,7 @@ function App() {
   useEffect(() => {
     void refreshStatus();
     void loadSettings();
+    void loadLlmChatHistory();
   }, []);
 
   useEffect(() => {
@@ -153,11 +203,41 @@ function App() {
       appendLog("info", result, id);
       setAction({ busy: false, message: "完了しました", error: null });
       await refreshStatus();
+      await refreshOllamaStatus();
     } catch (error) {
       const errorText = error instanceof Error ? error.message : String(error);
       appendLog("stderr", errorText, id);
       setAction({ busy: false, message: "失敗しました", error: errorText });
       await refreshStatus();
+      await refreshOllamaStatus();
+    }
+  }
+
+  async function runOllamaPull(modelName = ollamaModel): Promise<void> {
+    if (!ollamaStatus?.reachable || !ollamaStatus.dataLinked) {
+      const errorText = !ollamaStatus?.dataLinked
+        ? "Ollama保存先がDataPathに向いていません。先に「起動」を実行してください。"
+        : "Ollama APIに未接続です。先に「起動」を実行してください。";
+      appendLog("stderr", errorText);
+      setAction({ busy: false, message: "Ollama未接続", error: errorText });
+      return;
+    }
+    const id = crypto.randomUUID();
+    currentOperationId.current = id;
+    appendLog("info", `${modelName} をダウンロード中`, id);
+    setAction({ busy: true, message: "Ollamaモデルをpull中", error: null });
+    setDownloadProgress(null);
+    try {
+      setOllamaModel(modelName);
+      const result = await window.illustMK.runtime.runOperation({ id, operation: "ollama-pull", model: modelName, ollamaUrl });
+      appendLog("info", result, id);
+      setAction({ busy: false, message: "完了しました", error: null });
+      await refreshOllamaStatus();
+    } catch (error) {
+      const errorText = error instanceof Error ? error.message : String(error);
+      appendLog("stderr", errorText, id);
+      setAction({ busy: false, message: "失敗しました", error: errorText });
+      await refreshOllamaStatus();
     }
   }
 
@@ -260,13 +340,65 @@ function App() {
     setStatus(nextStatus);
   }
 
+  async function refreshOllamaStatus(): Promise<void> {
+    setOllamaStatus(await window.illustMK.ollama.status(ollamaUrl));
+  }
+
   async function loadSettings(): Promise<void> {
     const settings = await window.illustMK.settings.get();
     setCivitaiApiKey(settings.civitaiApiKey);
+    setHuggingFaceApiKey(settings.huggingFaceApiKey);
+    setOllamaUrl(settings.ollamaUrl);
+    setOllamaModel(settings.ollamaModel);
+    setOllamaStatus(await window.illustMK.ollama.status(settings.ollamaUrl));
   }
 
   async function saveSettings(): Promise<void> {
-    await runAction("Civitai APIキーを保存中", () => window.illustMK.settings.save({ civitaiApiKey }));
+    await runAction("設定を保存中", () =>
+      window.illustMK.settings.save({ civitaiApiKey, huggingFaceApiKey, ollamaUrl, ollamaModel })
+    );
+  }
+
+  async function loadLlmChatHistory(): Promise<void> {
+    setLlmChatHistory(await window.illustMK.ollama.chatHistory());
+  }
+
+  async function sendLlmPrompt(): Promise<void> {
+    const promptText = llmPrompt;
+    await runAction(
+      "LLMへプロンプトを送信中",
+      () => window.illustMK.ollama.chat({ ollamaUrl, model: ollamaModel, prompt: promptText }),
+      (history) => {
+        setLlmChatHistory(history);
+        setLlmPrompt("");
+      }
+    );
+  }
+
+  async function clearLlmChat(): Promise<void> {
+    if (!window.confirm("LLMチャット履歴を削除します。元に戻せません。")) return;
+    await runAction("LLMチャット履歴を削除中", () => window.illustMK.ollama.clearChatHistory(), (history) => {
+      setLlmChatHistory(history);
+    });
+  }
+
+  async function enhanceJapanesePrompt(): Promise<void> {
+    await runAction(
+      "日本語プロンプトを生成向けに変換中",
+      () =>
+        window.illustMK.ollama.enhancePrompt({
+          ollamaUrl,
+          model: ollamaModel,
+          japanesePrompt,
+          currentPrompt: prompt,
+          currentNegativePrompt: negativePrompt
+        }),
+      (result) => {
+        setPrompt(result.positivePrompt);
+        setNegativePrompt(result.negativePrompt);
+        setPromptNotes(result.notes);
+      }
+    );
   }
 
   function imageUrl(path: string): string {
@@ -305,15 +437,29 @@ function App() {
           <h1>illustMK</h1>
           <p>AI Illustration Studio</p>
         </div>
+        <div className={action.error ? "header-action error" : "header-action"}>
+          {action.error ? <CircleAlert size={16} /> : <CheckCircle2 size={16} />}
+          <div>
+            <strong>{action.message}</strong>
+            <span>{action.error ?? "ログは下段に集約"}</span>
+          </div>
+        </div>
         <div className="connection-pill">
           <span className={status?.comfyReachable ? "dot ready" : "dot"} />
           {stateLabel}
         </div>
       </header>
 
+      <section className="panel global-status-panel">
+        <StatusGrid status={status} ollamaStatus={ollamaStatus} />
+      </section>
+
       <nav className="main-tabs">
         <button className={mainTab === "environment" ? "tab active" : "tab"} onClick={() => setMainTab("environment")}>
           環境
+        </button>
+        <button className={mainTab === "llm" ? "tab active" : "tab"} onClick={() => setMainTab("llm")}>
+          LLM
         </button>
         <button className={mainTab === "generate" ? "tab active" : "tab"} onClick={() => setMainTab("generate")}>
           生成
@@ -323,7 +469,7 @@ function App() {
       {mainTab === "environment" ? (
         <section className="environment-layout">
           <section className="panel setup-panel">
-            <PanelTitle icon={<Server size={18} />} title="環境構築" />
+            <PanelTitle icon={<Server size={18} />} title="ComfyUI" />
             <div className="runtime-tabs">
               <button className={runtimeTab === "macos" ? "runtime-tab active" : "runtime-tab"} onClick={() => setRuntimeTab("macos")}>
                 macOS <span>{status?.activeRuntime === "macos" ? "ACTIVE" : ""}</span>
@@ -332,8 +478,6 @@ function App() {
                 Docker <span>LEGACY</span>
               </button>
             </div>
-            <StatusGrid status={status} />
-
             <div className="field">
               <label>ComfyUI API</label>
               <div className="inline">
@@ -385,17 +529,152 @@ function App() {
               <p>ランタイム: {paths?.root ?? "/Volumes/ARC-8050T2/illustMK"}</p>
               <p>macOS ComfyUI: {paths?.nativeComfy ?? "未初期化"}</p>
             </div>
+          </section>
 
-            <div className={action.error ? "action-log error" : "action-log"}>
-              {action.error ? <CircleAlert size={18} /> : <CheckCircle2 size={18} />}
+          <section className="panel llm-panel">
+            <PanelTitle icon={<Bot size={18} />} title="LLM / Ollama" />
+            <div className="status-grid compact">
               <div>
-                <strong>{action.message}</strong>
-                <p>{action.error ?? "環境操作の結果は下段ログに集約します。"}</p>
+                <span>Ollama.app</span>
+                <strong>{ollamaStatus?.installed ? "検出" : "未検出"}</strong>
               </div>
+              <div>
+                <span>API</span>
+                <strong>{ollamaStatus?.reachable ? "接続OK" : "未接続"}</strong>
+              </div>
+              <div>
+                <span>DataPath</span>
+                <strong>{ollamaStatus?.dataLinked ? "OK" : "未切替"}</strong>
+              </div>
+            </div>
+            <div className="field">
+              <label>Ollama API</label>
+              <div className="inline">
+                <input value={ollamaUrl} onChange={(event) => setOllamaUrl(event.target.value)} />
+                <button className="icon-button" onClick={() => void refreshOllamaStatus()} title="再確認">
+                  <RefreshCw size={17} />
+                </button>
+              </div>
+            </div>
+            <div className="field">
+              <label>Hugging Face API Key</label>
+              <div className="inline">
+                <input
+                  type="password"
+                  placeholder="任意。HF検索/取得で必要な時に使用"
+                  value={huggingFaceApiKey}
+                  onChange={(event) => setHuggingFaceApiKey(event.target.value)}
+                />
+                <button className="icon-button" onClick={() => void saveSettings()} title="保存">
+                  <CheckCircle2 size={17} />
+                </button>
+              </div>
+            </div>
+            <div className="field">
+              <label>LLM Model</label>
+              <input list="llm-models" value={ollamaModel} onChange={(event) => setOllamaModel(event.target.value)} />
+              <datalist id="llm-models">
+                {recommendedLlmModels.map((model) => (
+                  <option key={model.name} value={model.name} />
+                ))}
+              </datalist>
+            </div>
+            <div className="button-grid">
+              <button onClick={() => void runStreamOperation("ollama-install", "Ollama環境をインストール中")}>
+                <Download size={17} />
+                インストール
+              </button>
+              <button onClick={() => void runAction("Ollamaを起動中", () => window.illustMK.ollama.start(), () => void refreshOllamaStatus())}>
+                <Play size={17} />
+                起動
+              </button>
+              <button onClick={() => void runAction("Ollamaを停止中", () => window.illustMK.ollama.stop(), () => void refreshOllamaStatus())}>
+                <Square size={17} />
+                停止
+              </button>
+              <button onClick={() => void runOllamaPull()} disabled={!canDownloadLlm} title={canDownloadLlm ? "Download" : "先にOllamaを起動してください"}>
+                <Download size={17} />
+                Download
+              </button>
+              <button onClick={() => void saveSettings()}>
+                <CheckCircle2 size={17} />
+                保存
+              </button>
+              <button
+                className="danger"
+                onClick={() => {
+                  if (window.confirm("Ollama.appをアンインストールします。モデル保存先は残します。")) {
+                    void runStreamOperation("ollama-uninstall", "Ollama.appをアンインストール中");
+                  }
+                }}
+              >
+                <Trash2 size={17} />
+                App削除
+              </button>
+              <button
+                className="danger"
+                onClick={() => {
+                  if (window.confirm("OllamaのDL済みモデル保存先を削除します。元に戻せません。")) {
+                    void runStreamOperation("ollama-delete-storage", "Ollamaモデル保存先を削除中");
+                  }
+                }}
+              >
+                <Trash2 size={17} />
+                モデル全削除
+              </button>
+            </div>
+            <div className="field catalog-search">
+              <label>LLM Catalog</label>
+              <input placeholder="qwen, gemma, spark..." value={llmCatalogQuery} onChange={(event) => setLlmCatalogQuery(event.target.value)} />
+            </div>
+            <div className="llm-catalog-list">
+              {filteredLlmModels.map((model) => (
+                <article className="llm-catalog-card" key={model.name}>
+                  <button className="llm-select-button" onClick={() => setOllamaModel(model.name)}>
+                    <span>{model.name}</span>
+                    <small>{model.source} / {model.size}</small>
+                  </button>
+                  <p>{model.note}</p>
+                  <button disabled={!ollamaStatus?.reachable || !ollamaStatus.dataLinked || action.busy} onClick={() => void runOllamaPull(model.name)}>
+                    <Download size={15} />
+                    Download
+                  </button>
+                </article>
+              ))}
+            </div>
+            <div className="paths">
+              <p>保存先: {ollamaStatus?.modelPath ?? paths?.ollamaModels ?? "/Volumes/ARC-8050T2/illustMK/llm/ollama/models"}</p>
+            </div>
+            <div className="model-list">
+              <h2>DL済みLLM</h2>
+              {ollamaStatus?.models.length ? (
+                ollamaStatus.models.map((model) => (
+                  <div className="model-row" key={model.name}>
+                    <button className={ollamaModel === model.name ? "model selected" : "model"} onClick={() => setOllamaModel(model.name)}>
+                      <span>{model.name}</span>
+                      <small>{model.sizeLabel}</small>
+                    </button>
+                    <button
+                      className="icon-button danger"
+                      disabled={action.busy}
+                      onClick={() =>
+                        void runAction(`${model.name} を削除中`, () =>
+                          window.illustMK.ollama.deleteModel({ ollamaUrl, model: model.name }), () => void refreshOllamaStatus()
+                        )
+                      }
+                      title="削除"
+                    >
+                      <Trash2 size={16} />
+                    </button>
+                  </div>
+                ))
+              ) : (
+                <p className="empty">{ollamaStatus?.message ?? "Ollamaの状態を確認してください。"}</p>
+              )}
             </div>
           </section>
 
-          <section className="panel">
+          <section className="panel model-panel">
             <PanelTitle icon={<Download size={18} />} title="モデル追加 / 管理" />
             <div className="field">
               <label>Civitai API Key</label>
@@ -546,17 +825,60 @@ function App() {
               )}
             </div>
           </section>
-
-          <section className="log-dock environment-log">
-            <LogPanel
-              action={action}
-              logs={logs}
-              logViewRef={logViewRef}
-              onScroll={handleLogScroll}
-              onLatest={jumpToLatestLog}
-              onClear={() => setLogs([])}
-              downloadProgress={downloadProgress}
-            />
+        </section>
+      ) : mainTab === "llm" ? (
+        <section className="llm-chat-layout">
+          <section className="panel llm-chat-panel">
+            <div className="chat-header">
+              <PanelTitle icon={<Bot size={18} />} title="LLMチャット / ログ" />
+              <div className="chat-meta">
+                <span>{ollamaStatus?.reachable && ollamaStatus.dataLinked ? "接続OK" : "未接続"}</span>
+                <span>{ollamaModel || "モデル未選択"}</span>
+              </div>
+            </div>
+            <div className="chat-history">
+              {llmChatHistory.length ? (
+                llmChatHistory.map((message) => (
+                  <article className={`chat-message ${message.role}`} key={message.id}>
+                    <header>
+                      <strong>{message.role === "user" ? "USER" : "LLM"}</strong>
+                      <span>{message.model}</span>
+                      <time>{new Date(message.createdAt).toLocaleString("ja-JP", { hour12: false })}</time>
+                    </header>
+                    <p>{message.content}</p>
+                  </article>
+                ))
+              ) : (
+                <div className="placeholder compact">
+                  <Bot size={36} />
+                  <p>LLMへの入力と結果がここに残ります。</p>
+                </div>
+              )}
+            </div>
+            <div className="chat-composer">
+              <textarea
+                placeholder="LLMへそのまま送るプロンプトを入力"
+                value={llmPrompt}
+                onChange={(event) => setLlmPrompt(event.target.value)}
+              />
+              <div className="chat-actions">
+                <button className="primary" disabled={!canSendLlmPrompt} onClick={() => void sendLlmPrompt()}>
+                  <Bot size={17} />
+                  送信
+                </button>
+                <button onClick={() => void loadLlmChatHistory()}>
+                  <RefreshCw size={17} />
+                  再読込
+                </button>
+                <button className="danger" disabled={!llmChatHistory.length || action.busy} onClick={() => void clearLlmChat()}>
+                  <Trash2 size={17} />
+                  履歴削除
+                </button>
+              </div>
+              <p className={canSendLlmPrompt ? "result-message ready" : "result-message"}>
+                {llmPromptDisabledReason}
+              </p>
+            </div>
           </section>
         </section>
       ) : (
@@ -576,6 +898,18 @@ function App() {
           </section>
 
           <section className="panel generate-panel">
+            <PromptTransformPanel
+              japanesePrompt={japanesePrompt}
+              setJapanesePrompt={setJapanesePrompt}
+              prompt={prompt}
+              setPrompt={setPrompt}
+              negativePrompt={negativePrompt}
+              setNegativePrompt={setNegativePrompt}
+              promptNotes={promptNotes}
+              canEnhancePrompt={canEnhancePrompt}
+              disabledReason={enhancePromptDisabledReason}
+              onEnhance={() => void enhanceJapanesePrompt()}
+            />
             <div className="field">
               <label>Checkpoint</label>
               <select value={selectedCheckpoint} onChange={(event) => setSelectedCheckpoint(event.target.value)}>
@@ -589,14 +923,6 @@ function App() {
                   <option value="">未追加</option>
                 )}
               </select>
-            </div>
-            <div className="field">
-              <label>Positive Prompt</label>
-              <textarea value={prompt} onChange={(event) => setPrompt(event.target.value)} />
-            </div>
-            <div className="field">
-              <label>Negative Prompt</label>
-              <textarea value={negativePrompt} onChange={(event) => setNegativePrompt(event.target.value)} />
             </div>
 
             <button
@@ -623,6 +949,17 @@ function App() {
           </section>
         </section>
       )}
+      <section className="log-dock global-log">
+        <LogPanel
+          action={action}
+          logs={logs}
+          logViewRef={logViewRef}
+          onScroll={handleLogScroll}
+          onLatest={jumpToLatestLog}
+          onClear={() => setLogs([])}
+          downloadProgress={downloadProgress}
+        />
+      </section>
     </main>
   );
 
@@ -633,6 +970,57 @@ function PanelTitle({ icon, title }: { icon: React.ReactNode; title: string }) {
     <div className="panel-title">
       {icon}
       <h2>{title}</h2>
+    </div>
+  );
+}
+
+function PromptTransformPanel({
+  japanesePrompt,
+  setJapanesePrompt,
+  prompt,
+  setPrompt,
+  negativePrompt,
+  setNegativePrompt,
+  promptNotes,
+  canEnhancePrompt,
+  disabledReason,
+  onEnhance
+}: {
+  japanesePrompt: string;
+  setJapanesePrompt: (value: string) => void;
+  prompt: string;
+  setPrompt: (value: string) => void;
+  negativePrompt: string;
+  setNegativePrompt: (value: string) => void;
+  promptNotes: string;
+  canEnhancePrompt: boolean;
+  disabledReason: string;
+  onEnhance: () => void;
+}) {
+  return (
+    <div className="prompt-transform">
+      <div className="field">
+        <label>Japanese Prompt</label>
+        <textarea
+          placeholder="例: 夕方の教室で、青緑のツインテールの女子高生。少し照れている感じ。"
+          value={japanesePrompt}
+          onChange={(event) => setJapanesePrompt(event.target.value)}
+        />
+      </div>
+      <button className="primary" disabled={!canEnhancePrompt} title={disabledReason} onClick={onEnhance}>
+        <Bot size={17} />
+        日本語から生成promptへ変換
+      </button>
+      <p className={canEnhancePrompt ? "result-message ready" : "result-message"}>{disabledReason}</p>
+      {promptNotes ? <p className="result-message">{promptNotes}</p> : null}
+      <div className="field">
+        <label>Positive Prompt</label>
+        <textarea value={prompt} onChange={(event) => setPrompt(event.target.value)} />
+      </div>
+      <div className="field">
+        <label>Negative Prompt</label>
+        <textarea value={negativePrompt} onChange={(event) => setNegativePrompt(event.target.value)} />
+      </div>
     </div>
   );
 }
@@ -689,7 +1077,7 @@ function LogPanel({
   );
 }
 
-function StatusGrid({ status }: { status: RuntimeStatus | null }) {
+function StatusGrid({ status, ollamaStatus }: { status: RuntimeStatus | null; ollamaStatus?: OllamaStatus | null }) {
   const items = [
     ["Desktop", status?.dockerDesktopInstalled ? "OK" : "未検出"],
     ["Docker", status?.dockerAvailable ? "OK" : "未検出"],
@@ -697,7 +1085,9 @@ function StatusGrid({ status }: { status: RuntimeStatus | null }) {
     ["Compose", status?.composeCommand ?? "未検出"],
     ["Runtime", status?.pathsReady ? "OK" : "未初期化"],
     ["ComfyUI", status?.comfyReachable ? "接続中" : "未接続"],
-    ["Models", `${status?.checkpoints.length ?? 0}`]
+    ["Image Models", `${status?.checkpoints.length ?? 0}`],
+    ["Ollama", ollamaStatus?.reachable && ollamaStatus.dataLinked ? "接続OK" : ollamaStatus?.reachable ? "保存先NG" : ollamaStatus?.installed ? "未起動" : "未検出"],
+    ["LLM Models", `${ollamaStatus?.models.length ?? 0}`]
   ];
 
   return (

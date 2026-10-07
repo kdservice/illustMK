@@ -1,7 +1,8 @@
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { closeSync, createReadStream, createWriteStream, openSync } from "node:fs";
-import { access, mkdir, readFile, readdir, rm, stat, unlink, writeFile } from "node:fs/promises";
-import { basename, join } from "node:path";
+import { access, cp, lstat, mkdir, readFile, readlink, readdir, rename, rm, stat, symlink, unlink, writeFile } from "node:fs/promises";
+import { basename, join, resolve } from "node:path";
+import { homedir } from "node:os";
 import { Transform } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import { execFile, spawn, type ChildProcess, type ChildProcessWithoutNullStreams, type ExecFileOptions } from "node:child_process";
@@ -11,6 +12,11 @@ const execFileAsync = promisify(execFile);
 
 export type RuntimePaths = {
   root: string;
+  llm: string;
+  ollama: string;
+  ollamaModels: string;
+  ollamaLog: string;
+  ollamaPid: string;
   models: string;
   checkpoints: string;
   loras: string;
@@ -105,6 +111,55 @@ export type CivitaiModelCard = {
 
 export type AppSettings = {
   civitaiApiKey: string;
+  huggingFaceApiKey: string;
+  ollamaUrl: string;
+  ollamaModel: string;
+};
+
+export type OllamaModelInfo = {
+  name: string;
+  sizeBytes: number;
+  sizeLabel: string;
+  modifiedAt: string | null;
+};
+
+export type OllamaStatus = {
+  url: string;
+  reachable: boolean;
+  installed: boolean;
+  appPath: string | null;
+  dataLinked: boolean;
+  modelPath: string;
+  models: OllamaModelInfo[];
+  message: string | null;
+};
+
+export type PromptEnhanceRequest = {
+  ollamaUrl: string;
+  model: string;
+  japanesePrompt: string;
+  currentPrompt: string;
+  currentNegativePrompt: string;
+};
+
+export type PromptEnhanceResult = {
+  positivePrompt: string;
+  negativePrompt: string;
+  notes: string;
+};
+
+export type LlmChatMessage = {
+  id: string;
+  role: "user" | "assistant";
+  content: string;
+  model: string;
+  createdAt: string;
+};
+
+export type LlmChatRequest = {
+  ollamaUrl: string;
+  model: string;
+  prompt: string;
 };
 
 export type TestGenerationRequest = {
@@ -137,9 +192,13 @@ export type RuntimeLogSink = (event: RuntimeLogEvent) => void;
 const runtimeRoot = process.env.ILLUSTMK_RUNTIME_ROOT ?? "/Volumes/ARC-8050T2/illustMK";
 const appDataRoot = process.env.ILLUSTMK_APP_DATA_ROOT ?? join(process.cwd(), ".illustmk");
 const settingsPath = join(appDataRoot, "settings.json");
+const llmChatHistoryPath = join(appDataRoot, "llm-chat-history.json");
 const comfyPort = Number(process.env.ILLUSTMK_COMFY_PORT ?? "8188");
 let nativeProcess: ChildProcess | null = null;
+let ollamaProcess: ChildProcess | null = null;
 const dockerDesktopPaths = ["/Applications/Docker.app", "/Applications/Utilities/Docker.app"];
+const ollamaAppPaths = ["/Applications/Ollama.app", "/Applications/Utilities/Ollama.app", join(homedir(), "Applications", "Ollama.app")];
+const userOllamaHome = join(homedir(), ".ollama");
 const dockerDesktopBinPaths = dockerDesktopPaths.map((path) => join(path, "Contents", "Resources", "bin"));
 const dockerCommandPath = [
   ...dockerDesktopBinPaths,
@@ -155,8 +214,14 @@ export function getRuntimePaths(): RuntimePaths {
   const root = runtimeRoot;
   const native = join(root, "native");
   const docker = join(root, "docker", "comfyui");
+  const ollama = join(root, "llm", "ollama");
   return {
     root,
+    llm: join(root, "llm"),
+    ollama,
+    ollamaModels: join(ollama, "models"),
+    ollamaLog: join(ollama, "logs", "ollama.log"),
+    ollamaPid: join(ollama, "ollama.pid"),
     models: join(root, "models"),
     checkpoints: join(root, "models", "checkpoints"),
     loras: join(root, "models", "loras"),
@@ -186,6 +251,8 @@ export async function ensureRuntimeFiles(): Promise<RuntimePaths> {
     mkdir(paths.workflows, { recursive: true }),
     mkdir(paths.native, { recursive: true }),
     mkdir(join(paths.native, "logs"), { recursive: true }),
+    mkdir(paths.ollamaModels, { recursive: true }),
+    mkdir(join(paths.ollama, "logs"), { recursive: true }),
     mkdir(paths.docker, { recursive: true }),
     mkdir(paths.logs, { recursive: true }),
     mkdir(paths.downloads, { recursive: true })
@@ -201,17 +268,23 @@ export async function getAppSettings(): Promise<AppSettings> {
     const text = await readFile(settingsPath, "utf8");
     const parsed = JSON.parse(text) as Partial<AppSettings>;
     return {
-      civitaiApiKey: parsed.civitaiApiKey ?? ""
+      civitaiApiKey: parsed.civitaiApiKey ?? "",
+      huggingFaceApiKey: parsed.huggingFaceApiKey ?? "",
+      ollamaUrl: parsed.ollamaUrl ?? "http://127.0.0.1:11434",
+      ollamaModel: parsed.ollamaModel ?? "qwen2.5:3b-instruct"
     };
   } catch {
-    return { civitaiApiKey: "" };
+    return { civitaiApiKey: "", huggingFaceApiKey: "", ollamaUrl: "http://127.0.0.1:11434", ollamaModel: "qwen2.5:3b-instruct" };
   }
 }
 
 export async function saveAppSettings(settings: AppSettings): Promise<AppSettings> {
   await mkdir(appDataRoot, { recursive: true });
   const safeSettings: AppSettings = {
-    civitaiApiKey: settings.civitaiApiKey.trim()
+    civitaiApiKey: settings.civitaiApiKey.trim(),
+    huggingFaceApiKey: settings.huggingFaceApiKey.trim(),
+    ollamaUrl: settings.ollamaUrl.trim() || "http://127.0.0.1:11434",
+    ollamaModel: settings.ollamaModel.trim() || "qwen2.5:3b-instruct"
   };
   await writeFile(settingsPath, JSON.stringify(safeSettings, null, 2), "utf8");
   return safeSettings;
@@ -630,9 +703,341 @@ export async function searchCivitaiModels(options: {
     .slice(0, options.limit ?? 10);
 }
 
+export async function getOllamaStatus(ollamaUrl = "http://127.0.0.1:11434"): Promise<OllamaStatus> {
+  const appPath = await findOllamaApp();
+  const paths = getRuntimePaths();
+  const dataLinked = await isOllamaDataLinked();
+  try {
+    const response = await fetch(`${ollamaUrl.replace(/\/$/, "")}/api/tags`, { signal: AbortSignal.timeout(3000) });
+    if (!response.ok) {
+      return {
+        url: ollamaUrl,
+        reachable: false,
+        installed: Boolean(appPath),
+        appPath,
+        dataLinked,
+        modelPath: paths.ollamaModels,
+        models: [],
+        message: `Ollama API HTTP ${response.status}`
+      };
+    }
+    const json = (await response.json()) as { models?: Array<Record<string, unknown>> };
+    const models = (json.models ?? []).map((model) => ({
+      name: String(model.name ?? ""),
+      sizeBytes: Number(model.size ?? 0),
+      sizeLabel: formatBytes(Number(model.size ?? 0)),
+      modifiedAt: model.modified_at ? String(model.modified_at) : null
+    })).filter((model) => model.name);
+    return {
+      url: ollamaUrl,
+      reachable: true,
+      installed: Boolean(appPath),
+      appPath,
+      dataLinked,
+      modelPath: paths.ollamaModels,
+      models,
+      message: "Ollama API 接続OK"
+    };
+  } catch (error) {
+    return {
+      url: ollamaUrl,
+      reachable: false,
+      installed: Boolean(appPath),
+      appPath,
+      dataLinked,
+      modelPath: paths.ollamaModels,
+      models: [],
+      message: normalizeCommandError(error)
+    };
+  }
+}
+
+export async function startOllama(): Promise<string> {
+  const paths = await ensureRuntimeFiles();
+  const linked = await isOllamaDataLinked();
+  if ((await getOllamaStatus()).reachable && linked) {
+    return "Ollama API は既に接続可能です。";
+  }
+  if (!linked) {
+    await stopOllama().catch(() => undefined);
+    await ensureOllamaDataLink();
+  }
+  const ollamaBin = await findOllamaBinary();
+  if (ollamaBin) {
+    await writeFile(paths.ollamaLog, "", "utf8");
+    const logFd = openSync(paths.ollamaLog, "a");
+    const child = spawn(ollamaBin, ["serve"], {
+      detached: true,
+      stdio: ["ignore", logFd, logFd],
+      env: {
+        ...process.env,
+        OLLAMA_HOST: "127.0.0.1:11434",
+        OLLAMA_MODELS: paths.ollamaModels
+      }
+    });
+    closeSync(logFd);
+    ollamaProcess = child;
+    await writeFile(paths.ollamaPid, String(child.pid ?? ""), "utf8");
+    child.unref();
+    const ready = await waitForOllama("http://127.0.0.1:11434", 30000);
+    if (ready) {
+      return `Ollama API を起動しました。モデル保存先: ${paths.ollamaModels}`;
+    }
+  }
+
+  const appPath = await findOllamaApp();
+  if (!appPath) {
+    throw new Error("Ollama.app が見つかりません。公式サイトからOllamaをインストールしてください。");
+  }
+  await execFileAsync("open", [appPath], { timeout: 10000 });
+  return "Ollama.app を起動しました。アプリ起動では保存先が標準設定になる場合があります。";
+}
+
+export async function installOllama(onLog: RuntimeLogSink): Promise<string> {
+  await ensureRuntimeFiles();
+  await ensureOllamaDataLink(onLog);
+
+  const current = await findOllamaApp();
+  if (current) {
+    onLog({ level: "info", line: `Ollama.app は既に存在します: ${current}` });
+    return `Ollama.app は既にインストール済みです。Ollamaデータ保存先: ${getRuntimePaths().ollama}`;
+  }
+
+  const paths = await ensureRuntimeFiles();
+  const dmgPath = join(paths.downloads, "Ollama.dmg");
+  onLog({ level: "info", line: "Ollama.dmg を公式サイトからダウンロードします。" });
+  await downloadFileWithProgress("https://ollama.com/download/Ollama.dmg", dmgPath, onLog);
+
+  onLog({ level: "info", line: "Ollama.dmg をマウントします。" });
+  const { stdout } = await execFileAsync("hdiutil", ["attach", dmgPath, "-nobrowse", "-readonly"], { timeout: 60000 });
+  const mountPoint = parseMountPoint(stdout);
+  if (!mountPoint) {
+    throw new Error("Ollama.dmg のマウント先を特定できませんでした。");
+  }
+
+  try {
+    const sourceApp = join(mountPoint, "Ollama.app");
+    const destination = await copyOllamaApp(sourceApp, onLog);
+    return `Ollama.app をインストールしました: ${destination}`;
+  } finally {
+    await execFileAsync("hdiutil", ["detach", mountPoint], { timeout: 60000 }).catch((error) =>
+      onLog({ level: "stderr", line: normalizeCommandError(error) })
+    );
+  }
+}
+
+export async function stopOllama(): Promise<string> {
+  const pid = await readPidFile(getRuntimePaths().ollamaPid);
+  if (pid) {
+    try {
+      process.kill(pid, "SIGTERM");
+    } catch {
+      // The app fallback may be running without our pid file target.
+    }
+    await unlink(getRuntimePaths().ollamaPid).catch(() => undefined);
+    ollamaProcess = null;
+  }
+  await execFileAsync("osascript", ["-e", 'tell application "Ollama" to quit'], { timeout: 10000 }).catch(() => undefined);
+  return "Ollamaを終了しました。";
+}
+
+export async function uninstallOllama(onLog: RuntimeLogSink): Promise<string> {
+  await stopOllama().catch((error) => onLog({ level: "stderr", line: normalizeCommandError(error) }));
+  let removed = 0;
+  for (const appPath of ollamaAppPaths) {
+    if (await exists(appPath)) {
+      onLog({ level: "info", line: `削除: ${appPath}` });
+      await rm(appPath, { recursive: true, force: true });
+      removed += 1;
+    }
+  }
+  return removed ? "Ollama.app をアンインストールしました。" : "削除対象のOllama.appは見つかりませんでした。";
+}
+
+export async function deleteOllamaModelStorage(onLog: RuntimeLogSink): Promise<string> {
+  await stopOllama().catch((error) => onLog({ level: "stderr", line: normalizeCommandError(error) }));
+  await ensureOllamaDataLink(onLog);
+  const modelsPath = getRuntimePaths().ollamaModels;
+  onLog({ level: "info", line: `Ollamaモデル保存先を削除します: ${modelsPath}` });
+  await rm(modelsPath, { recursive: true, force: true });
+  await mkdir(modelsPath, { recursive: true });
+  return "Ollamaのモデル保存先を削除しました。";
+}
+
+export async function pullOllamaModel(ollamaUrl: string, model: string, onLog: RuntimeLogSink): Promise<string> {
+  const modelName = model.trim();
+  if (!modelName) throw new Error("Ollamaモデル名を入力してください。");
+  const status = await getOllamaStatus(ollamaUrl);
+  if (!status.dataLinked) {
+    throw new Error("Ollama保存先がDataPathに向いていません。先にLLM / Ollamaパネルの「起動」を実行して保存先を切替えてください。");
+  }
+  if (!status.reachable) {
+    throw new Error("Ollama APIに接続できません。先にLLM / Ollamaパネルの「起動」を実行してください。");
+  }
+  onLog({ level: "info", line: `Ollama pull: ${modelName}` });
+  const response = await fetch(`${ollamaUrl.replace(/\/$/, "")}/api/pull`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ name: modelName, stream: true })
+  });
+  if (!response.ok || !response.body) {
+    throw new Error(`Ollama pullに失敗しました: HTTP ${response.status}`);
+  }
+
+  let buffer = "";
+  const decoder = new TextDecoder();
+  for await (const chunk of response.body as unknown as AsyncIterable<Uint8Array>) {
+    buffer += decoder.decode(chunk, { stream: true });
+    const lines = buffer.split(/\r?\n/);
+    buffer = lines.pop() ?? "";
+    for (const line of lines) {
+      if (!line.trim()) continue;
+      emitOllamaPullLine(line, onLog);
+    }
+  }
+  if (buffer.trim()) emitOllamaPullLine(buffer, onLog);
+  return `${modelName} のpullが完了しました。`;
+}
+
+export async function deleteOllamaModel(ollamaUrl: string, model: string): Promise<string> {
+  const modelName = model.trim();
+  if (!modelName) throw new Error("削除するOllamaモデル名を指定してください。");
+  const response = await fetch(`${ollamaUrl.replace(/\/$/, "")}/api/delete`, {
+    method: "DELETE",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ name: modelName })
+  });
+  if (!response.ok) {
+    throw new Error(`Ollamaモデル削除に失敗しました: HTTP ${response.status}`);
+  }
+  return `${modelName} を削除しました。`;
+}
+
+export async function enhancePromptWithOllama(request: PromptEnhanceRequest): Promise<PromptEnhanceResult> {
+  if (!request.japanesePrompt.trim()) {
+    throw new Error("日本語プロンプトを入力してください。");
+  }
+  if (!request.model.trim()) {
+    throw new Error("Ollamaモデル名を入力してください。");
+  }
+
+  const instruction = [
+    "You are an expert prompt engineer for anime image generation models such as SDXL, Illustrious, Pony, and Animagine.",
+    "Convert the user's Japanese request into concise English image-generation prompts.",
+    "Return strict JSON only with keys: positivePrompt, negativePrompt, notes.",
+    "positivePrompt should be comma-separated English tags and short phrases.",
+    "negativePrompt should be comma-separated English tags.",
+    "Keep existing useful prompt fragments if provided, but remove contradictions.",
+    "Do not include markdown."
+  ].join("\n");
+  const userText = [
+    `Japanese request: ${request.japanesePrompt}`,
+    `Current positive prompt: ${request.currentPrompt}`,
+    `Current negative prompt: ${request.currentNegativePrompt}`
+  ].join("\n");
+
+  const response = await fetch(`${request.ollamaUrl.replace(/\/$/, "")}/api/generate`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      model: request.model,
+      stream: false,
+      format: "json",
+      prompt: `${instruction}\n\n${userText}`
+    })
+  });
+  if (!response.ok) {
+    throw new Error(`Ollama prompt変換に失敗しました: HTTP ${response.status}`);
+  }
+  const json = (await response.json()) as { response?: string };
+  return parsePromptEnhanceResponse(json.response ?? "");
+}
+
+export async function getLlmChatHistory(): Promise<LlmChatMessage[]> {
+  try {
+    const text = await readFile(llmChatHistoryPath, "utf8");
+    const parsed = JSON.parse(text) as LlmChatMessage[];
+    return Array.isArray(parsed) ? parsed.filter(isLlmChatMessage) : [];
+  } catch {
+    return [];
+  }
+}
+
+export async function clearLlmChatHistory(): Promise<LlmChatMessage[]> {
+  await mkdir(appDataRoot, { recursive: true });
+  await writeFile(llmChatHistoryPath, "[]", "utf8");
+  return [];
+}
+
+export async function sendLlmChatPrompt(request: LlmChatRequest): Promise<LlmChatMessage[]> {
+  const prompt = request.prompt.trim();
+  if (!prompt) throw new Error("LLMへ送るプロンプトを入力してください。");
+  if (!request.model.trim()) throw new Error("Ollamaモデル名を入力してください。");
+  const status = await getOllamaStatus(request.ollamaUrl);
+  if (!status.dataLinked) {
+    throw new Error("Ollama保存先がDataPathに向いていません。先に環境タブのLLM / Ollamaパネルで「起動」を実行してください。");
+  }
+  if (!status.reachable) {
+    throw new Error("Ollama APIに接続できません。先に環境タブのLLM / Ollamaパネルで「起動」を実行してください。");
+  }
+
+  const userMessage: LlmChatMessage = {
+    id: randomUUID(),
+    role: "user",
+    content: prompt,
+    model: request.model,
+    createdAt: new Date().toISOString()
+  };
+  const response = await fetch(`${request.ollamaUrl.replace(/\/$/, "")}/api/generate`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      model: request.model,
+      stream: false,
+      prompt
+    })
+  });
+  if (!response.ok) {
+    throw new Error(`Ollama LLMテストに失敗しました: HTTP ${response.status}`);
+  }
+  const json = (await response.json()) as { response?: string };
+  const assistantMessage: LlmChatMessage = {
+    id: randomUUID(),
+    role: "assistant",
+    content: String(json.response ?? ""),
+    model: request.model,
+    createdAt: new Date().toISOString()
+  };
+  const history = [...(await getLlmChatHistory()), userMessage, assistantMessage].slice(-200);
+  await saveLlmChatHistory(history);
+  return history;
+}
+
 async function civitaiAuthHeader(): Promise<Record<string, string>> {
   const settings = await getAppSettings();
   return settings.civitaiApiKey ? { Authorization: `Bearer ${settings.civitaiApiKey}` } : {};
+}
+
+async function saveLlmChatHistory(history: LlmChatMessage[]): Promise<void> {
+  await mkdir(appDataRoot, { recursive: true });
+  await writeFile(llmChatHistoryPath, JSON.stringify(history, null, 2), "utf8");
+}
+
+function isLlmChatMessage(value: unknown): value is LlmChatMessage {
+  if (!value || typeof value !== "object") return false;
+  const message = value as Partial<LlmChatMessage>;
+  return (
+    typeof message.id === "string" &&
+    (message.role === "user" || message.role === "assistant") &&
+    typeof message.content === "string" &&
+    typeof message.model === "string" &&
+    typeof message.createdAt === "string"
+  );
+}
+
+async function huggingFaceAuthHeader(): Promise<Record<string, string>> {
+  const settings = await getAppSettings();
+  return settings.huggingFaceApiKey ? { Authorization: `Bearer ${settings.huggingFaceApiKey}` } : {};
 }
 
 async function withCivitaiToken(url: URL): Promise<URL> {
@@ -892,6 +1297,125 @@ async function findDockerDesktop(): Promise<string | null> {
   return null;
 }
 
+async function findOllamaApp(): Promise<string | null> {
+  for (const path of ollamaAppPaths) {
+    if (await exists(path)) return path;
+  }
+  return null;
+}
+
+async function findOllamaBinary(): Promise<string | null> {
+  const candidates = [
+    "/opt/homebrew/bin/ollama",
+    "/usr/local/bin/ollama",
+    "/usr/bin/ollama",
+    "/bin/ollama",
+    ...ollamaAppPaths.map((path) => join(path, "Contents", "Resources", "ollama"))
+  ];
+  for (const candidate of candidates) {
+    if (await exists(candidate)) return candidate;
+  }
+  return null;
+}
+
+async function isOllamaDataLinked(): Promise<boolean> {
+  try {
+    const entry = await lstat(userOllamaHome);
+    if (!entry.isSymbolicLink()) return false;
+    const target = await readlink(userOllamaHome);
+    return resolve(homedir(), target) === resolve(getRuntimePaths().ollama);
+  } catch {
+    return false;
+  }
+}
+
+async function ensureOllamaDataLink(onLog: RuntimeLogSink = () => undefined): Promise<void> {
+  const paths = getRuntimePaths();
+  await mkdir(paths.ollama, { recursive: true });
+  await mkdir(join(paths.ollama, "logs"), { recursive: true });
+
+  if (await isOllamaDataLinked()) {
+    onLog({ level: "info", line: `Ollamaデータ保存先は設定済みです: ${userOllamaHome} -> ${paths.ollama}` });
+    return;
+  }
+
+  let homeEntry;
+  try {
+    homeEntry = await lstat(userOllamaHome);
+  } catch {
+    await symlink(paths.ollama, userOllamaHome, "dir");
+    onLog({ level: "info", line: `Ollamaデータ保存先を作成しました: ${userOllamaHome} -> ${paths.ollama}` });
+    return;
+  }
+
+  const backupRoot = join(paths.ollama, `previous-dot-ollama-${timestampForPath()}`);
+  if (homeEntry.isSymbolicLink()) {
+    await movePathCrossDevice(userOllamaHome, backupRoot);
+    await symlink(paths.ollama, userOllamaHome, "dir");
+    onLog({ level: "info", line: `既存の ~/.ollama リンクを退避しました: ${backupRoot}` });
+    onLog({ level: "info", line: `Ollamaデータ保存先を切替えました: ${userOllamaHome} -> ${paths.ollama}` });
+    return;
+  }
+
+  if (homeEntry.isDirectory()) {
+    onLog({ level: "info", line: `既存の ~/.ollama を外部DataPathへ移動します: ${paths.ollama}` });
+    await mergeDirectoryIntoTarget(userOllamaHome, paths.ollama, backupRoot, onLog);
+    await rm(userOllamaHome, { recursive: true, force: true });
+    await symlink(paths.ollama, userOllamaHome, "dir");
+    onLog({ level: "info", line: `Ollamaデータ保存先を切替えました: ${userOllamaHome} -> ${paths.ollama}` });
+    return;
+  }
+
+  await movePathCrossDevice(userOllamaHome, backupRoot);
+  await symlink(paths.ollama, userOllamaHome, "dir");
+  onLog({ level: "info", line: `既存の ~/.ollama を退避しました: ${backupRoot}` });
+  onLog({ level: "info", line: `Ollamaデータ保存先を切替えました: ${userOllamaHome} -> ${paths.ollama}` });
+}
+
+async function mergeDirectoryIntoTarget(source: string, target: string, backupRoot: string, onLog: RuntimeLogSink): Promise<void> {
+  await mkdir(target, { recursive: true });
+  const entries = await readdir(source);
+  for (const entry of entries) {
+    const sourcePath = join(source, entry);
+    const targetPath = join(target, entry);
+    if (!(await exists(targetPath))) {
+      await movePathCrossDevice(sourcePath, targetPath);
+      continue;
+    }
+
+    const [sourceEntry, targetEntry] = await Promise.all([lstat(sourcePath), lstat(targetPath)]);
+    if (sourceEntry.isDirectory() && targetEntry.isDirectory()) {
+      await mergeDirectoryIntoTarget(sourcePath, targetPath, join(backupRoot, entry), onLog);
+      await rm(sourcePath, { recursive: true, force: true });
+      continue;
+    }
+
+    const backupPath = join(backupRoot, entry);
+    await mkdir(backupRoot, { recursive: true });
+    await movePathCrossDevice(sourcePath, backupPath);
+    onLog({ level: "info", line: `同名ファイルを退避しました: ${backupPath}` });
+  }
+}
+
+async function movePathCrossDevice(source: string, target: string): Promise<void> {
+  await mkdir(resolve(target, ".."), { recursive: true });
+  try {
+    await rename(source, target);
+  } catch (error) {
+    if (!isCrossDeviceError(error)) throw error;
+    await cp(source, target, { recursive: true, errorOnExist: true, force: false, preserveTimestamps: true });
+    await rm(source, { recursive: true, force: true });
+  }
+}
+
+function isCrossDeviceError(error: unknown): boolean {
+  return Boolean(error && typeof error === "object" && "code" in error && (error as { code?: string }).code === "EXDEV");
+}
+
+function timestampForPath(): string {
+  return new Date().toISOString().replace(/[:.]/g, "-");
+}
+
 async function listFiles(path: string): Promise<string[]> {
   try {
     const entries = await readdir(path);
@@ -1119,9 +1643,22 @@ async function waitForComfy(comfyUrl: string, timeoutMs: number): Promise<boolea
   return false;
 }
 
+async function waitForOllama(ollamaUrl: string, timeoutMs: number): Promise<boolean> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if ((await getOllamaStatus(ollamaUrl)).reachable) return true;
+    await delay(1000);
+  }
+  return false;
+}
+
 async function readNativePid(): Promise<number | null> {
+  return readPidFile(getRuntimePaths().nativePid);
+}
+
+async function readPidFile(path: string): Promise<number | null> {
   try {
-    const text = await readFile(getRuntimePaths().nativePid, "utf8");
+    const text = await readFile(path, "utf8");
     const pid = Number(text.trim());
     return Number.isFinite(pid) && pid > 0 ? pid : null;
   } catch {
@@ -1146,6 +1683,52 @@ async function sha256File(path: string): Promise<string> {
   return hash.digest("hex");
 }
 
+async function downloadFileWithProgress(url: string, targetPath: string, onLog: RuntimeLogSink): Promise<void> {
+  const response = await fetch(url, { headers: { "User-Agent": "illustMK/0.1" } });
+  if (!response.ok || !response.body) {
+    throw new Error(`ダウンロードに失敗しました: HTTP ${response.status}`);
+  }
+  const totalBytes = Number(response.headers.get("content-length") ?? 0);
+  let receivedBytes = 0;
+  let lastProgressLog = 0;
+  const progressStream = new Transform({
+    transform(chunk: Buffer, _encoding, callback) {
+      receivedBytes += chunk.length;
+      const now = Date.now();
+      if (now - lastProgressLog >= 1000) {
+        lastProgressLog = now;
+        onLog({ level: "info", line: downloadProgressLine(receivedBytes, totalBytes) });
+      }
+      callback(null, chunk);
+    }
+  });
+  await pipeline(response.body as unknown as NodeJS.ReadableStream, progressStream, createWriteStream(targetPath));
+  onLog({ level: "info", line: downloadProgressLine(receivedBytes, totalBytes) });
+}
+
+function parseMountPoint(output: string): string | null {
+  const matches = [...output.matchAll(/(\/Volumes\/[^\n]+)/g)].map((match) => match[1].trim());
+  return matches.at(-1) ?? null;
+}
+
+async function copyOllamaApp(sourceApp: string, onLog: RuntimeLogSink): Promise<string> {
+  const destinations = ["/Applications/Ollama.app", join(homedir(), "Applications", "Ollama.app")];
+  let lastError: unknown = null;
+  for (const destination of destinations) {
+    try {
+      await mkdir(destination.replace(/\/Ollama\.app$/, ""), { recursive: true });
+      onLog({ level: "info", line: `コピー: ${sourceApp} -> ${destination}` });
+      await rm(destination, { recursive: true, force: true });
+      await execFileAsync("cp", ["-R", sourceApp, destination], { timeout: 120000 });
+      return destination;
+    } catch (error) {
+      lastError = error;
+      onLog({ level: "stderr", line: normalizeCommandError(error) });
+    }
+  }
+  throw new Error(`Ollama.app のコピーに失敗しました: ${normalizeCommandError(lastError)}`);
+}
+
 function sanitizeFileName(name: string): string {
   return name.replace(/[^\w.\-+()[\] ]/g, "_").trim();
 }
@@ -1168,6 +1751,45 @@ function downloadProgressLine(receivedBytes: number, totalBytes: number): string
     return `ダウンロード中: ${formatBytes(receivedBytes)} / ${formatBytes(totalBytes)} (${percent.toFixed(1)}%)`;
   }
   return `ダウンロード中: ${formatBytes(receivedBytes)}`;
+}
+
+function emitOllamaPullLine(line: string, onLog: RuntimeLogSink): void {
+  try {
+    const event = JSON.parse(line) as { status?: string; digest?: string; total?: number; completed?: number; error?: string };
+    if (event.error) {
+      onLog({ level: "stderr", line: event.error });
+      return;
+    }
+    const status = event.status ?? "pulling";
+    if (event.total && event.completed) {
+      const percent = Math.min(100, (event.completed / event.total) * 100);
+      onLog({
+        level: "info",
+        line: `${status}: ${formatBytes(event.completed)} / ${formatBytes(event.total)} (${percent.toFixed(1)}%)`
+      });
+      return;
+    }
+    onLog({ level: "info", line: event.digest ? `${status}: ${event.digest}` : status });
+  } catch {
+    onLog({ level: "stdout", line });
+  }
+}
+
+function parsePromptEnhanceResponse(text: string): PromptEnhanceResult {
+  try {
+    const parsed = JSON.parse(text) as Partial<PromptEnhanceResult>;
+    return {
+      positivePrompt: String(parsed.positivePrompt ?? "").trim(),
+      negativePrompt: String(parsed.negativePrompt ?? "").trim(),
+      notes: String(parsed.notes ?? "").trim()
+    };
+  } catch {
+    return {
+      positivePrompt: text.trim(),
+      negativePrompt: "low quality, worst quality, blurry, bad anatomy",
+      notes: "LLM応答がJSONではなかったため、応答本文をpositive promptとして扱いました。"
+    };
+  }
 }
 
 function normalizeCivitaiModel(item: unknown): CivitaiModelCard[] {

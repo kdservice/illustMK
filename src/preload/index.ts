@@ -5,6 +5,11 @@ import type {
   DeleteModelRequest,
   DownloadRequest,
   DownloadResult,
+  LlmChatMessage,
+  LlmChatRequest,
+  OllamaStatus,
+  PromptEnhanceRequest,
+  PromptEnhanceResult,
   RuntimePaths,
   RuntimeStatus,
   TestGenerationRequest,
@@ -31,7 +36,7 @@ const api = {
     build: (): Promise<string> => ipcRenderer.invoke("runtime:build"),
     start: (): Promise<string> => ipcRenderer.invoke("runtime:start"),
     stop: (): Promise<string> => ipcRenderer.invoke("runtime:stop"),
-    runOperation: (request: { id: string; operation: string }): Promise<string> =>
+    runOperation: (request: { id: string; operation: string; model?: string; ollamaUrl?: string }): Promise<string> =>
       ipcRenderer.invoke("runtime:run-operation", request),
     onOperationLog: (callback: (event: OperationLog) => void): (() => void) => {
       const listener = (_event: Electron.IpcRendererEvent, payload: OperationLog) => callback(payload);
@@ -51,6 +56,18 @@ const api = {
     }): Promise<CivitaiModelCard[]> => ipcRenderer.invoke("runtime:search-civitai", options),
     testGenerate: (request: TestGenerationRequest): Promise<TestGenerationResult> =>
       ipcRenderer.invoke("runtime:test-generate", request)
+  },
+  ollama: {
+    status: (ollamaUrl?: string): Promise<OllamaStatus> => ipcRenderer.invoke("ollama:status", ollamaUrl),
+    start: (): Promise<string> => ipcRenderer.invoke("ollama:start"),
+    stop: (): Promise<string> => ipcRenderer.invoke("ollama:stop"),
+    deleteModel: (request: { ollamaUrl: string; model: string }): Promise<string> =>
+      ipcRenderer.invoke("ollama:delete-model", request),
+    enhancePrompt: (request: PromptEnhanceRequest): Promise<PromptEnhanceResult> =>
+      ipcRenderer.invoke("ollama:enhance-prompt", request),
+    chatHistory: (): Promise<LlmChatMessage[]> => ipcRenderer.invoke("ollama:chat-history"),
+    clearChatHistory: (): Promise<LlmChatMessage[]> => ipcRenderer.invoke("ollama:clear-chat-history"),
+    chat: (request: LlmChatRequest): Promise<LlmChatMessage[]> => ipcRenderer.invoke("ollama:chat", request)
   },
   app: {
     openPath: (path: string): Promise<string> => ipcRenderer.invoke("app:open-path", path)
