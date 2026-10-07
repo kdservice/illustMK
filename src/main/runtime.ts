@@ -105,6 +105,38 @@ export type CivitaiModelCard = {
 
 export type AppSettings = {
   civitaiApiKey: string;
+  ollamaUrl: string;
+  ollamaModel: string;
+};
+
+export type OllamaModelInfo = {
+  name: string;
+  sizeBytes: number;
+  sizeLabel: string;
+  modifiedAt: string | null;
+};
+
+export type OllamaStatus = {
+  url: string;
+  reachable: boolean;
+  installed: boolean;
+  appPath: string | null;
+  models: OllamaModelInfo[];
+  message: string | null;
+};
+
+export type PromptEnhanceRequest = {
+  ollamaUrl: string;
+  model: string;
+  japanesePrompt: string;
+  currentPrompt: string;
+  currentNegativePrompt: string;
+};
+
+export type PromptEnhanceResult = {
+  positivePrompt: string;
+  negativePrompt: string;
+  notes: string;
 };
 
 export type TestGenerationRequest = {
@@ -201,17 +233,21 @@ export async function getAppSettings(): Promise<AppSettings> {
     const text = await readFile(settingsPath, "utf8");
     const parsed = JSON.parse(text) as Partial<AppSettings>;
     return {
-      civitaiApiKey: parsed.civitaiApiKey ?? ""
+      civitaiApiKey: parsed.civitaiApiKey ?? "",
+      ollamaUrl: parsed.ollamaUrl ?? "http://127.0.0.1:11434",
+      ollamaModel: parsed.ollamaModel ?? "qwen2.5:3b-instruct"
     };
   } catch {
-    return { civitaiApiKey: "" };
+    return { civitaiApiKey: "", ollamaUrl: "http://127.0.0.1:11434", ollamaModel: "qwen2.5:3b-instruct" };
   }
 }
 
 export async function saveAppSettings(settings: AppSettings): Promise<AppSettings> {
   await mkdir(appDataRoot, { recursive: true });
   const safeSettings: AppSettings = {
-    civitaiApiKey: settings.civitaiApiKey.trim()
+    civitaiApiKey: settings.civitaiApiKey.trim(),
+    ollamaUrl: settings.ollamaUrl.trim() || "http://127.0.0.1:11434",
+    ollamaModel: settings.ollamaModel.trim() || "qwen2.5:3b-instruct"
   };
   await writeFile(settingsPath, JSON.stringify(safeSettings, null, 2), "utf8");
   return safeSettings;
@@ -630,6 +666,143 @@ export async function searchCivitaiModels(options: {
     .slice(0, options.limit ?? 10);
 }
 
+export async function getOllamaStatus(ollamaUrl = "http://127.0.0.1:11434"): Promise<OllamaStatus> {
+  const appPath = await findOllamaApp();
+  try {
+    const response = await fetch(`${ollamaUrl.replace(/\/$/, "")}/api/tags`, { signal: AbortSignal.timeout(3000) });
+    if (!response.ok) {
+      return {
+        url: ollamaUrl,
+        reachable: false,
+        installed: Boolean(appPath),
+        appPath,
+        models: [],
+        message: `Ollama API HTTP ${response.status}`
+      };
+    }
+    const json = (await response.json()) as { models?: Array<Record<string, unknown>> };
+    const models = (json.models ?? []).map((model) => ({
+      name: String(model.name ?? ""),
+      sizeBytes: Number(model.size ?? 0),
+      sizeLabel: formatBytes(Number(model.size ?? 0)),
+      modifiedAt: model.modified_at ? String(model.modified_at) : null
+    })).filter((model) => model.name);
+    return {
+      url: ollamaUrl,
+      reachable: true,
+      installed: Boolean(appPath),
+      appPath,
+      models,
+      message: "Ollama API 接続OK"
+    };
+  } catch (error) {
+    return {
+      url: ollamaUrl,
+      reachable: false,
+      installed: Boolean(appPath),
+      appPath,
+      models: [],
+      message: normalizeCommandError(error)
+    };
+  }
+}
+
+export async function startOllama(): Promise<string> {
+  const appPath = await findOllamaApp();
+  if (!appPath) {
+    throw new Error("Ollama.app が見つかりません。公式サイトからOllamaをインストールしてください。");
+  }
+  await execFileAsync("open", [appPath], { timeout: 10000 });
+  return "Ollama.app を起動しました。";
+}
+
+export async function stopOllama(): Promise<string> {
+  await execFileAsync("osascript", ["-e", 'tell application "Ollama" to quit'], { timeout: 10000 });
+  return "Ollama.app を終了しました。";
+}
+
+export async function pullOllamaModel(ollamaUrl: string, model: string, onLog: RuntimeLogSink): Promise<string> {
+  const modelName = model.trim();
+  if (!modelName) throw new Error("Ollamaモデル名を入力してください。");
+  onLog({ level: "info", line: `Ollama pull: ${modelName}` });
+  const response = await fetch(`${ollamaUrl.replace(/\/$/, "")}/api/pull`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ name: modelName, stream: true })
+  });
+  if (!response.ok || !response.body) {
+    throw new Error(`Ollama pullに失敗しました: HTTP ${response.status}`);
+  }
+
+  let buffer = "";
+  const decoder = new TextDecoder();
+  for await (const chunk of response.body as unknown as AsyncIterable<Uint8Array>) {
+    buffer += decoder.decode(chunk, { stream: true });
+    const lines = buffer.split(/\r?\n/);
+    buffer = lines.pop() ?? "";
+    for (const line of lines) {
+      if (!line.trim()) continue;
+      emitOllamaPullLine(line, onLog);
+    }
+  }
+  if (buffer.trim()) emitOllamaPullLine(buffer, onLog);
+  return `${modelName} のpullが完了しました。`;
+}
+
+export async function deleteOllamaModel(ollamaUrl: string, model: string): Promise<string> {
+  const modelName = model.trim();
+  if (!modelName) throw new Error("削除するOllamaモデル名を指定してください。");
+  const response = await fetch(`${ollamaUrl.replace(/\/$/, "")}/api/delete`, {
+    method: "DELETE",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ name: modelName })
+  });
+  if (!response.ok) {
+    throw new Error(`Ollamaモデル削除に失敗しました: HTTP ${response.status}`);
+  }
+  return `${modelName} を削除しました。`;
+}
+
+export async function enhancePromptWithOllama(request: PromptEnhanceRequest): Promise<PromptEnhanceResult> {
+  if (!request.japanesePrompt.trim()) {
+    throw new Error("日本語プロンプトを入力してください。");
+  }
+  if (!request.model.trim()) {
+    throw new Error("Ollamaモデル名を入力してください。");
+  }
+
+  const instruction = [
+    "You are an expert prompt engineer for anime image generation models such as SDXL, Illustrious, Pony, and Animagine.",
+    "Convert the user's Japanese request into concise English image-generation prompts.",
+    "Return strict JSON only with keys: positivePrompt, negativePrompt, notes.",
+    "positivePrompt should be comma-separated English tags and short phrases.",
+    "negativePrompt should be comma-separated English tags.",
+    "Keep existing useful prompt fragments if provided, but remove contradictions.",
+    "Do not include markdown."
+  ].join("\n");
+  const userText = [
+    `Japanese request: ${request.japanesePrompt}`,
+    `Current positive prompt: ${request.currentPrompt}`,
+    `Current negative prompt: ${request.currentNegativePrompt}`
+  ].join("\n");
+
+  const response = await fetch(`${request.ollamaUrl.replace(/\/$/, "")}/api/generate`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      model: request.model,
+      stream: false,
+      format: "json",
+      prompt: `${instruction}\n\n${userText}`
+    })
+  });
+  if (!response.ok) {
+    throw new Error(`Ollama prompt変換に失敗しました: HTTP ${response.status}`);
+  }
+  const json = (await response.json()) as { response?: string };
+  return parsePromptEnhanceResponse(json.response ?? "");
+}
+
 async function civitaiAuthHeader(): Promise<Record<string, string>> {
   const settings = await getAppSettings();
   return settings.civitaiApiKey ? { Authorization: `Bearer ${settings.civitaiApiKey}` } : {};
@@ -888,6 +1061,13 @@ async function findDockerDesktop(): Promise<string | null> {
     if (await exists(path)) {
       return path;
     }
+  }
+  return null;
+}
+
+async function findOllamaApp(): Promise<string | null> {
+  for (const path of ["/Applications/Ollama.app", "/Applications/Utilities/Ollama.app"]) {
+    if (await exists(path)) return path;
   }
   return null;
 }
@@ -1168,6 +1348,45 @@ function downloadProgressLine(receivedBytes: number, totalBytes: number): string
     return `ダウンロード中: ${formatBytes(receivedBytes)} / ${formatBytes(totalBytes)} (${percent.toFixed(1)}%)`;
   }
   return `ダウンロード中: ${formatBytes(receivedBytes)}`;
+}
+
+function emitOllamaPullLine(line: string, onLog: RuntimeLogSink): void {
+  try {
+    const event = JSON.parse(line) as { status?: string; digest?: string; total?: number; completed?: number; error?: string };
+    if (event.error) {
+      onLog({ level: "stderr", line: event.error });
+      return;
+    }
+    const status = event.status ?? "pulling";
+    if (event.total && event.completed) {
+      const percent = Math.min(100, (event.completed / event.total) * 100);
+      onLog({
+        level: "info",
+        line: `${status}: ${formatBytes(event.completed)} / ${formatBytes(event.total)} (${percent.toFixed(1)}%)`
+      });
+      return;
+    }
+    onLog({ level: "info", line: event.digest ? `${status}: ${event.digest}` : status });
+  } catch {
+    onLog({ level: "stdout", line });
+  }
+}
+
+function parsePromptEnhanceResponse(text: string): PromptEnhanceResult {
+  try {
+    const parsed = JSON.parse(text) as Partial<PromptEnhanceResult>;
+    return {
+      positivePrompt: String(parsed.positivePrompt ?? "").trim(),
+      negativePrompt: String(parsed.negativePrompt ?? "").trim(),
+      notes: String(parsed.notes ?? "").trim()
+    };
+  } catch {
+    return {
+      positivePrompt: text.trim(),
+      negativePrompt: "low quality, worst quality, blurry, bad anatomy",
+      notes: "LLM応答がJSONではなかったため、応答本文をpositive promptとして扱いました。"
+    };
+  }
 }
 
 function normalizeCivitaiModel(item: unknown): CivitaiModelCard[] {

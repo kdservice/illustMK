@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import {
   Boxes,
+  Bot,
   CheckCircle2,
   CircleAlert,
   Download,
@@ -18,6 +19,7 @@ import {
 import type {
   CivitaiModelCard,
   DownloadRequest,
+  OllamaStatus,
   RuntimePaths,
   RuntimeStatus,
   TestGenerationRequest,
@@ -50,6 +52,12 @@ const allBaseFilters = [
   { name: "Flux", status: "現在は非対応" },
   { name: "Qwen Image", status: "現在は非対応" }
 ];
+const recommendedLlmModels = [
+  "qwen2.5:3b-instruct",
+  "qwen2.5:7b-instruct",
+  "gemma3:4b",
+  "hf.co/soyaakinohara/Spark-X2.5-4B-Heretic-JP-GGUF"
+];
 
 function App() {
   const [paths, setPaths] = useState<RuntimePaths | null>(null);
@@ -64,6 +72,11 @@ function App() {
   const [catalogPeriod, setCatalogPeriod] = useState<"Month" | "AllTime">("Month");
   const [baseFilters, setBaseFilters] = useState<string[]>(defaultBaseFilters);
   const [civitaiApiKey, setCivitaiApiKey] = useState("");
+  const [ollamaUrl, setOllamaUrl] = useState("http://127.0.0.1:11434");
+  const [ollamaModel, setOllamaModel] = useState("qwen2.5:3b-instruct");
+  const [ollamaStatus, setOllamaStatus] = useState<OllamaStatus | null>(null);
+  const [japanesePrompt, setJapanesePrompt] = useState("");
+  const [promptNotes, setPromptNotes] = useState("");
   const [selectedCheckpoint, setSelectedCheckpoint] = useState("");
   const [prompt, setPrompt] = useState("masterpiece, best quality, 1girl, anime style, soft light");
   const [negativePrompt, setNegativePrompt] = useState("low quality, worst quality, blurry, bad anatomy");
@@ -158,6 +171,25 @@ function App() {
       appendLog("stderr", errorText, id);
       setAction({ busy: false, message: "失敗しました", error: errorText });
       await refreshStatus();
+    }
+  }
+
+  async function runOllamaPull(): Promise<void> {
+    const id = crypto.randomUUID();
+    currentOperationId.current = id;
+    appendLog("info", `${ollamaModel} をpull中`, id);
+    setAction({ busy: true, message: "Ollamaモデルをpull中", error: null });
+    setDownloadProgress(null);
+    try {
+      const result = await window.illustMK.runtime.runOperation({ id, operation: "ollama-pull", model: ollamaModel, ollamaUrl });
+      appendLog("info", result, id);
+      setAction({ busy: false, message: "完了しました", error: null });
+      await refreshOllamaStatus();
+    } catch (error) {
+      const errorText = error instanceof Error ? error.message : String(error);
+      appendLog("stderr", errorText, id);
+      setAction({ busy: false, message: "失敗しました", error: errorText });
+      await refreshOllamaStatus();
     }
   }
 
@@ -260,13 +292,39 @@ function App() {
     setStatus(nextStatus);
   }
 
+  async function refreshOllamaStatus(): Promise<void> {
+    setOllamaStatus(await window.illustMK.ollama.status(ollamaUrl));
+  }
+
   async function loadSettings(): Promise<void> {
     const settings = await window.illustMK.settings.get();
     setCivitaiApiKey(settings.civitaiApiKey);
+    setOllamaUrl(settings.ollamaUrl);
+    setOllamaModel(settings.ollamaModel);
+    setOllamaStatus(await window.illustMK.ollama.status(settings.ollamaUrl));
   }
 
   async function saveSettings(): Promise<void> {
-    await runAction("Civitai APIキーを保存中", () => window.illustMK.settings.save({ civitaiApiKey }));
+    await runAction("設定を保存中", () => window.illustMK.settings.save({ civitaiApiKey, ollamaUrl, ollamaModel }));
+  }
+
+  async function enhanceJapanesePrompt(): Promise<void> {
+    await runAction(
+      "日本語プロンプトを生成向けに変換中",
+      () =>
+        window.illustMK.ollama.enhancePrompt({
+          ollamaUrl,
+          model: ollamaModel,
+          japanesePrompt,
+          currentPrompt: prompt,
+          currentNegativePrompt: negativePrompt
+        }),
+      (result) => {
+        setPrompt(result.positivePrompt);
+        setNegativePrompt(result.negativePrompt);
+        setPromptNotes(result.notes);
+      }
+    );
   }
 
   function imageUrl(path: string): string {
@@ -392,6 +450,83 @@ function App() {
                 <strong>{action.message}</strong>
                 <p>{action.error ?? "環境操作の結果は下段ログに集約します。"}</p>
               </div>
+            </div>
+          </section>
+
+          <section className="panel">
+            <PanelTitle icon={<Bot size={18} />} title="LLM / Ollama" />
+            <div className="status-grid compact">
+              <div>
+                <span>Ollama.app</span>
+                <strong>{ollamaStatus?.installed ? "検出" : "未検出"}</strong>
+              </div>
+              <div>
+                <span>API</span>
+                <strong>{ollamaStatus?.reachable ? "接続OK" : "未接続"}</strong>
+              </div>
+            </div>
+            <div className="field">
+              <label>Ollama API</label>
+              <div className="inline">
+                <input value={ollamaUrl} onChange={(event) => setOllamaUrl(event.target.value)} />
+                <button className="icon-button" onClick={() => void refreshOllamaStatus()} title="再確認">
+                  <RefreshCw size={17} />
+                </button>
+              </div>
+            </div>
+            <div className="field">
+              <label>LLM Model</label>
+              <input list="llm-models" value={ollamaModel} onChange={(event) => setOllamaModel(event.target.value)} />
+              <datalist id="llm-models">
+                {recommendedLlmModels.map((model) => (
+                  <option key={model} value={model} />
+                ))}
+              </datalist>
+            </div>
+            <div className="button-grid">
+              <button onClick={() => void runAction("Ollamaを起動中", () => window.illustMK.ollama.start(), () => void refreshOllamaStatus())}>
+                <Play size={17} />
+                起動
+              </button>
+              <button onClick={() => void runAction("Ollamaを停止中", () => window.illustMK.ollama.stop(), () => void refreshOllamaStatus())}>
+                <Square size={17} />
+                停止
+              </button>
+              <button onClick={() => void runOllamaPull()} disabled={action.busy || !ollamaModel.trim()}>
+                <Download size={17} />
+                Pull
+              </button>
+              <button onClick={() => void saveSettings()}>
+                <CheckCircle2 size={17} />
+                保存
+              </button>
+            </div>
+            <div className="model-list">
+              <h2>DL済みLLM</h2>
+              {ollamaStatus?.models.length ? (
+                ollamaStatus.models.map((model) => (
+                  <div className="model-row" key={model.name}>
+                    <button className={ollamaModel === model.name ? "model selected" : "model"} onClick={() => setOllamaModel(model.name)}>
+                      <span>{model.name}</span>
+                      <small>{model.sizeLabel}</small>
+                    </button>
+                    <button
+                      className="icon-button danger"
+                      disabled={action.busy}
+                      onClick={() =>
+                        void runAction(`${model.name} を削除中`, () =>
+                          window.illustMK.ollama.deleteModel({ ollamaUrl, model: model.name }), () => void refreshOllamaStatus()
+                        )
+                      }
+                      title="削除"
+                    >
+                      <Trash2 size={16} />
+                    </button>
+                  </div>
+                ))
+              ) : (
+                <p className="empty">{ollamaStatus?.message ?? "Ollamaの状態を確認してください。"}</p>
+              )}
             </div>
           </section>
 
@@ -576,6 +711,19 @@ function App() {
           </section>
 
           <section className="panel generate-panel">
+            <div className="field">
+              <label>Japanese Prompt</label>
+              <textarea
+                placeholder="例: 夕方の教室で、青緑のツインテールの女子高生。少し照れている感じ。"
+                value={japanesePrompt}
+                onChange={(event) => setJapanesePrompt(event.target.value)}
+              />
+            </div>
+            <button className="primary" disabled={action.busy || !japanesePrompt.trim()} onClick={() => void enhanceJapanesePrompt()}>
+              <Bot size={17} />
+              日本語から生成promptへ変換
+            </button>
+            {promptNotes ? <p className="result-message">{promptNotes}</p> : null}
             <div className="field">
               <label>Checkpoint</label>
               <select value={selectedCheckpoint} onChange={(event) => setSelectedCheckpoint(event.target.value)}>

@@ -234,6 +234,10 @@ label {
   margin-bottom: 14px;
 }
 
+.status-grid.compact div {
+  min-height: 48px;
+}
+
 .status-grid div {
   min-height: 58px;
   border: 1px solid #1c2d53;

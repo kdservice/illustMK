@@ -5,13 +5,17 @@ import {
   buildRuntimeWithLogs,
   cleanupDockerRuntime,
   deleteModelFile,
+  deleteOllamaModel,
   downloadModel,
+  enhancePromptWithOllama,
   ensureRuntimeFiles,
   getRuntimePaths,
   getStatus,
   getAppSettings,
+  getOllamaStatus,
   initNativeRuntime,
   installNativeRuntime,
+  pullOllamaModel,
   runTestGeneration,
   searchCivitaiModels,
   saveAppSettings,
@@ -19,15 +23,18 @@ import {
   showNativeLogs,
   startNativeRuntime,
   startDockerEngine,
+  startOllama,
   startRuntime,
   startRuntimeWithLogs,
   stopDockerEngine,
   stopNativeRuntime,
+  stopOllama,
   stopRuntime,
   stopRuntimeWithLogs,
   type AppSettings,
   type DeleteModelRequest,
   type DownloadRequest,
+  type PromptEnhanceRequest,
   type TestGenerationRequest
 } from "./runtime";
 
@@ -84,7 +91,7 @@ function registerIpc(): void {
   ipcMain.handle("runtime:build", () => buildRuntime());
   ipcMain.handle("runtime:start", () => startRuntime());
   ipcMain.handle("runtime:stop", () => stopRuntime());
-  ipcMain.handle("runtime:run-operation", async (event, request: { id: string; operation: string }) => {
+  ipcMain.handle("runtime:run-operation", async (event, request: { id: string; operation: string; model?: string; ollamaUrl?: string }) => {
     const sendLog = (level: "info" | "stdout" | "stderr", line: string) => {
       event.sender.send("runtime:operation-log", { id: request.id, level, line });
     };
@@ -120,6 +127,11 @@ function registerIpc(): void {
       if (request.operation === "docker-cleanup") {
         return await cleanupDockerRuntime((log) => sendLog(log.level, log.line));
       }
+      if (request.operation === "ollama-pull") {
+        return await pullOllamaModel(request.ollamaUrl ?? "http://127.0.0.1:11434", request.model ?? "", (log) =>
+          sendLog(log.level, log.line)
+        );
+      }
       throw new Error(`Unknown operation: ${request.operation}`);
     } catch (error) {
       sendLog("stderr", error instanceof Error ? error.message : String(error));
@@ -138,5 +150,12 @@ function registerIpc(): void {
   ipcMain.handle("runtime:delete-model", (_event, request: DeleteModelRequest) => deleteModelFile(request));
   ipcMain.handle("runtime:search-civitai", (_event, options) => searchCivitaiModels(options));
   ipcMain.handle("runtime:test-generate", (_event, request: TestGenerationRequest) => runTestGeneration(request));
+  ipcMain.handle("ollama:status", (_event, ollamaUrl?: string) => getOllamaStatus(ollamaUrl));
+  ipcMain.handle("ollama:start", () => startOllama());
+  ipcMain.handle("ollama:stop", () => stopOllama());
+  ipcMain.handle("ollama:delete-model", (_event, request: { ollamaUrl: string; model: string }) =>
+    deleteOllamaModel(request.ollamaUrl, request.model)
+  );
+  ipcMain.handle("ollama:enhance-prompt", (_event, request: PromptEnhanceRequest) => enhancePromptWithOllama(request));
   ipcMain.handle("app:open-path", (_event, path: string) => shell.openPath(path));
 }
