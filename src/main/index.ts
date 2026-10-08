@@ -62,6 +62,7 @@ import {
   type AppSettings,
   type DeleteModelRequest,
   type DownloadRequest,
+  type LoraTrainingRunParams,
   type LlmChatRequest,
   type PromptEnhanceRequest,
   type SaveLoraCaptionWorkspaceRequest,
@@ -196,7 +197,7 @@ function registerIpc(): void {
   ipcMain.handle("runtime:build", () => buildRuntime());
   ipcMain.handle("runtime:start", () => startRuntime());
   ipcMain.handle("runtime:stop", () => stopRuntime());
-  ipcMain.handle("runtime:run-operation", async (event, request: { id: string; operation: string; model?: string; ollamaUrl?: string; projectId?: string; sourceLora?: string }) => {
+  ipcMain.handle("runtime:run-operation", async (event, request: { id: string; operation: string; model?: string; ollamaUrl?: string; projectId?: string; sourceLora?: string; runParams?: Partial<LoraTrainingRunParams> }) => {
     const sendLog = (level: "info" | "stdout" | "stderr", line: string) => {
       event.sender.send("runtime:operation-log", { id: request.id, level, line });
     };
@@ -224,10 +225,10 @@ function registerIpc(): void {
         return await installLoraRuntime((log) => sendLog(log.level, log.line));
       }
       if (request.operation === "lora-train") {
-        return await trainLoraTrainingProject(request.projectId ?? "", (log) => sendLog(log.level, log.line), { sourceLora: request.sourceLora });
+        return await trainLoraTrainingProject(request.projectId ?? "", (log) => sendLog(log.level, log.line), { sourceLora: request.sourceLora, runParams: request.runParams });
       }
       if (request.operation === "lora-resume") {
-        return await trainLoraTrainingProject(request.projectId ?? "", (log) => sendLog(log.level, log.line), { resume: true, sourceLora: request.sourceLora });
+        return await trainLoraTrainingProject(request.projectId ?? "", (log) => sendLog(log.level, log.line), { resume: true, sourceLora: request.sourceLora, runParams: request.runParams });
       }
       if (request.operation === "native-start") {
         return await startNativeRuntime((log) => sendLog(log.level, log.line));

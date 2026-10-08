@@ -9,6 +9,7 @@ import type {
   LlmChatMessage,
   LlmChatRequest,
   LoraCaptionWorkspace,
+  LoraTrainingRunParams,
   LoraTrainingProject,
   IllustrationTag,
   OllamaStatus,
@@ -47,7 +48,7 @@ const api = {
     build: (): Promise<string> => ipcRenderer.invoke("runtime:build"),
     start: (): Promise<string> => ipcRenderer.invoke("runtime:start"),
     stop: (): Promise<string> => ipcRenderer.invoke("runtime:stop"),
-    runOperation: (request: { id: string; operation: string; model?: string; ollamaUrl?: string; projectId?: string; sourceLora?: string }): Promise<string> =>
+    runOperation: (request: { id: string; operation: string; model?: string; ollamaUrl?: string; projectId?: string; sourceLora?: string; runParams?: Partial<LoraTrainingRunParams> }): Promise<string> =>
       ipcRenderer.invoke("runtime:run-operation", request),
     onOperationLog: (callback: (event: OperationLog) => void): (() => void) => {
       const listener = (_event: Electron.IpcRendererEvent, payload: OperationLog) => callback(payload);

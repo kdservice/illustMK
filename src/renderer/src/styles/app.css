@@ -332,8 +332,19 @@ label {
 
 .lora-train-grid {
   display: grid;
-  grid-template-columns: repeat(5, minmax(0, 1fr));
+  grid-template-columns: repeat(5, minmax(96px, 1fr));
   gap: 8px;
+}
+
+.lora-preset-tabs {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.lora-preset-tabs button.active {
+  border-color: #44bcff;
+  background: #15335f;
 }
 
 .lora-project-list,

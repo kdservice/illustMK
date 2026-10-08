@@ -31,6 +31,7 @@ import type {
   LoraCaptionCustomTag,
   LoraCaptionTag,
   LoraCaptionWorkspace,
+  LoraTrainingRunParams,
   LoraTrainingProject,
   OllamaStatus,
   PromptEnhanceMode,
@@ -78,6 +79,21 @@ const recommendedLlmModels = [
     note: "日本語性能狙い。Ollamaのhf.co指定で取得を試す候補。"
   }
 ];
+
+type LoraTrainingPreset = "fast" | "normal" | "quality" | "custom";
+
+const loraTrainingPresets: Record<Exclude<LoraTrainingPreset, "custom">, LoraTrainingRunParams> = {
+  fast: { resolution: 512, repeats: 1, epochs: 1, networkDim: 4, learningRate: "1e-4" },
+  normal: { resolution: 1024, repeats: 5, epochs: 5, networkDim: 16, learningRate: "1e-4" },
+  quality: { resolution: 1024, repeats: 10, epochs: 10, networkDim: 32, learningRate: "1e-4" }
+};
+
+const loraPresetLabels: Record<LoraTrainingPreset, string> = {
+  fast: "最速",
+  normal: "通常",
+  quality: "最高精度",
+  custom: "カスタム"
+};
 
 function App() {
   const [paths, setPaths] = useState<RuntimePaths | null>(null);
@@ -130,8 +146,8 @@ function App() {
   const [selectedLoraProjectId, setSelectedLoraProjectId] = useState<string | null>(null);
   const [loraName, setLoraName] = useState("");
   const [loraTriggerWord, setLoraTriggerWord] = useState("");
-  const [loraSourceLora, setLoraSourceLora] = useState("");
   const [loraAdditionalTraining, setLoraAdditionalTraining] = useState(false);
+  const [loraTrainingPreset, setLoraTrainingPreset] = useState<LoraTrainingPreset>("fast");
   const [loraResolution, setLoraResolution] = useState(1024);
   const [loraRepeats, setLoraRepeats] = useState(10);
   const [loraEpochs, setLoraEpochs] = useState(10);
@@ -170,6 +186,22 @@ function App() {
   const selectedLoraProject = useMemo(
     () => loraProjects.find((project) => project.id === selectedLoraProjectId) ?? loraProjects[0] ?? null,
     [loraProjects, selectedLoraProjectId]
+  );
+  const activeLoraRunParams: LoraTrainingRunParams = useMemo(
+    () =>
+      loraTrainingPreset === "custom"
+        ? {
+            resolution: loraResolution,
+            repeats: loraRepeats,
+            epochs: loraEpochs,
+            networkDim: loraNetworkDim,
+            learningRate: loraLearningRate
+          }
+        : loraTrainingPresets[loraTrainingPreset],
+    [loraEpochs, loraLearningRate, loraNetworkDim, loraRepeats, loraResolution, loraTrainingPreset]
+  );
+  const selectedProjectOutputExists = Boolean(
+    selectedLoraProject && status?.loras.some((file) => file.name === selectedLoraProject.outputName)
   );
   const effectivePrompt = prompt;
   const canGenerate = Boolean(status?.comfyReachable && selectedCheckpointInfo?.simpleWorkflowReady && !action.busy);
@@ -277,7 +309,11 @@ function App() {
     }
   }
 
-  async function runStreamOperation(operation: string, message: string, options: { projectId?: string; sourceLora?: string } = {}): Promise<void> {
+  async function runStreamOperation(
+    operation: string,
+    message: string,
+    options: { projectId?: string; sourceLora?: string; runParams?: LoraTrainingRunParams } = {}
+  ): Promise<void> {
     const id = crypto.randomUUID();
     currentOperationId.current = id;
     appendLog("info", message, id);
@@ -626,12 +662,7 @@ function App() {
         window.illustMK.loraProjects.save({
           name: loraName,
           triggerWord: loraTriggerWord,
-          baseCheckpoint: selectedCheckpoint,
-          resolution: loraResolution,
-          repeats: loraRepeats,
-          epochs: loraEpochs,
-          networkDim: loraNetworkDim,
-          learningRate: loraLearningRate
+          baseCheckpoint: selectedCheckpoint
         }),
       (projects) => {
         setLoraProjects(projects);
@@ -647,7 +678,7 @@ function App() {
   }
 
   async function trainLoraProject(id: string): Promise<void> {
-    const sourceLora = loraAdditionalTraining ? loraSourceLora : "";
+    const sourceLora = loraAdditionalTraining ? selectedLoraProject?.outputName ?? "" : "";
     setLoraProjects((projects) =>
       projects.map((project) =>
         project.id === id
@@ -655,11 +686,11 @@ function App() {
           : project
       )
     );
-    await runStreamOperation("lora-train", "LoRA学習を開始中", { projectId: id, sourceLora });
+    await runStreamOperation("lora-train", "LoRA学習を開始中", { projectId: id, sourceLora, runParams: activeLoraRunParams });
   }
 
   async function resumeLoraProject(id: string): Promise<void> {
-    const sourceLora = loraAdditionalTraining ? loraSourceLora : "";
+    const sourceLora = loraAdditionalTraining ? selectedLoraProject?.outputName ?? "" : "";
     setLoraProjects((projects) =>
       projects.map((project) =>
         project.id === id
@@ -667,7 +698,7 @@ function App() {
           : project
       )
     );
-    await runStreamOperation("lora-resume", "LoRA学習を再開中", { projectId: id, sourceLora });
+    await runStreamOperation("lora-resume", "LoRA学習を再開中", { projectId: id, sourceLora, runParams: activeLoraRunParams });
   }
 
   async function importLoraProjectFile(): Promise<void> {
@@ -1462,7 +1493,7 @@ function App() {
         <section className="lora-layout">
           <section className="panel lora-project-panel">
             <div className="lora-create-header">
-              <PanelTitle icon={<Boxes size={18} />} title="LoRAプロジェクト" />
+              <PanelTitle icon={<Boxes size={18} />} title="LoRA新規作成 / 一覧" />
             </div>
             <div className="lora-flow">
               <span>1. プロジェクト</span>
@@ -1483,9 +1514,6 @@ function App() {
                 <input placeholder="mkchar" value={loraTriggerWord} onChange={(event) => setLoraTriggerWord(event.target.value)} />
               </div>
             </div>
-            <div className="lora-settings-block">
-              <PanelTitle icon={<TerminalSquare size={18} />} title="学習設定" />
-            </div>
             <div className="field">
               <label>Base Checkpoint</label>
               <select value={selectedCheckpoint} onChange={(event) => setSelectedCheckpoint(event.target.value)}>
@@ -1500,28 +1528,6 @@ function App() {
                 )}
               </select>
             </div>
-            <div className="lora-train-grid">
-              <div className="field">
-                <label>Resolution</label>
-                <input type="number" min="512" step="64" value={loraResolution} onChange={(event) => setLoraResolution(Number(event.target.value))} />
-              </div>
-              <div className="field">
-                <label>Repeats</label>
-                <input type="number" min="1" value={loraRepeats} onChange={(event) => setLoraRepeats(Number(event.target.value))} />
-              </div>
-              <div className="field">
-                <label>Epochs</label>
-                <input type="number" min="1" value={loraEpochs} onChange={(event) => setLoraEpochs(Number(event.target.value))} />
-              </div>
-              <div className="field">
-                <label>Network Dim</label>
-                <input type="number" min="1" value={loraNetworkDim} onChange={(event) => setLoraNetworkDim(Number(event.target.value))} />
-              </div>
-              <div className="field">
-                <label>Learning Rate</label>
-                <input value={loraLearningRate} onChange={(event) => setLoraLearningRate(event.target.value)} />
-              </div>
-            </div>
             <div className="button-row">
               <button className="primary" disabled={action.busy || !loraName.trim() || !selectedCheckpoint} onClick={() => void saveLoraProject()}>
                 <CheckCircle2 size={17} />
@@ -1535,6 +1541,35 @@ function App() {
                 <Plus size={17} />
                 インポート
               </button>
+            </div>
+            <div className="lora-project-list">
+              {loraProjects.length ? (
+                loraProjects.map((project) => (
+                  <article
+                    className={project.id === selectedLoraProject?.id ? "lora-project-card selected" : "lora-project-card"}
+                    key={project.id}
+                    role="button"
+                    tabIndex={0}
+                    onClick={() => setSelectedLoraProjectId(project.id)}
+                    onKeyDown={(event) => {
+                      if (event.key === "Enter" || event.key === " ") setSelectedLoraProjectId(project.id);
+                    }}
+                  >
+                    <header>
+                      <strong>{project.name}</strong>
+                      <span>{project.status}</span>
+                    </header>
+                    <div className="lora-project-meta">
+                      <span>Trigger: {project.triggerWord || "なし"}</span>
+                      <span>Base: {project.baseCheckpoint}</span>
+                      <span>Output: {project.outputName}</span>
+                    </div>
+                    <p>{project.message}</p>
+                  </article>
+                ))
+              ) : (
+                <p className="empty">まだLoRAプロジェクトがありません。</p>
+              )}
             </div>
           </section>
           <section className="panel lora-project-panel">
@@ -1566,25 +1601,57 @@ function App() {
               <div className="lora-control-summary">
                 <strong>{selectedLoraProject?.name ?? "LoRA未選択"}</strong>
                 <span>{selectedLoraProject ? `status: ${selectedLoraProject.status}` : "status: -"}</span>
+                <span>{selectedLoraProject ? `output: ${selectedLoraProject.outputName}` : "output: -"}</span>
                 <small>{selectedLoraProject?.message ?? "プロジェクトを選択してください。"}</small>
               </div>
               <label className="toggle-row">
                 <input type="checkbox" checked={loraAdditionalTraining} onChange={(event) => setLoraAdditionalTraining(event.target.checked)} />
                 追加学習
               </label>
-              {loraAdditionalTraining ? (
-                <div className="field">
-                  <label>追加学習元LoRA</label>
-                  <select value={loraSourceLora} onChange={(event) => setLoraSourceLora(event.target.value)}>
-                    <option value="">選択してください</option>
-                    {status?.loras.length ? (
-                      status.loras.map((file) => (
-                        <option key={file.name} value={file.name}>
-                          {file.name} ({file.sizeLabel})
-                        </option>
-                      ))
-                    ) : null}
-                  </select>
+              {loraAdditionalTraining && !selectedProjectOutputExists ? (
+                <p className="result-message">追加学習には選択中プロジェクトの出力LoRAが必要です。先に新規学習を完了してください。</p>
+              ) : null}
+              <div className="lora-settings-block">
+                <PanelTitle icon={<TerminalSquare size={18} />} title="学習パラメータ" />
+              </div>
+              <div className="segmented lora-preset-tabs">
+                {(["fast", "normal", "quality", "custom"] as LoraTrainingPreset[]).map((preset) => (
+                  <button
+                    key={preset}
+                    className={loraTrainingPreset === preset ? "active" : ""}
+                    onClick={() => setLoraTrainingPreset(preset)}
+                  >
+                    {loraPresetLabels[preset]}
+                  </button>
+                ))}
+              </div>
+              <div className="lora-control-summary">
+                <span>
+                  {activeLoraRunParams.resolution}px / repeats {activeLoraRunParams.repeats} / epochs {activeLoraRunParams.epochs} / dim {activeLoraRunParams.networkDim} / lr {activeLoraRunParams.learningRate}
+                </span>
+              </div>
+              {loraTrainingPreset === "custom" ? (
+                <div className="lora-train-grid">
+                  <div className="field">
+                    <label>Resolution</label>
+                    <input type="number" min="512" step="64" value={loraResolution} onChange={(event) => setLoraResolution(Number(event.target.value))} />
+                  </div>
+                  <div className="field">
+                    <label>Repeats</label>
+                    <input type="number" min="1" value={loraRepeats} onChange={(event) => setLoraRepeats(Number(event.target.value))} />
+                  </div>
+                  <div className="field">
+                    <label>Epochs</label>
+                    <input type="number" min="1" value={loraEpochs} onChange={(event) => setLoraEpochs(Number(event.target.value))} />
+                  </div>
+                  <div className="field">
+                    <label>Network Dim</label>
+                    <input type="number" min="1" value={loraNetworkDim} onChange={(event) => setLoraNetworkDim(Number(event.target.value))} />
+                  </div>
+                  <div className="field">
+                    <label>Learning Rate</label>
+                    <input value={loraLearningRate} onChange={(event) => setLoraLearningRate(event.target.value)} />
+                  </div>
                 </div>
               ) : null}
               <div className="button-row">
@@ -1600,11 +1667,11 @@ function App() {
                   <Play size={15} />
                   学習前チェック
                 </button>
-                <button className="primary" disabled={action.busy || !selectedLoraProject || selectedLoraProject.status === "running" || (loraAdditionalTraining && !loraSourceLora)} onClick={() => selectedLoraProject && void trainLoraProject(selectedLoraProject.id)}>
+                <button className="primary" disabled={action.busy || !selectedLoraProject || selectedLoraProject.status === "running" || (loraAdditionalTraining && !selectedProjectOutputExists)} onClick={() => selectedLoraProject && void trainLoraProject(selectedLoraProject.id)}>
                   <WandSparkles size={15} />
                   学習開始
                 </button>
-                <button disabled={action.busy || !selectedLoraProject || selectedLoraProject.status === "running" || (loraAdditionalTraining && !loraSourceLora)} onClick={() => selectedLoraProject && void resumeLoraProject(selectedLoraProject.id)}>
+                <button disabled={action.busy || !selectedLoraProject || selectedLoraProject.status === "running" || (loraAdditionalTraining && !selectedProjectOutputExists)} onClick={() => selectedLoraProject && void resumeLoraProject(selectedLoraProject.id)}>
                   <RefreshCw size={15} />
                   再開
                 </button>
@@ -1617,36 +1684,6 @@ function App() {
                   停止
                 </button>
               </div>
-            </div>
-            <div className="lora-project-list">
-              {loraProjects.length ? (
-                loraProjects.map((project) => (
-                  <article
-                    className={project.id === selectedLoraProject?.id ? "lora-project-card selected" : "lora-project-card"}
-                    key={project.id}
-                    role="button"
-                    tabIndex={0}
-                    onClick={() => setSelectedLoraProjectId(project.id)}
-                    onKeyDown={(event) => {
-                      if (event.key === "Enter" || event.key === " ") setSelectedLoraProjectId(project.id);
-                    }}
-                  >
-                    <header>
-                      <strong>{project.name}</strong>
-                      <span>{project.status}</span>
-                    </header>
-                    <div className="lora-project-meta">
-                      <span>Trigger: {project.triggerWord || "なし"}</span>
-                      <span>Base: {project.baseCheckpoint}</span>
-                      <span>Output: {project.outputName}</span>
-                    </div>
-                    <p>{project.message}</p>
-                    <small>{project.datasetPath}</small>
-                  </article>
-                ))
-              ) : (
-                <p className="empty">まだLoRAプロジェクトがありません。</p>
-              )}
             </div>
           </section>
         </section>

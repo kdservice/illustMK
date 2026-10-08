@@ -11,6 +11,13 @@ import { promisify } from "node:util";
 const execFileAsync = promisify(execFile);
 const activeNativeCommands = new Map<string, ChildProcessWithoutNullStreams>();
 const stoppedLoraTrainingProjectIds = new Map<string, "paused" | "stopped">();
+const defaultLoraRunParams: LoraTrainingRunParams = {
+  resolution: 1024,
+  repeats: 5,
+  epochs: 5,
+  networkDim: 16,
+  learningRate: "1e-4"
+};
 
 export type RuntimePaths = {
   root: string;
@@ -308,6 +315,14 @@ export type SaveLoraTrainingProjectRequest = {
   name: string;
   triggerWord: string;
   baseCheckpoint: string;
+  resolution?: number;
+  repeats?: number;
+  epochs?: number;
+  networkDim?: number;
+  learningRate?: string;
+};
+
+export type LoraTrainingRunParams = {
   resolution: number;
   repeats: number;
   epochs: number;
@@ -1482,11 +1497,11 @@ export async function saveLoraTrainingProject(request: SaveLoraTrainingProjectRe
     baseCheckpoint: request.baseCheckpoint.trim(),
     datasetPath,
     outputName,
-    resolution: request.resolution,
-    repeats: request.repeats,
-    epochs: request.epochs,
-    networkDim: request.networkDim,
-    learningRate: request.learningRate.trim() || "1e-4",
+    resolution: request.resolution ?? existing?.resolution ?? defaultLoraRunParams.resolution,
+    repeats: request.repeats ?? existing?.repeats ?? defaultLoraRunParams.repeats,
+    epochs: request.epochs ?? existing?.epochs ?? defaultLoraRunParams.epochs,
+    networkDim: request.networkDim ?? existing?.networkDim ?? defaultLoraRunParams.networkDim,
+    learningRate: request.learningRate?.trim() || existing?.learningRate || defaultLoraRunParams.learningRate,
     createdAt: existing?.createdAt ?? now,
     updatedAt: now,
     status: "draft",
@@ -1616,7 +1631,7 @@ export async function saveLoraCaptionWorkspace(request: SaveLoraCaptionWorkspace
 export async function trainLoraTrainingProject(
   id: string,
   onLog: RuntimeLogSink,
-  options: { resume?: boolean; sourceLora?: string } = {}
+  options: { resume?: boolean; sourceLora?: string; runParams?: Partial<LoraTrainingRunParams> } = {}
 ): Promise<string> {
   const paths = await ensureRuntimeFiles();
   if (!(await exists(paths.loraPython)) || !(await exists(join(paths.loraScripts, "sdxl_train_network.py")))) {
@@ -1645,41 +1660,54 @@ export async function trainLoraTrainingProject(
   const mpsStatus = await getLoraMpsStatus(paths.loraPython);
   onLog({ level: mpsStatus.available ? "info" : "stderr", line: mpsStatus.message });
   const outputBaseName = project.outputName.replace(/\.safetensors$/i, "");
-  const resumeStatePath = options.resume ? await findLatestLoraTrainingState(paths.loras, outputBaseName) : null;
+  const sourceLora = options.sourceLora?.trim() ?? "";
+  if (sourceLora && !(await exists(join(paths.loras, sourceLora)))) {
+    throw new Error(`追加学習対象LoRAが見つかりません: ${sourceLora}`);
+  }
+  const writesProjectOutput = sourceLora === project.outputName;
+  const trainingOutputBaseName = writesProjectOutput ? `${outputBaseName}.__training_tmp` : outputBaseName;
+  const resumeStatePath = options.resume ? await findLatestLoraTrainingState(paths.loras, trainingOutputBaseName) : null;
   if (options.resume && !resumeStatePath) {
     throw new Error("再開できるLoRA学習stateが見つかりません。先に途中保存が作成されている必要があります。");
   }
   if (resumeStatePath) {
     onLog({ level: "info", line: `LoRA学習stateから再開します: ${resumeStatePath}` });
   }
-  const sourceLora = options.sourceLora?.trim() ?? "";
-  if (sourceLora && !(await exists(join(paths.loras, sourceLora)))) {
-    throw new Error(`追加学習元LoRAが見つかりません: ${sourceLora}`);
-  }
+  const runParams: LoraTrainingRunParams = {
+    resolution: options.runParams?.resolution ?? project.resolution,
+    repeats: options.runParams?.repeats ?? project.repeats,
+    epochs: options.runParams?.epochs ?? project.epochs,
+    networkDim: options.runParams?.networkDim ?? project.networkDim,
+    learningRate: options.runParams?.learningRate?.trim() || project.learningRate
+  };
+  onLog({
+    level: "info",
+    line: `LoRA学習パラメータ: resolution=${runParams.resolution}, repeats=${runParams.repeats}, epochs=${runParams.epochs}, network_dim=${runParams.networkDim}, lr=${runParams.learningRate}`
+  });
   const commandArgs = [
     "sdxl_train_network.py",
     "--pretrained_model_name_or_path",
     join(paths.checkpoints, project.baseCheckpoint),
     "--train_data_dir",
-    await resolveLoraTrainDataDir(project.datasetPath),
+    await prepareLoraRunTrainDataDir(project, runParams.repeats),
     "--output_dir",
     paths.loras,
     "--output_name",
-    outputBaseName,
+    trainingOutputBaseName,
     "--save_model_as",
     "safetensors",
     "--resolution",
-    `${project.resolution},${project.resolution}`,
+    `${runParams.resolution},${runParams.resolution}`,
     "--train_batch_size",
     "1",
     "--max_train_epochs",
-    String(project.epochs),
+    String(runParams.epochs),
     "--network_module",
     "networks.lora",
     "--network_dim",
-    String(project.networkDim),
+    String(runParams.networkDim),
     "--learning_rate",
-    project.learningRate,
+    runParams.learningRate,
     "--caption_extension",
     ".txt",
     "--enable_bucket",
@@ -1710,7 +1738,7 @@ export async function trainLoraTrainingProject(
     onLog({ level: "info", line: `Trigger Word: ${project.triggerWord.trim()}` });
   }
   if (sourceLora) {
-    onLog({ level: "info", line: `追加学習元LoRA: ${sourceLora}` });
+    onLog({ level: "info", line: `追加学習対象LoRA: ${sourceLora}` });
   }
 
   try {
@@ -1728,7 +1756,7 @@ export async function trainLoraTrainingProject(
         processKey: loraTrainingProcessKey(id)
       });
     }
-    const outputPath = join(paths.loras, `${outputBaseName}.safetensors`);
+    const outputPath = join(paths.loras, `${trainingOutputBaseName}.safetensors`);
     if (!(await exists(outputPath))) {
       throw new Error(
         [
@@ -1737,6 +1765,16 @@ export async function trainLoraTrainingProject(
           `未作成: ${outputPath}`
         ].join("\n")
       );
+    }
+    if (writesProjectOutput) {
+      const finalOutputPath = join(paths.loras, project.outputName);
+      const backupPath = join(paths.loras, `${outputBaseName}.backup-${Date.now()}.safetensors`);
+      if (await exists(finalOutputPath)) {
+        await rename(finalOutputPath, backupPath);
+        onLog({ level: "info", line: `既存LoRAをバックアップしました: ${backupPath}` });
+      }
+      await rename(outputPath, finalOutputPath);
+      onLog({ level: "info", line: `追加学習結果を反映しました: ${finalOutputPath}` });
     }
   } catch (error) {
     const failedProjects = await getLoraTrainingProjects();
@@ -1757,7 +1795,7 @@ export async function trainLoraTrainingProject(
     ...runningProject,
     status: "complete",
     updatedAt: new Date().toISOString(),
-    message: `LoRA学習が完了しました。出力: ${join(paths.loras, `${outputBaseName}.safetensors`)}`
+    message: `LoRA学習が完了しました。出力: ${join(paths.loras, project.outputName)}`
   };
   await saveLoraTrainingProjects(completedProjects.map((item) => (item.id === id ? completedProject : item)));
   return completedProject.message;
@@ -1879,8 +1917,8 @@ function loraCaptionImageTagsPath(project: LoraTrainingProject): string {
   return join(loraProjectConfigDir(project), "caption-image-tags.json");
 }
 
-function loraTrainingImageDir(project: LoraTrainingProject): string {
-  const repeats = Math.max(1, Math.round(project.repeats || 1));
+function loraTrainingImageDir(project: LoraTrainingProject, repeatsValue = project.repeats): string {
+  const repeats = Math.max(1, Math.round(repeatsValue || 1));
   return join(project.datasetPath, `${repeats}_${safeFileName(project.name)}`);
 }
 
@@ -2214,6 +2252,26 @@ async function getLoraMpsStatus(pythonPath: string): Promise<{ available: boolea
 
 async function resolveLoraTrainDataDir(datasetPath: string): Promise<string> {
   return (await summarizeLoraDataset(datasetPath)).trainDataDir;
+}
+
+async function prepareLoraRunTrainDataDir(project: LoraTrainingProject, repeats: number): Promise<string> {
+  await normalizeLoraDatasetStructure(project);
+  const sourceDir = loraTrainingImageDir(project);
+  const runDir = loraTrainingImageDir(project, repeats);
+  if (sourceDir !== runDir) {
+    const marker = join(runDir, ".illustmk-generated-repeat-dir");
+    if (await exists(marker)) {
+      await rm(runDir, { recursive: true, force: true });
+    }
+    await mkdir(runDir, { recursive: true });
+    await writeFile(marker, "generated by illustMK\n", "utf8");
+    const files = await listFiles(sourceDir);
+    for (const file of files) {
+      if (file === ".illustmk-generated-repeat-dir") continue;
+      await cp(join(sourceDir, file), join(runDir, file));
+    }
+  }
+  return resolveLoraTrainDataDir(project.datasetPath);
 }
 
 async function findLatestLoraTrainingState(loraOutputPath: string, outputBaseName: string): Promise<string | null> {
