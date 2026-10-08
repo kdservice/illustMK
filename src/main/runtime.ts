@@ -532,6 +532,7 @@ export async function installLoraRuntime(onLog: RuntimeLogSink): Promise<string>
   await spawnNativeCommand(paths.loraPython, ["-m", "pip", "install", "-r", join(paths.loraScripts, "requirements.txt")], onLog, {
     cwd: paths.loraScripts
   });
+  await spawnNativeCommand(paths.loraPython, ["-m", "pip", "install", "torchvision"], onLog, { cwd: paths.loraScripts });
   return "LoRA学習環境のインストールが完了しました。";
 }
 
