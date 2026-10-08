@@ -1369,7 +1369,11 @@ export async function saveLoraTrainingProject(request: SaveLoraTrainingProjectRe
   const safeName = safeFileName(name);
   const projectRoot = join(paths.loraProjects, safeName);
   const datasetPath = request.datasetPath?.trim() || join(projectRoot, "dataset");
-  const outputName = request.outputName?.trim() || `${safeName}.safetensors`;
+  const outputName = normalizeSafetensorsName(request.outputName?.trim() || `${safeName}.safetensors`);
+  const outputPath = join(paths.loras, outputName);
+  if (!existing && await exists(outputPath)) {
+    throw new Error(`同名のLoRAが既に完成済みです: ${outputName}\n別名にするか、追加学習元LoRAとして選択してください。`);
+  }
   const project: LoraTrainingProject = {
     id,
     name,
@@ -1599,6 +1603,11 @@ function isLoraTrainingProject(value: unknown): value is LoraTrainingProject {
 
 function safeFileName(value: string): string {
   return value.trim().replace(/[^a-zA-Z0-9._-]+/g, "-").replace(/^-+|-+$/g, "") || `lora-${Date.now()}`;
+}
+
+function normalizeSafetensorsName(value: string): string {
+  const safeName = safeFileName(value.replace(/\.safetensors$/i, ""));
+  return `${safeName}.safetensors`;
 }
 
 function isPromptHistoryEntry(value: unknown): value is PromptHistoryEntry {
