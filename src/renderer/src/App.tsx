@@ -105,7 +105,6 @@ function App() {
   const [selectedCheckpoint, setSelectedCheckpoint] = useState("");
   const [prompt, setPrompt] = useState("masterpiece, best quality, 1girl, anime style, soft light");
   const [negativePrompt, setNegativePrompt] = useState("low quality, worst quality, blurry, bad anatomy");
-  const [promptIntegratedTagIds, setPromptIntegratedTagIds] = useState<string[]>([]);
   const [lastImage, setLastImage] = useState<string | null>(null);
   const [generationResult, setGenerationResult] = useState<TestGenerationResult | null>(null);
   const [imageSizePreset, setImageSizePreset] = useState("768x1024");
@@ -133,18 +132,7 @@ function App() {
     () => illustrationTags.filter((tag) => selectedTagIds.includes(tag.id)),
     [illustrationTags, selectedTagIds]
   );
-  const promptIntegratedTagIdSet = useMemo(() => new Set(promptIntegratedTagIds), [promptIntegratedTagIds]);
-  const tagsToAppend = useMemo(
-    () => selectedTags.filter((tag) => !promptIntegratedTagIdSet.has(tag.id)),
-    [promptIntegratedTagIdSet, selectedTags]
-  );
-  const effectivePrompt = useMemo(() => {
-    const tagPromptText = tagsToAppend
-      .map((tag) => `${tag.englishName || tag.name} detail: ${tag.englishDescription}`)
-      .filter((part) => part.trim())
-      .join("\n");
-    return [prompt, tagPromptText].filter((part) => part.trim()).join("\n");
-  }, [prompt, tagsToAppend]);
+  const effectivePrompt = prompt;
   const canGenerate = Boolean(status?.comfyReachable && selectedCheckpointInfo?.simpleWorkflowReady && !action.busy);
   const canDownloadLlm = Boolean(ollamaStatus?.reachable && ollamaStatus.dataLinked && ollamaModel.trim() && !action.busy);
   const canSendLlmPrompt = Boolean(ollamaStatus?.reachable && ollamaStatus.dataLinked && ollamaModel.trim() && llmPrompt.trim() && !action.busy);
@@ -453,7 +441,6 @@ function App() {
   function applyPromptHistory(entry: PromptHistoryEntry): void {
     setJapanesePrompt(entry.japanesePrompt ?? "");
     setPrompt(entry.prompt);
-    setPromptIntegratedTagIds([]);
     setNegativePrompt(entry.negativePrompt);
     setSelectedCheckpoint(entry.checkpoint);
     setGenerationWidth(entry.width);
@@ -543,7 +530,6 @@ function App() {
     if (!window.confirm("タグを削除します。元に戻せません。")) return;
     await runAction("タグを削除中", () => window.illustMK.tags.delete(id), (tags) => {
       setIllustrationTags(tags);
-      setPromptIntegratedTagIds((current) => current.filter((tagId) => tagId !== id));
       setSelectedTagIds((current) => current.filter((tagId) => tagId !== id));
     });
   }
@@ -573,7 +559,6 @@ function App() {
         setPrompt(result.positivePrompt);
         setNegativePrompt(result.negativePrompt);
         setPromptNotes(result.notes);
-        setPromptIntegratedTagIds(selectedTagIds);
       }
     );
   }
@@ -1117,40 +1102,13 @@ function App() {
               canEnhancePrompt={canEnhancePrompt}
               disabledReason={enhancePromptDisabledReason}
               onEnhance={() => void enhanceJapanesePrompt()}
-              onPromptEdited={() => setPromptIntegratedTagIds([])}
+              illustrationTags={illustrationTags}
+              selectedTagIds={selectedTagIds}
+              onToggleTag={toggleIllustrationTag}
+              onAddTag={openNewTagDialog}
+              onEditTag={openEditTagDialog}
+              onDeleteTag={(id) => void deleteIllustrationTag(id)}
             />
-            <div className="tag-builder">
-              <div className="tag-builder-header">
-                <div>
-                  <h2>タグ</h2>
-                  <p>{selectedTags.length ? `${selectedTags.length}件を生成promptへ追加` : "選択したタグの英訳説明文を生成promptへ追加します。"}</p>
-                </div>
-                <button onClick={openNewTagDialog}>
-                  <WandSparkles size={17} />
-                  タグ追加
-                </button>
-              </div>
-              <div className="tag-chip-list">
-                {illustrationTags.length ? (
-                  illustrationTags.map((tag) => (
-                    <div className={selectedTagIds.includes(tag.id) ? "tag-chip selected" : "tag-chip"} key={tag.id}>
-                      <button onClick={() => toggleIllustrationTag(tag.id)}>
-                        <span>{tag.name}</span>
-                        <small>{tag.englishName || tag.name}</small>
-                      </button>
-                      <button className="icon-button" onClick={() => openEditTagDialog(tag)} title="編集">
-                        <Bot size={15} />
-                      </button>
-                      <button className="icon-button danger" onClick={() => void deleteIllustrationTag(tag.id)} title="削除">
-                        <Trash2 size={15} />
-                      </button>
-                    </div>
-                  ))
-                ) : (
-                  <p className="empty">まだタグがありません。</p>
-                )}
-              </div>
-            </div>
             <div className="field">
               <label>Checkpoint</label>
               <select value={selectedCheckpoint} onChange={(event) => setSelectedCheckpoint(event.target.value)}>
@@ -1202,7 +1160,6 @@ function App() {
               <div className="tag-builder-header">
                 <div>
                   <h2>ComfyUIへ渡す最終Positive Prompt</h2>
-                  <p>タグ選択分もここに展開されます。</p>
                 </div>
                 <button onClick={() => setPromptHistoryOpen(true)}>
                   <RefreshCw size={17} />
@@ -1223,7 +1180,12 @@ function App() {
                     appendLog("info", `ComfyUI Negative Prompt: ${testRequest.negativePrompt}`);
                     appendLog("info", `ComfyUI Size/Seed: ${testRequest.width}x${testRequest.height} / ${testRequest.seed}`);
                     const result = await window.illustMK.runtime.testGenerate(testRequest);
-                    const history = await window.illustMK.promptHistory.save({ ...testRequest, japanesePrompt });
+                    const history = await window.illustMK.promptHistory.save({
+                      ...testRequest,
+                      japanesePrompt,
+                      imagePath: result.imagePath,
+                      imageDataUrl: result.imageDataUrl
+                    });
                     return { result, history };
                   },
                   ({ result, history }) => {
@@ -1330,18 +1292,27 @@ function App() {
               {promptHistory.length ? (
                 promptHistory.map((entry) => (
                   <article className="prompt-history-card" key={entry.id}>
-                    <header>
-                      <strong>{entry.checkpoint || "checkpoint未選択"}</strong>
-                      <span>{entry.width} x {entry.height} / seed {entry.seed}</span>
-                      <time>{new Date(entry.createdAt).toLocaleString("ja-JP", { hour12: false })}</time>
-                    </header>
-                    {entry.japanesePrompt ? <p className="history-japanese">{entry.japanesePrompt}</p> : null}
-                    <p>{entry.prompt}</p>
-                    <small>{entry.negativePrompt}</small>
-                    <button onClick={() => applyPromptHistory(entry)}>
-                      <CheckCircle2 size={17} />
-                      流用
-                    </button>
+                    <div className="prompt-history-thumb">
+                      {entry.imageDataUrl || entry.imagePath ? (
+                        <img src={imageUrl(entry.imageDataUrl ?? entry.imagePath ?? "")} alt="生成履歴サムネイル" />
+                      ) : (
+                        <ImageIcon size={24} />
+                      )}
+                    </div>
+                    <div className="prompt-history-body">
+                      <header>
+                        <strong>{entry.checkpoint || "checkpoint未選択"}</strong>
+                        <span>{entry.width} x {entry.height} / seed {entry.seed}</span>
+                        <time>{new Date(entry.createdAt).toLocaleString("ja-JP", { hour12: false })}</time>
+                      </header>
+                      {entry.japanesePrompt ? <p className="history-japanese">{entry.japanesePrompt}</p> : null}
+                      <p>{entry.prompt}</p>
+                      <small>{entry.negativePrompt}</small>
+                      <button onClick={() => applyPromptHistory(entry)}>
+                        <CheckCircle2 size={17} />
+                        流用
+                      </button>
+                    </div>
                   </article>
                 ))
               ) : (
@@ -1410,7 +1381,12 @@ function PromptTransformPanel({
   canEnhancePrompt,
   disabledReason,
   onEnhance,
-  onPromptEdited
+  illustrationTags,
+  selectedTagIds,
+  onToggleTag,
+  onAddTag,
+  onEditTag,
+  onDeleteTag
 }: {
   japanesePrompt: string;
   setJapanesePrompt: (value: string) => void;
@@ -1424,7 +1400,12 @@ function PromptTransformPanel({
   canEnhancePrompt: boolean;
   disabledReason: string;
   onEnhance: () => void;
-  onPromptEdited: () => void;
+  illustrationTags: IllustrationTag[];
+  selectedTagIds: string[];
+  onToggleTag: (id: string) => void;
+  onAddTag: () => void;
+  onEditTag: (tag: IllustrationTag) => void;
+  onDeleteTag: (id: string) => void;
 }) {
   return (
     <div className="prompt-transform">
@@ -1445,6 +1426,14 @@ function PromptTransformPanel({
           <option value="tag-dense">タグ密度重視: 細かいタグへ分解</option>
         </select>
       </div>
+      <TagSelector
+        illustrationTags={illustrationTags}
+        selectedTagIds={selectedTagIds}
+        onToggleTag={onToggleTag}
+        onAddTag={onAddTag}
+        onEditTag={onEditTag}
+        onDeleteTag={onDeleteTag}
+      />
       <button className="primary" disabled={!canEnhancePrompt} title={disabledReason} onClick={onEnhance}>
         <Bot size={17} />
         日本語から生成promptへ変換
@@ -1457,13 +1446,60 @@ function PromptTransformPanel({
           value={prompt}
           onChange={(event) => {
             setPrompt(event.target.value);
-            onPromptEdited();
           }}
         />
       </div>
       <div className="field">
         <label>Negative Prompt</label>
         <textarea value={negativePrompt} onChange={(event) => setNegativePrompt(event.target.value)} />
+      </div>
+    </div>
+  );
+}
+
+function TagSelector({
+  illustrationTags,
+  selectedTagIds,
+  onToggleTag,
+  onAddTag,
+  onEditTag,
+  onDeleteTag
+}: {
+  illustrationTags: IllustrationTag[];
+  selectedTagIds: string[];
+  onToggleTag: (id: string) => void;
+  onAddTag: () => void;
+  onEditTag: (tag: IllustrationTag) => void;
+  onDeleteTag: (id: string) => void;
+}) {
+  return (
+    <div className="tag-builder">
+      <div className="tag-builder-header">
+        <h2>タグ</h2>
+        <button onClick={onAddTag}>
+          <WandSparkles size={17} />
+          タグ追加
+        </button>
+      </div>
+      <div className="tag-chip-list">
+        {illustrationTags.length ? (
+          illustrationTags.map((tag) => (
+            <div className={selectedTagIds.includes(tag.id) ? "tag-chip selected" : "tag-chip"} key={tag.id}>
+              <button onClick={() => onToggleTag(tag.id)}>
+                <span>{tag.name}</span>
+                <small>{tag.englishName || tag.name}</small>
+              </button>
+              <button className="icon-button" onClick={() => onEditTag(tag)} title="編集">
+                <Bot size={15} />
+              </button>
+              <button className="icon-button danger" onClick={() => onDeleteTag(tag.id)} title="削除">
+                <Trash2 size={15} />
+              </button>
+            </div>
+          ))
+        ) : (
+          <p className="empty">まだタグがありません。</p>
+        )}
       </div>
     </div>
   );

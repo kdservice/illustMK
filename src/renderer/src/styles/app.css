@@ -518,7 +518,7 @@ label {
   display: flex;
   justify-content: space-between;
   gap: 12px;
-  align-items: flex-start;
+  align-items: center;
   margin-bottom: 10px;
 }
 
@@ -638,6 +638,31 @@ label {
   border-radius: 8px;
   background: #081125;
   padding: 12px;
+  display: grid;
+  grid-template-columns: 96px minmax(0, 1fr);
+  gap: 12px;
+  align-items: start;
+}
+
+.prompt-history-thumb {
+  aspect-ratio: 1 / 1;
+  border: 1px solid #1c2d53;
+  border-radius: 8px;
+  background: #050912;
+  color: #53678f;
+  display: grid;
+  place-items: center;
+  overflow: hidden;
+}
+
+.prompt-history-thumb img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.prompt-history-body {
+  min-width: 0;
 }
 
 .prompt-history-card header {

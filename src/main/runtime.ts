@@ -240,11 +240,15 @@ export type PromptHistoryEntry = {
   steps: number;
   cfg: number;
   seed: number;
+  imagePath?: string;
+  imageDataUrl?: string;
   createdAt: string;
 };
 
 export type SavePromptHistoryRequest = TestGenerationRequest & {
   japanesePrompt: string;
+  imagePath?: string;
+  imageDataUrl?: string;
 };
 
 export type TestGenerationResult = {
@@ -1271,6 +1275,8 @@ export async function savePromptHistoryEntry(request: SavePromptHistoryRequest):
     steps: request.steps,
     cfg: request.cfg,
     seed: request.seed,
+    imagePath: request.imagePath,
+    imageDataUrl: request.imageDataUrl,
     createdAt: new Date().toISOString()
   };
   const history = [entry, ...(await getSavedPromptHistory()).filter((item) => item.japanesePrompt !== request.japanesePrompt || item.prompt !== request.prompt || item.negativePrompt !== request.negativePrompt)].slice(0, 100);
