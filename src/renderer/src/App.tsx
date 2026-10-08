@@ -738,15 +738,17 @@ function App() {
             {hfLlmModels.length ? (
               <div className="llm-catalog-list">
                 {hfLlmModels.map((model) => (
-                  <article className="llm-catalog-card" key={model.id}>
-                    <button className="llm-select-button" onClick={() => setOllamaModel(model.pullName)}>
-                      <span>{model.id}</span>
-                      <small>HF GGUF / DL {model.downloads.toLocaleString()}</small>
+                  <article className="llm-search-card" key={model.id}>
+                    <button className="llm-search-select" onClick={() => setOllamaModel(model.pullName)}>
+                      <strong>{model.id}</strong>
+                      <span>
+                        HF GGUF / DL {model.downloads.toLocaleString()} / {model.totalSizeLabel}
+                      </span>
                     </button>
-                    <p>{model.ggufFiles.slice(0, 3).join(", ") || "GGUF repo"}</p>
-                    <button disabled={!ollamaStatus?.reachable || !ollamaStatus.dataLinked || action.busy} onClick={() => void runOllamaPull(model.pullName)}>
+                    <p>{model.ggufFiles.slice(0, 4).map((file) => `${file.name} (${file.sizeLabel})`).join(", ") || "GGUF repo"}</p>
+                    <button className="llm-download-button" disabled={!ollamaStatus?.reachable || !ollamaStatus.dataLinked || action.busy} onClick={() => void runOllamaPull(model.pullName)}>
                       <Download size={15} />
-                      Download
+                      D O W N L O A D
                     </button>
                   </article>
                 ))}

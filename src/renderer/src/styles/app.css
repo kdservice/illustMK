@@ -800,6 +800,60 @@ label {
   line-height: 1.45;
 }
 
+.llm-search-card {
+  border: 1px solid #244b79;
+  border-radius: 8px;
+  background: #081125;
+  padding: 12px;
+}
+
+.llm-search-select {
+  width: 100%;
+  min-height: 42px;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 12px;
+  justify-content: stretch;
+  text-align: left;
+  background: transparent;
+  border-color: transparent;
+  padding: 0;
+}
+
+.llm-search-select:hover:not(:disabled) {
+  background: transparent;
+}
+
+.llm-search-select strong {
+  overflow-wrap: anywhere;
+  color: #dbe7ff;
+  font-size: 14px;
+}
+
+.llm-search-select span {
+  color: #91a3c9;
+  font-size: 12px;
+  font-weight: 900;
+  white-space: nowrap;
+}
+
+.llm-search-card p {
+  margin: 10px 0 12px;
+  color: #aab9d7;
+  font-size: 12px;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+
+.llm-download-button {
+  width: 100%;
+  min-height: 42px;
+  border-color: #397df6;
+  background: #12335f;
+  font-weight: 900;
+  letter-spacing: 0;
+}
+
 .preview-panel {
   display: grid;
   gap: 12px;

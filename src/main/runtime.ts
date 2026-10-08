@@ -118,7 +118,13 @@ export type HuggingFaceLlmModelCard = {
   likes: number;
   updatedAt: string | null;
   tags: string[];
-  ggufFiles: string[];
+  ggufFiles: Array<{
+    name: string;
+    sizeBytes: number | null;
+    sizeLabel: string;
+  }>;
+  totalSizeBytes: number | null;
+  totalSizeLabel: string;
 };
 
 export type AppSettings = {
@@ -772,7 +778,8 @@ export async function searchHuggingFaceLlmModels(options: { query: string; limit
     throw new Error(`Hugging Face検索に失敗しました: HTTP ${response.status}`);
   }
   const json = (await response.json()) as Array<Record<string, unknown>>;
-  return json.map(normalizeHuggingFaceModelCard).filter((model) => model.ggufFiles.length || model.tags.includes("gguf"));
+  const cards = json.map(normalizeHuggingFaceModelCard).filter((model) => model.ggufFiles.length || model.tags.includes("gguf"));
+  return Promise.all(cards.map(withHuggingFaceModelFileSizes));
 }
 
 export async function getOllamaStatus(ollamaUrl = "http://127.0.0.1:11434"): Promise<OllamaStatus> {
@@ -2073,12 +2080,21 @@ function normalizeHuggingFaceModelCard(item: Record<string, unknown>): HuggingFa
   const siblings = Array.isArray(item.siblings) ? item.siblings : [];
   const ggufFiles = siblings
     .map((sibling) => {
-      if (!sibling || typeof sibling !== "object") return "";
-      const value = (sibling as { rfilename?: unknown }).rfilename;
-      return typeof value === "string" ? value : "";
+      if (!sibling || typeof sibling !== "object") return null;
+      const record = sibling as { rfilename?: unknown; size?: unknown; lfs?: { size?: unknown } };
+      const name = typeof record.rfilename === "string" ? record.rfilename : "";
+      if (!name.toLowerCase().endsWith(".gguf")) return null;
+      const sizeBytes = Number(record.size ?? record.lfs?.size ?? NaN);
+      return {
+        name,
+        sizeBytes: Number.isFinite(sizeBytes) && sizeBytes > 0 ? sizeBytes : null,
+        sizeLabel: Number.isFinite(sizeBytes) && sizeBytes > 0 ? formatBytes(sizeBytes) : "サイズ不明"
+      };
     })
-    .filter((file) => file.toLowerCase().endsWith(".gguf"));
+    .filter((file): file is { name: string; sizeBytes: number | null; sizeLabel: string } => Boolean(file));
   const tags = Array.isArray(item.tags) ? item.tags.map(String) : [];
+  const sizedFiles = ggufFiles.filter((file) => file.sizeBytes !== null);
+  const totalSizeBytes = sizedFiles.length ? sizedFiles.reduce((sum, file) => sum + (file.sizeBytes ?? 0), 0) : null;
   return {
     id,
     name,
@@ -2088,8 +2104,27 @@ function normalizeHuggingFaceModelCard(item: Record<string, unknown>): HuggingFa
     likes: Number(item.likes ?? 0),
     updatedAt: item.lastModified ? String(item.lastModified) : null,
     tags,
-    ggufFiles
+    ggufFiles,
+    totalSizeBytes,
+    totalSizeLabel: totalSizeBytes ? formatBytes(totalSizeBytes) : "サイズ不明"
   };
+}
+
+async function withHuggingFaceModelFileSizes(card: HuggingFaceLlmModelCard): Promise<HuggingFaceLlmModelCard> {
+  if (card.totalSizeBytes !== null) return card;
+  try {
+    const response = await fetch(`https://huggingface.co/api/models/${card.id}?blobs=true`, {
+      headers: {
+        Accept: "application/json",
+        ...(await huggingFaceAuthHeader())
+      },
+      signal: AbortSignal.timeout(20000)
+    });
+    if (!response.ok) return card;
+    return normalizeHuggingFaceModelCard((await response.json()) as Record<string, unknown>);
+  } catch {
+    return card;
+  }
 }
 
 const defaultBaseModelFilters = ["SDXL", "Pony", "Illustrious", "Animagine"];
