@@ -262,6 +262,41 @@ export type LoraTrainingProject = {
   message: string;
 };
 
+export type LoraCaptionTag = {
+  id: string;
+  japaneseName: string;
+  englishName: string;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type LoraCaptionImage = {
+  fileName: string;
+  imagePath: string;
+  imageDataUrl: string;
+  tagIds: string[];
+};
+
+export type LoraCaptionWorkspace = {
+  projectId: string;
+  projectName: string;
+  datasetPath: string;
+  imageDir: string;
+  tags: LoraCaptionTag[];
+  images: LoraCaptionImage[];
+};
+
+export type SaveLoraCaptionWorkspaceRequest = {
+  projectId: string;
+  ollamaUrl: string;
+  model: string;
+  tags: LoraCaptionTag[];
+  images: Array<{
+    fileName: string;
+    tagIds: string[];
+  }>;
+};
+
 export type SaveLoraTrainingProjectRequest = {
   id?: string;
   name: string;
@@ -1390,10 +1425,12 @@ export async function saveLoraTrainingProject(request: SaveLoraTrainingProjectRe
     createdAt: existing?.createdAt ?? now,
     updatedAt: now,
     status: "draft",
-    message: "プロジェクトを作成しました。datasetに学習画像とcaptionを配置してください。"
+    message: "プロジェクトを作成しました。キャプション編集で画像ごとのタグを設定してください。"
   };
   await mkdir(datasetPath, { recursive: true });
+  await mkdir(loraTrainingImageDir(project), { recursive: true });
   await mkdir(join(projectRoot, "config"), { recursive: true });
+  await ensureLoraCaptionTagsFile(project);
   await writeFile(join(projectRoot, "config", "lora-training.json"), JSON.stringify(project, null, 2), "utf8");
   const nextProjects = existing
     ? projects.map((item) => (item.id === existing.id ? project : item))
@@ -1411,6 +1448,69 @@ export async function startLoraTrainingProject(id: string): Promise<LoraTraining
   const nextProjects = projects.map((item) => (item.id === id ? updated : item));
   await saveLoraTrainingProjects(nextProjects);
   return nextProjects;
+}
+
+export async function getLoraCaptionWorkspace(projectId: string): Promise<LoraCaptionWorkspace> {
+  const project = await findLoraTrainingProject(projectId);
+  await normalizeLoraDatasetStructure(project);
+  const tags = await getLoraCaptionTags(project);
+  const imageDir = loraTrainingImageDir(project);
+  const imageFiles = (await listFiles(imageDir)).filter(isImageFileName);
+  const images = await Promise.all(
+    imageFiles.map(async (fileName) => {
+      const tagIds = await readCaptionTagIds(project, fileName, tags);
+      const imagePath = join(imageDir, fileName);
+      return {
+        fileName,
+        imagePath,
+        imageDataUrl: await imageDataUrl(imagePath),
+        tagIds
+      };
+    })
+  );
+  return {
+    projectId: project.id,
+    projectName: project.name,
+    datasetPath: project.datasetPath,
+    imageDir,
+    tags,
+    images
+  };
+}
+
+export async function saveLoraCaptionWorkspace(request: SaveLoraCaptionWorkspaceRequest): Promise<LoraCaptionWorkspace> {
+  const project = await findLoraTrainingProject(request.projectId);
+  await normalizeLoraDatasetStructure(project);
+  const imageDir = loraTrainingImageDir(project);
+  const now = new Date().toISOString();
+  const tags = await translateMissingCaptionTags(
+    request.ollamaUrl,
+    request.model,
+    request.tags.map((tag) => ({
+      id: tag.id || randomUUID(),
+      japaneseName: tag.japaneseName.trim(),
+      englishName: tag.englishName.trim(),
+      createdAt: tag.createdAt || now,
+      updatedAt: now
+    })).filter((tag) => tag.japaneseName)
+  );
+  await saveLoraCaptionTags(project, tags);
+
+  const tagById = new Map(tags.map((tag) => [tag.id, tag]));
+  for (const image of request.images) {
+    const fileName = basename(image.fileName);
+    if (!(await exists(join(imageDir, fileName))) || !isImageFileName(fileName)) continue;
+    const englishTags = image.tagIds
+      .map((tagId) => tagById.get(tagId)?.englishName.trim())
+      .filter((tag): tag is string => Boolean(tag));
+    const captionPath = join(imageDir, replaceImageExtension(fileName, ".txt"));
+    await writeFile(captionPath, englishTags.join(", "), "utf8");
+  }
+
+  const projects = await getLoraTrainingProjects();
+  const nextProject = await validateLoraTrainingProject(project, getRuntimePaths().loras);
+  await saveLoraTrainingProjects(projects.map((item) => (item.id === project.id ? nextProject : item)));
+  return getLoraCaptionWorkspace(project.id);
 }
 
 export async function trainLoraTrainingProject(id: string, onLog: RuntimeLogSink): Promise<string> {
@@ -1582,6 +1682,157 @@ async function validateLoraTrainingProject(project: LoraTrainingProject, loraOut
       "sd-scripts/kohya実行環境で学習できます。"
     ].join(" ")
   };
+}
+
+async function findLoraTrainingProject(id: string): Promise<LoraTrainingProject> {
+  const project = (await getLoraTrainingProjects()).find((item) => item.id === id);
+  if (!project) throw new Error("LoRAプロジェクトが見つかりません。");
+  return project;
+}
+
+function loraProjectConfigDir(project: LoraTrainingProject): string {
+  return join(getRuntimePaths().loraProjects, safeFileName(project.name), "config");
+}
+
+function loraCaptionTagsPath(project: LoraTrainingProject): string {
+  return join(loraProjectConfigDir(project), "caption-tags.json");
+}
+
+function loraTrainingImageDir(project: LoraTrainingProject): string {
+  const repeats = Math.max(1, Math.round(project.repeats || 1));
+  return join(project.datasetPath, `${repeats}_${safeFileName(project.name)}`);
+}
+
+async function ensureLoraCaptionTagsFile(project: LoraTrainingProject): Promise<void> {
+  const path = loraCaptionTagsPath(project);
+  await mkdir(resolve(path, ".."), { recursive: true });
+  if (!(await exists(path))) {
+    await writeFile(path, "[]", "utf8");
+  }
+}
+
+async function getLoraCaptionTags(project: LoraTrainingProject): Promise<LoraCaptionTag[]> {
+  await ensureLoraCaptionTagsFile(project);
+  try {
+    const parsed = JSON.parse(await readFile(loraCaptionTagsPath(project), "utf8")) as unknown[];
+    return Array.isArray(parsed) ? parsed.map(normalizeLoraCaptionTag).filter((tag): tag is LoraCaptionTag => Boolean(tag)) : [];
+  } catch {
+    return [];
+  }
+}
+
+async function saveLoraCaptionTags(project: LoraTrainingProject, tags: LoraCaptionTag[]): Promise<void> {
+  await ensureLoraCaptionTagsFile(project);
+  await writeFile(loraCaptionTagsPath(project), JSON.stringify(tags, null, 2), "utf8");
+}
+
+function normalizeLoraCaptionTag(value: unknown): LoraCaptionTag | null {
+  if (!value || typeof value !== "object") return null;
+  const tag = value as Partial<LoraCaptionTag>;
+  if (typeof tag.id !== "string" || typeof tag.japaneseName !== "string") return null;
+  const now = new Date().toISOString();
+  return {
+    id: tag.id,
+    japaneseName: tag.japaneseName,
+    englishName: typeof tag.englishName === "string" ? tag.englishName : "",
+    createdAt: typeof tag.createdAt === "string" ? tag.createdAt : now,
+    updatedAt: typeof tag.updatedAt === "string" ? tag.updatedAt : now
+  };
+}
+
+async function normalizeLoraDatasetStructure(project: LoraTrainingProject): Promise<void> {
+  await mkdir(project.datasetPath, { recursive: true });
+  const imageDir = loraTrainingImageDir(project);
+  await mkdir(imageDir, { recursive: true });
+  const directFiles = await listFiles(project.datasetPath);
+  const directImages = directFiles.filter(isImageFileName);
+  for (const imageFile of directImages) {
+    const sourceImage = join(project.datasetPath, imageFile);
+    const targetImage = await uniquePath(imageDir, imageFile);
+    await movePathCrossDevice(sourceImage, targetImage);
+    const sourceCaption = join(project.datasetPath, replaceImageExtension(imageFile, ".txt"));
+    if (await exists(sourceCaption)) {
+      await movePathCrossDevice(sourceCaption, replaceImageExtension(targetImage, ".txt"));
+    }
+  }
+}
+
+async function uniquePath(parent: string, fileName: string): Promise<string> {
+  let candidate = join(parent, fileName);
+  if (!(await exists(candidate))) return candidate;
+  const dotIndex = fileName.lastIndexOf(".");
+  const base = dotIndex >= 0 ? fileName.slice(0, dotIndex) : fileName;
+  const ext = dotIndex >= 0 ? fileName.slice(dotIndex) : "";
+  for (let index = 2; index < 10000; index += 1) {
+    candidate = join(parent, `${base}-${index}${ext}`);
+    if (!(await exists(candidate))) return candidate;
+  }
+  return join(parent, `${base}-${Date.now()}${ext}`);
+}
+
+async function readCaptionTagIds(project: LoraTrainingProject, fileName: string, tags: LoraCaptionTag[]): Promise<string[]> {
+  const captionPath = join(loraTrainingImageDir(project), replaceImageExtension(fileName, ".txt"));
+  if (!(await exists(captionPath))) return [];
+  const text = await readFile(captionPath, "utf8");
+  const captionTags = text.split(",").map((tag) => tag.trim().toLowerCase()).filter(Boolean);
+  return tags
+    .filter((tag) => captionTags.includes(tag.englishName.trim().toLowerCase()))
+    .map((tag) => tag.id);
+}
+
+async function translateMissingCaptionTags(ollamaUrl: string, model: string, tags: LoraCaptionTag[]): Promise<LoraCaptionTag[]> {
+  const missing = tags.filter((tag) => !tag.englishName.trim());
+  if (!missing.length) return tags;
+  if (!model.trim()) throw new Error("英語未設定タグを翻訳するため、Ollamaモデルを選択してください。");
+  await assertOllamaReady(ollamaUrl);
+  const instruction = [
+    "You translate Japanese LoRA caption tags into concise English image-generation tags.",
+    "Return strict JSON only.",
+    "Return an array under key translations.",
+    "Each item must have keys: id, from, to.",
+    "The to value must be a short comma-free English tag or phrase suitable for anime LoRA captions.",
+    "Do not add markdown."
+  ].join("\n");
+  const source = missing.map((tag) => ({ id: tag.id, from: tag.japaneseName }));
+  const response = await fetch(`${ollamaUrl.replace(/\/$/, "")}/api/generate`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      model,
+      stream: false,
+      format: "json",
+      prompt: `${instruction}\n\n${JSON.stringify({ tags: source }, null, 2)}`
+    })
+  });
+  if (!response.ok) {
+    throw new Error(`captionタグ翻訳に失敗しました: HTTP ${response.status}`);
+  }
+  const json = (await response.json()) as { response?: string };
+  const translations = parseCaptionTagTranslations(json.response ?? "");
+  return tags.map((tag) => {
+    const translated = translations.get(tag.id);
+    return translated ? { ...tag, englishName: safeCaptionTag(translated), updatedAt: new Date().toISOString() } : tag;
+  });
+}
+
+function parseCaptionTagTranslations(text: string): Map<string, string> {
+  const parsed = JSON.parse(text) as { translations?: Array<{ id?: string; to?: string }> } | Array<{ id?: string; to?: string }>;
+  const items = Array.isArray(parsed) ? parsed : parsed.translations ?? [];
+  const translations = new Map<string, string>();
+  for (const item of items) {
+    if (typeof item.id === "string" && typeof item.to === "string" && item.to.trim()) {
+      translations.set(item.id, item.to.trim());
+    }
+  }
+  return translations;
+}
+
+function safeCaptionTag(value: string): string {
+  return value.replace(/[\r\n,]+/g, " ").replace(/\s+/g, " ").trim();
+}
+
+function replaceImageExtension(fileName: string, ext: string): string {
+  return fileName.replace(/\.(png|jpe?g|webp)$/i, ext);
 }
 
 async function resolveLoraTrainDataDir(datasetPath: string): Promise<string> {

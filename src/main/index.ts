@@ -17,6 +17,7 @@ import {
   getAppSettings,
   getIllustrationTags,
   getLlmChatHistory,
+  getLoraCaptionWorkspace,
   getLoraTrainingProjects,
   getOllamaStatus,
   getSavedPromptHistory,
@@ -31,6 +32,7 @@ import {
   searchHuggingFaceLlmModels,
   saveAppSettings,
   saveIllustrationTag,
+  saveLoraCaptionWorkspace,
   saveLoraTrainingProject,
   savePromptHistoryEntry,
   sendLlmChatPrompt,
@@ -57,6 +59,7 @@ import {
   type DownloadRequest,
   type LlmChatRequest,
   type PromptEnhanceRequest,
+  type SaveLoraCaptionWorkspaceRequest,
   type SaveIllustrationTagRequest,
   type SaveLoraTrainingProjectRequest,
   type SavePromptHistoryRequest,
@@ -266,6 +269,8 @@ function registerIpc(): void {
   ipcMain.handle("lora-projects:list", () => getLoraTrainingProjects());
   ipcMain.handle("lora-projects:save", (_event, request: SaveLoraTrainingProjectRequest) => saveLoraTrainingProject(request));
   ipcMain.handle("lora-projects:start", (_event, id: string) => startLoraTrainingProject(id));
+  ipcMain.handle("lora-captions:get", (_event, projectId: string) => getLoraCaptionWorkspace(projectId));
+  ipcMain.handle("lora-captions:save", (_event, request: SaveLoraCaptionWorkspaceRequest) => saveLoraCaptionWorkspace(request));
   ipcMain.handle("ollama:status", (_event, ollamaUrl?: string) => getOllamaStatus(ollamaUrl));
   ipcMain.handle("ollama:start", () => startOllama());
   ipcMain.handle("ollama:stop", () => stopOllama());

@@ -8,6 +8,7 @@ import type {
   HuggingFaceLlmModelCard,
   LlmChatMessage,
   LlmChatRequest,
+  LoraCaptionWorkspace,
   LoraTrainingProject,
   IllustrationTag,
   OllamaStatus,
@@ -17,6 +18,7 @@ import type {
   RuntimePaths,
   RuntimeStatus,
   SaveIllustrationTagRequest,
+  SaveLoraCaptionWorkspaceRequest,
   SaveLoraTrainingProjectRequest,
   SavePromptHistoryRequest,
   TagDescriptionRequest,
@@ -92,6 +94,10 @@ const api = {
     save: (request: SaveLoraTrainingProjectRequest): Promise<LoraTrainingProject[]> =>
       ipcRenderer.invoke("lora-projects:save", request),
     start: (id: string): Promise<LoraTrainingProject[]> => ipcRenderer.invoke("lora-projects:start", id)
+  },
+  loraCaptions: {
+    get: (projectId: string): Promise<LoraCaptionWorkspace> => ipcRenderer.invoke("lora-captions:get", projectId),
+    save: (request: SaveLoraCaptionWorkspaceRequest): Promise<LoraCaptionWorkspace> => ipcRenderer.invoke("lora-captions:save", request)
   },
   promptHistory: {
     list: (): Promise<PromptHistoryEntry[]> => ipcRenderer.invoke("prompt-history:list"),

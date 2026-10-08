@@ -8,13 +8,17 @@ import {
   Download,
   FolderOpen,
   ImageIcon,
+  Pencil,
   Play,
+  Plus,
   RefreshCw,
+  Save,
   Server,
   Square,
   TerminalSquare,
   Trash2,
-  WandSparkles
+  WandSparkles,
+  X
 } from "lucide-react";
 import type {
   CivitaiModelCard,
@@ -23,6 +27,8 @@ import type {
   HuggingFaceLlmModelCard,
   IllustrationTag,
   LlmChatMessage,
+  LoraCaptionTag,
+  LoraCaptionWorkspace,
   LoraTrainingProject,
   OllamaStatus,
   PromptEnhanceMode,
@@ -129,6 +135,13 @@ function App() {
   const [loraEpochs, setLoraEpochs] = useState(10);
   const [loraNetworkDim, setLoraNetworkDim] = useState(16);
   const [loraLearningRate, setLoraLearningRate] = useState("1e-4");
+  const [captionWorkspace, setCaptionWorkspace] = useState<LoraCaptionWorkspace | null>(null);
+  const [captionTags, setCaptionTags] = useState<LoraCaptionTag[]>([]);
+  const [captionImages, setCaptionImages] = useState<LoraCaptionWorkspace["images"]>([]);
+  const [selectedCaptionTagId, setSelectedCaptionTagId] = useState<string | null>(null);
+  const [captionTagEditingId, setCaptionTagEditingId] = useState<string | null>(null);
+  const [captionTagJapanese, setCaptionTagJapanese] = useState("");
+  const [captionTagEnglish, setCaptionTagEnglish] = useState("");
   const [action, setAction] = useState<ActionState>({ busy: false, message: "待機中", error: null });
   const [logs, setLogs] = useState<LogLine[]>([]);
   const [autoFollowLogs, setAutoFollowLogs] = useState(true);
@@ -175,6 +188,7 @@ function App() {
       [model.name, model.source, model.size, model.note].some((value) => value.toLowerCase().includes(query))
     );
   }, [llmCatalogQuery]);
+  const captionTagById = useMemo(() => new Map(captionTags.map((tag) => [tag.id, tag])), [captionTags]);
 
   const stateLabel = useMemo(() => {
     if (!status) return "未確認";
@@ -603,6 +617,114 @@ function App() {
 
   async function trainLoraProject(id: string): Promise<void> {
     await runStreamOperation("lora-train", "LoRA学習を開始中", { projectId: id });
+  }
+
+  async function openCaptionEditor(projectId: string): Promise<void> {
+    await runAction(
+      "キャプション編集を開いています",
+      () => window.illustMK.loraCaptions.get(projectId),
+      (workspace) => {
+        setCaptionWorkspace(workspace);
+        setCaptionTags(workspace.tags);
+        setCaptionImages(workspace.images);
+        setSelectedCaptionTagId(workspace.tags[0]?.id ?? null);
+        resetCaptionTagEditor();
+      }
+    );
+  }
+
+  function closeCaptionEditor(): void {
+    setCaptionWorkspace(null);
+    setCaptionTags([]);
+    setCaptionImages([]);
+    setSelectedCaptionTagId(null);
+    resetCaptionTagEditor();
+  }
+
+  function resetCaptionTagEditor(): void {
+    setCaptionTagEditingId(null);
+    setCaptionTagJapanese("");
+    setCaptionTagEnglish("");
+  }
+
+  function editCaptionTag(tag: LoraCaptionTag): void {
+    setCaptionTagEditingId(tag.id);
+    setCaptionTagJapanese(tag.japaneseName);
+    setCaptionTagEnglish(tag.englishName);
+  }
+
+  function upsertCaptionTag(): void {
+    const japaneseName = captionTagJapanese.trim();
+    if (!japaneseName) return;
+    const now = new Date().toISOString();
+    if (captionTagEditingId) {
+      setCaptionTags((current) =>
+        current.map((tag) =>
+          tag.id === captionTagEditingId
+            ? { ...tag, japaneseName, englishName: captionTagEnglish.trim(), updatedAt: now }
+            : tag
+        )
+      );
+      setSelectedCaptionTagId(captionTagEditingId);
+    } else {
+      const tag: LoraCaptionTag = {
+        id: crypto.randomUUID(),
+        japaneseName,
+        englishName: captionTagEnglish.trim(),
+        createdAt: now,
+        updatedAt: now
+      };
+      setCaptionTags((current) => [...current, tag]);
+      setSelectedCaptionTagId(tag.id);
+    }
+    resetCaptionTagEditor();
+  }
+
+  function deleteCaptionTag(id: string): void {
+    setCaptionTags((current) => current.filter((tag) => tag.id !== id));
+    setCaptionImages((current) => current.map((image) => ({ ...image, tagIds: image.tagIds.filter((tagId) => tagId !== id) })));
+    if (selectedCaptionTagId === id) setSelectedCaptionTagId(null);
+    if (captionTagEditingId === id) resetCaptionTagEditor();
+  }
+
+  function addSelectedTagToCaptionImage(fileName: string): void {
+    if (!selectedCaptionTagId) return;
+    setCaptionImages((current) =>
+      current.map((image) =>
+        image.fileName === fileName && !image.tagIds.includes(selectedCaptionTagId)
+          ? { ...image, tagIds: [...image.tagIds, selectedCaptionTagId] }
+          : image
+      )
+    );
+  }
+
+  function removeTagFromCaptionImage(fileName: string, tagId: string): void {
+    setCaptionImages((current) =>
+      current.map((image) =>
+        image.fileName === fileName ? { ...image, tagIds: image.tagIds.filter((currentTagId) => currentTagId !== tagId) } : image
+      )
+    );
+  }
+
+  async function saveCaptionEditor(): Promise<void> {
+    if (!captionWorkspace) return;
+    await runAction(
+      "キャプションを保存中",
+      () =>
+        window.illustMK.loraCaptions.save({
+          projectId: captionWorkspace.projectId,
+          ollamaUrl,
+          model: ollamaModel,
+          tags: captionTags,
+          images: captionImages.map((image) => ({ fileName: image.fileName, tagIds: image.tagIds }))
+        }),
+      (workspace) => {
+        setCaptionWorkspace(workspace);
+        setCaptionTags(workspace.tags);
+        setCaptionImages(workspace.images);
+        void loadLoraProjects();
+      }
+    );
   }
 
   async function enhanceJapanesePrompt(): Promise<void> {
@@ -1277,6 +1399,10 @@ function App() {
                         <FolderOpen size={15} />
                         Datasetを開く
                       </button>
+                      <button onClick={() => void openCaptionEditor(project.id)}>
+                        <ImageIcon size={15} />
+                        キャプション編集
+                      </button>
                       <button disabled={action.busy} onClick={() => void startLoraProject(project.id)}>
                         <Play size={15} />
                         学習前チェック
@@ -1581,6 +1707,109 @@ function App() {
             </div>
             <div className="image-preview-frame" style={{ aspectRatio: `${generationWidth} / ${generationHeight}` }}>
               <img src={imageUrl(lastImage)} alt="Generated preview enlarged" />
+            </div>
+          </section>
+        </div>
+      ) : null}
+      {captionWorkspace ? (
+        <div className="modal-backdrop">
+          <section className="modal-panel caption-modal">
+            <div className="modal-header">
+              <div>
+                <PanelTitle icon={<ImageIcon size={18} />} title={`キャプション編集: ${captionWorkspace.projectName}`} />
+                <p className="modal-subtitle">{captionWorkspace.imageDir}</p>
+              </div>
+              <button className="icon-button" onClick={closeCaptionEditor} title="保存せず閉じる">
+                <X size={17} />
+              </button>
+            </div>
+            <div className="caption-editor-layout">
+              <aside className="caption-tag-panel">
+                <div className="caption-tag-editor">
+                  <div className="two-columns">
+                    <div className="field">
+                      <label>日本語タグ</label>
+                      <input placeholder="例: 麦わら帽子" value={captionTagJapanese} onChange={(event) => setCaptionTagJapanese(event.target.value)} />
+                    </div>
+                    <div className="field">
+                      <label>英語タグ</label>
+                      <input placeholder="空なら保存時に翻訳" value={captionTagEnglish} onChange={(event) => setCaptionTagEnglish(event.target.value)} />
+                    </div>
+                  </div>
+                  <div className="button-row">
+                    <button className="primary" disabled={!captionTagJapanese.trim()} onClick={upsertCaptionTag}>
+                      <Plus size={16} />
+                      {captionTagEditingId ? "タグ更新" : "タグ追加"}
+                    </button>
+                    <button onClick={resetCaptionTagEditor}>クリア</button>
+                  </div>
+                </div>
+                <div className="caption-tag-list">
+                  {captionTags.length ? (
+                    captionTags.map((tag) => (
+                      <article className={selectedCaptionTagId === tag.id ? "caption-tag selected" : "caption-tag"} key={tag.id}>
+                        <button onClick={() => setSelectedCaptionTagId(tag.id)}>
+                          <strong>{tag.japaneseName}</strong>
+                          <span>{tag.englishName || "保存時に英訳"}</span>
+                        </button>
+                        <button className="icon-button" onClick={() => editCaptionTag(tag)} title="編集">
+                          <Pencil size={15} />
+                        </button>
+                        <button className="icon-button danger" onClick={() => deleteCaptionTag(tag.id)} title="削除">
+                          <Trash2 size={15} />
+                        </button>
+                      </article>
+                    ))
+                  ) : (
+                    <p className="empty">まず左上でタグを追加してください。</p>
+                  )}
+                </div>
+              </aside>
+              <section className="caption-image-panel">
+                <div className="caption-summary">
+                  <span>画像 {captionImages.length}件</span>
+                  <span>選択中: {selectedCaptionTagId ? captionTagById.get(selectedCaptionTagId)?.japaneseName ?? "不明" : "なし"}</span>
+                </div>
+                <div className="caption-image-grid">
+                  {captionImages.length ? (
+                    captionImages.map((image) => (
+                      <article className="caption-image-card" key={image.fileName}>
+                        <div className="caption-image-frame">
+                          <img src={image.imageDataUrl} alt={image.fileName} />
+                          <button className="caption-add-button" disabled={!selectedCaptionTagId} onClick={() => addSelectedTagToCaptionImage(image.fileName)} title="選択中タグを追加">
+                            <Plus size={18} />
+                          </button>
+                        </div>
+                        <strong>{image.fileName}</strong>
+                        <div className="caption-chip-list">
+                          {image.tagIds.length ? (
+                            image.tagIds.map((tagId) => {
+                              const tag = captionTagById.get(tagId);
+                              return tag ? (
+                                <button className="caption-chip" key={tagId} onClick={() => removeTagFromCaptionImage(image.fileName, tagId)}>
+                                  {tag.japaneseName}
+                                  <X size={13} />
+                                </button>
+                              ) : null;
+                            })
+                          ) : (
+                            <span>タグ未設定</span>
+                          )}
+                        </div>
+                      </article>
+                    ))
+                  ) : (
+                    <p className="empty">Datasetに画像がありません。Datasetを開いて画像を入れてください。</p>
+                  )}
+                </div>
+              </section>
+            </div>
+            <div className="modal-actions caption-actions">
+              <button onClick={closeCaptionEditor}>保存せず閉じる</button>
+              <button className="primary" disabled={action.busy || !captionImages.length} onClick={() => void saveCaptionEditor()}>
+                <Save size={17} />
+                キャプション保存
+              </button>
             </div>
           </section>
         </div>
