@@ -9,6 +9,8 @@ import { execFile, spawn, type ChildProcess, type ChildProcessWithoutNullStreams
 import { promisify } from "node:util";
 
 const execFileAsync = promisify(execFile);
+const activeNativeCommands = new Map<string, ChildProcessWithoutNullStreams>();
+const stoppedLoraTrainingProjectIds = new Set<string>();
 
 export type RuntimePaths = {
   root: string;
@@ -258,7 +260,7 @@ export type LoraTrainingProject = {
   learningRate: string;
   createdAt: string;
   updatedAt: string;
-  status: "draft" | "ready" | "running" | "complete" | "blocked" | "failed";
+  status: "draft" | "ready" | "running" | "complete" | "blocked" | "failed" | "stopped";
   message: string;
 };
 
@@ -1594,6 +1596,7 @@ export async function trainLoraTrainingProject(id: string, onLog: RuntimeLogSink
     await saveLoraTrainingProjects(projects.map((item) => (item.id === id ? readyProject : item)));
     throw new Error(readyProject.message);
   }
+  stoppedLoraTrainingProjectIds.delete(id);
 
   const runningProject: LoraTrainingProject = {
     ...readyProject,
@@ -1661,12 +1664,14 @@ export async function trainLoraTrainingProject(id: string, onLog: RuntimeLogSink
     if (mpsStatus.available && await exists(acceleratePath)) {
       await spawnNativeCommand(acceleratePath, ["launch", "--num_processes", "1", "--mixed_precision", "bf16", ...commandArgs], onLog, {
         cwd: paths.loraScripts,
-        logPath: paths.loraLog
+        logPath: paths.loraLog,
+        processKey: loraTrainingProcessKey(id)
       });
     } else {
       await spawnNativeCommand(paths.loraPython, commandArgs, onLog, {
         cwd: paths.loraScripts,
-        logPath: paths.loraLog
+        logPath: paths.loraLog,
+        processKey: loraTrainingProcessKey(id)
       });
     }
     const outputPath = join(paths.loras, `${outputBaseName}.safetensors`);
@@ -1681,11 +1686,12 @@ export async function trainLoraTrainingProject(id: string, onLog: RuntimeLogSink
     }
   } catch (error) {
     const failedProjects = await getLoraTrainingProjects();
+    const wasStopped = stoppedLoraTrainingProjectIds.delete(id);
     const failedProject: LoraTrainingProject = {
       ...runningProject,
-      status: "failed",
+      status: wasStopped ? "stopped" : "failed",
       updatedAt: new Date().toISOString(),
-      message: error instanceof Error ? error.message : String(error)
+      message: wasStopped ? "LoRA学習を停止しました。" : error instanceof Error ? error.message : String(error)
     };
     await saveLoraTrainingProjects(failedProjects.map((item) => (item.id === id ? failedProject : item)));
     throw error;
@@ -1700,6 +1706,33 @@ export async function trainLoraTrainingProject(id: string, onLog: RuntimeLogSink
   };
   await saveLoraTrainingProjects(completedProjects.map((item) => (item.id === id ? completedProject : item)));
   return completedProject.message;
+}
+
+export async function stopLoraTrainingProject(id: string): Promise<LoraTrainingProject[]> {
+  const paths = await ensureRuntimeFiles();
+  const projects = await getLoraTrainingProjects();
+  const project = projects.find((item) => item.id === id);
+  if (!project) throw new Error("LoRAプロジェクトが見つかりません。");
+  stoppedLoraTrainingProjectIds.add(id);
+  stopActiveNativeCommand(loraTrainingProcessKey(id));
+  await killMatchingLoraTrainingProcesses(project.outputName.replace(/\.safetensors$/i, ""));
+  const stoppedProject: LoraTrainingProject = {
+    ...project,
+    status: "stopped",
+    updatedAt: new Date().toISOString(),
+    message: `LoRA学習を停止しました。ログ: ${paths.loraLog}`
+  };
+  const nextProjects = projects.map((item) => (item.id === id ? stoppedProject : item));
+  await saveLoraTrainingProjects(nextProjects);
+  return nextProjects;
+}
+
+export async function stopAllLoraTrainingProcesses(): Promise<void> {
+  for (const key of [...activeNativeCommands.keys()]) {
+    if (key.startsWith("lora-train:")) stopActiveNativeCommand(key);
+  }
+  const projects = await getLoraTrainingProjects();
+  await Promise.all(projects.map((project) => killMatchingLoraTrainingProcesses(project.outputName.replace(/\.safetensors$/i, ""))));
 }
 
 export async function savePromptHistoryEntry(request: SavePromptHistoryRequest): Promise<PromptHistoryEntry[]> {
@@ -2182,7 +2215,8 @@ function isLoraTrainingProject(value: unknown): value is LoraTrainingProject {
       project.status === "running" ||
       project.status === "complete" ||
       project.status === "blocked" ||
-      project.status === "failed") &&
+      project.status === "failed" ||
+      project.status === "stopped") &&
     typeof project.message === "string"
   );
 }
@@ -2868,7 +2902,7 @@ function spawnDockerFile(command: string, args: string[], onLog: RuntimeLogSink)
   });
 }
 
-function spawnNativeCommand(command: string, args: string[], onLog: RuntimeLogSink, options: { cwd?: string; env?: NodeJS.ProcessEnv; logPath?: string } = {}): Promise<void> {
+function spawnNativeCommand(command: string, args: string[], onLog: RuntimeLogSink, options: { cwd?: string; env?: NodeJS.ProcessEnv; logPath?: string; processKey?: string } = {}): Promise<void> {
   return new Promise((resolve, reject) => {
     const logStream = options.logPath ? createWriteStream(options.logPath, { flags: "a" }) : null;
     const commandLine = `$ ${command} ${args.join(" ")}`;
@@ -2876,6 +2910,7 @@ function spawnNativeCommand(command: string, args: string[], onLog: RuntimeLogSi
     onLog({ level: "info", line: commandLine });
     const child = spawn(command, args, {
       cwd: options.cwd,
+      detached: Boolean(options.processKey),
       env: {
         ...process.env,
         ...options.env,
@@ -2884,6 +2919,7 @@ function spawnNativeCommand(command: string, args: string[], onLog: RuntimeLogSi
         PATH: `/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:${process.env.PATH ?? ""}`
       }
     });
+    if (options.processKey) activeNativeCommands.set(options.processKey, child);
     let stderr = "";
     child.stdout.setEncoding("utf8");
     child.stderr.setEncoding("utf8");
@@ -2897,16 +2933,61 @@ function spawnNativeCommand(command: string, args: string[], onLog: RuntimeLogSi
       emitChunk("stderr", chunk, onLog);
     });
     child.on("error", (error) => {
+      if (options.processKey) activeNativeCommands.delete(options.processKey);
       if (logStream) logStream.end();
       reject(error);
     });
-    child.on("close", (code) => {
-      if (logStream) logStream.write(`\n[illustMK] command exited with code ${code}\n`);
+    child.on("close", (code, signal) => {
+      if (options.processKey) activeNativeCommands.delete(options.processKey);
+      if (logStream) logStream.write(`\n[illustMK] command exited with code ${code}${signal ? ` signal ${signal}` : ""}\n`);
       if (logStream) logStream.end();
       if (code === 0) resolve();
+      else if (signal) reject(new Error(`停止されました。signal=${signal}`));
       else reject(new Error(stderr.trim() || `${command} exited with code ${code}`));
     });
   });
+}
+
+function loraTrainingProcessKey(projectId: string): string {
+  return `lora-train:${projectId}`;
+}
+
+function stopActiveNativeCommand(key: string): void {
+  const child = activeNativeCommands.get(key);
+  if (!child?.pid) return;
+  try {
+    process.kill(-child.pid, "SIGTERM");
+  } catch {
+    try {
+      child.kill("SIGTERM");
+    } catch {
+      // already gone
+    }
+  }
+}
+
+async function killMatchingLoraTrainingProcesses(outputBaseName: string): Promise<void> {
+  const pattern = `sdxl_train_network.py.*--output_name ${escapeRegex(outputBaseName)}`;
+  let stdout = "";
+  try {
+    const result = await execFileAsync("pgrep", ["-f", pattern]);
+    stdout = result.stdout;
+  } catch {
+    return;
+  }
+  for (const line of stdout.split(/\r?\n/)) {
+    const pid = Number(line.trim());
+    if (!Number.isInteger(pid) || pid <= 0 || pid === process.pid) continue;
+    try {
+      process.kill(pid, "SIGTERM");
+    } catch {
+      // already gone
+    }
+  }
+}
+
+function escapeRegex(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
 function pipeProcessToLog(child: ChildProcessWithoutNullStreams, logPath: string, onLog: RuntimeLogSink): void {

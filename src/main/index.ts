@@ -44,7 +44,9 @@ import {
   startRuntime,
   startRuntimeWithLogs,
   startLoraTrainingProject,
+  stopAllLoraTrainingProcesses,
   stopDockerEngine,
+  stopLoraTrainingProject,
   stopNativeRuntime,
   stopOllama,
   uninstallOllama,
@@ -70,6 +72,7 @@ import {
 } from "./runtime";
 
 let mainWindow: BrowserWindow | null = null;
+let quittingAfterCleanup = false;
 
 type WindowState = {
   x?: number;
@@ -165,6 +168,13 @@ app.on("window-all-closed", () => {
   if (process.platform !== "darwin") {
     app.quit();
   }
+});
+
+app.on("before-quit", (event) => {
+  if (quittingAfterCleanup) return;
+  event.preventDefault();
+  quittingAfterCleanup = true;
+  void stopAllLoraTrainingProcesses().finally(() => app.quit());
 });
 
 app.on("activate", async () => {
@@ -270,6 +280,7 @@ function registerIpc(): void {
   ipcMain.handle("lora-projects:list", () => getLoraTrainingProjects());
   ipcMain.handle("lora-projects:save", (_event, request: SaveLoraTrainingProjectRequest) => saveLoraTrainingProject(request));
   ipcMain.handle("lora-projects:start", (_event, id: string) => startLoraTrainingProject(id));
+  ipcMain.handle("lora-projects:stop", (_event, id: string) => stopLoraTrainingProject(id));
   ipcMain.handle("lora-projects:clear", () => clearLoraTrainingProjects());
   ipcMain.handle("lora-captions:get", (_event, projectId: string) => getLoraCaptionWorkspace(projectId));
   ipcMain.handle("lora-captions:save", (_event, request: SaveLoraCaptionWorkspaceRequest) => saveLoraCaptionWorkspace(request));

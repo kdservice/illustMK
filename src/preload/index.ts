@@ -94,6 +94,7 @@ const api = {
     save: (request: SaveLoraTrainingProjectRequest): Promise<LoraTrainingProject[]> =>
       ipcRenderer.invoke("lora-projects:save", request),
     start: (id: string): Promise<LoraTrainingProject[]> => ipcRenderer.invoke("lora-projects:start", id),
+    stop: (id: string): Promise<LoraTrainingProject[]> => ipcRenderer.invoke("lora-projects:stop", id),
     clear: (): Promise<LoraTrainingProject[]> => ipcRenderer.invoke("lora-projects:clear")
   },
   loraCaptions: {

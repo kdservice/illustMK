@@ -278,7 +278,8 @@ function App() {
     } catch (error) {
       const errorText = error instanceof Error ? error.message : String(error);
       appendLog("stderr", errorText, id);
-      setAction({ busy: false, message: "失敗しました", error: errorText });
+      const stopped = operation === "lora-train" && errorText.includes("停止されました");
+      setAction({ busy: false, message: stopped ? "停止しました" : "失敗しました", error: stopped ? null : errorText });
       await refreshStatus();
       await refreshOllamaStatus();
       await loadLoraProjects();
@@ -633,7 +634,25 @@ function App() {
   }
 
   async function trainLoraProject(id: string): Promise<void> {
+    setLoraProjects((projects) =>
+      projects.map((project) =>
+        project.id === id
+          ? { ...project, status: "running", message: "LoRA学習を実行中です。ログは下段に表示します。" }
+          : project
+      )
+    );
     await runStreamOperation("lora-train", "LoRA学習を開始中", { projectId: id });
+  }
+
+  async function stopLoraProject(id: string): Promise<void> {
+    appendLog("info", "LoRA学習を停止中");
+    try {
+      const projects = await window.illustMK.loraProjects.stop(id);
+      setLoraProjects(projects);
+      appendLog("info", "LoRA学習を停止しました。");
+    } catch (error) {
+      appendLog("stderr", error instanceof Error ? error.message : String(error));
+    }
   }
 
   async function openCaptionEditor(projectId: string): Promise<void> {
@@ -1526,6 +1545,10 @@ function App() {
                       <button className="primary" disabled={action.busy} onClick={() => void trainLoraProject(project.id)}>
                         <WandSparkles size={15} />
                         学習開始
+                      </button>
+                      <button className="danger" disabled={project.status !== "running"} onClick={() => void stopLoraProject(project.id)}>
+                        <Square size={15} />
+                        学習停止
                       </button>
                     </div>
                   </article>
