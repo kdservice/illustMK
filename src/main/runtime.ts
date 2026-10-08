@@ -1499,7 +1499,15 @@ export async function saveLoraTrainingProject(request: SaveLoraTrainingProjectRe
   const id = existing?.id ?? randomUUID();
   const safeName = safeFileName(name);
   const projectRoot = join(paths.loraProjects, safeName);
-  const datasetPath = existing?.datasetPath ?? join(projectRoot, "dataset");
+  if (existing) {
+    const existingRoot = dirname(dirname(existing.datasetPath));
+    const sameRoot = resolve(existingRoot) === resolve(projectRoot);
+    if (!sameRoot) {
+      if (await exists(projectRoot)) throw new Error(`移動先のLoRAプロジェクトが既に存在します: ${projectRoot}`);
+      if (await exists(existingRoot)) await rename(existingRoot, projectRoot);
+    }
+  }
+  const datasetPath = join(projectRoot, "dataset");
   const outputName = existing?.outputName ?? normalizeSafetensorsName(`${safeName}.safetensors`);
   const project: LoraTrainingProject = {
     id,

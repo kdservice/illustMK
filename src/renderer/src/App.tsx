@@ -145,6 +145,8 @@ function App() {
   const [loraProjects, setLoraProjects] = useState<LoraTrainingProject[]>([]);
   const [selectedLoraProjectId, setSelectedLoraProjectId] = useState<string | null>(null);
   const [loraCreateDialogOpen, setLoraCreateDialogOpen] = useState(false);
+  const [loraProjectDialogMode, setLoraProjectDialogMode] = useState<"create" | "edit">("create");
+  const [editingLoraProjectId, setEditingLoraProjectId] = useState<string | null>(null);
   const [loraName, setLoraName] = useState("");
   const [loraTriggerWord, setLoraTriggerWord] = useState("");
   const [loraAdditionalTraining, setLoraAdditionalTraining] = useState(false);
@@ -657,23 +659,38 @@ function App() {
   }
 
   function openNewLoraDialog(): void {
+    setLoraProjectDialogMode("create");
+    setEditingLoraProjectId(null);
     setLoraName("");
     setLoraTriggerWord("");
     setLoraCreateDialogOpen(true);
   }
 
+  function openEditLoraDialog(): void {
+    if (!selectedLoraProject) return;
+    setLoraProjectDialogMode("edit");
+    setEditingLoraProjectId(selectedLoraProject.id);
+    setLoraName(selectedLoraProject.name);
+    setLoraTriggerWord(selectedLoraProject.triggerWord);
+    setSelectedCheckpoint(selectedLoraProject.baseCheckpoint);
+    setLoraCreateDialogOpen(true);
+  }
+
   async function saveLoraProject(): Promise<void> {
+    const targetProjectId = loraProjectDialogMode === "edit" ? editingLoraProjectId : null;
     await runAction(
       "LoRAプロジェクトを保存中",
       () =>
         window.illustMK.loraProjects.save({
+          id: targetProjectId ?? undefined,
           name: loraName,
           triggerWord: loraTriggerWord,
           baseCheckpoint: selectedCheckpoint
         }),
       (projects) => {
         setLoraProjects(projects);
-        setSelectedLoraProjectId(projects[0]?.id ?? null);
+        setSelectedLoraProjectId(targetProjectId ?? projects[0]?.id ?? null);
+        setEditingLoraProjectId(null);
         setLoraCreateDialogOpen(false);
       }
     );
@@ -1546,6 +1563,10 @@ function App() {
                 <Plus size={17} />
                 新規
               </button>
+              <button disabled={action.busy || !selectedLoraProject || selectedLoraProject.status === "running"} onClick={openEditLoraDialog}>
+                <Pencil size={17} />
+                編集
+              </button>
               <button disabled={action.busy} onClick={() => void importLoraProjectFile()}>
                 <Plus size={17} />
                 インポート
@@ -1565,22 +1586,20 @@ function App() {
               <PanelTitle icon={<TerminalSquare size={18} />} title="LoRA学習ジョブ" />
             </div>
             <div className="lora-control-panel">
-              <div className="lora-control-summary">
-                <strong>{selectedLoraProject?.name ?? "左の一覧からLoRAプロジェクトを選択してください"}</strong>
-                <span>{selectedLoraProject ? `status: ${selectedLoraProject.status}` : "status: -"}</span>
-                <span>{selectedLoraProject ? `output: ${selectedLoraProject.outputName}` : "output: -"}</span>
-                <small>{selectedLoraProject?.message ?? "プロジェクト未選択です。"}</small>
-              </div>
-              <label className="toggle-row">
-                <input type="checkbox" checked={loraAdditionalTraining} onChange={(event) => setLoraAdditionalTraining(event.target.checked)} />
-                追加学習
-              </label>
-              {loraAdditionalTraining && !selectedProjectOutputExists ? (
-                <p className="result-message">追加学習には選択中プロジェクトの出力LoRAが必要です。先に新規学習を完了してください。</p>
-              ) : null}
               <div className="lora-settings-block">
                 <PanelTitle icon={<TerminalSquare size={18} />} title="学習パラメータ" />
               </div>
+              <button
+                type="button"
+                className={loraAdditionalTraining ? "toggle-button active" : "toggle-button"}
+                disabled={!selectedLoraProject}
+                onClick={() => setLoraAdditionalTraining((value) => !value)}
+              >
+                追加学習
+              </button>
+              {loraAdditionalTraining && !selectedProjectOutputExists ? (
+                <p className="result-message">追加学習には選択中プロジェクトの出力LoRAが必要です。先に新規学習を完了してください。</p>
+              ) : null}
               <div className="segmented lora-preset-tabs">
                 {(["fast", "normal", "quality", "custom"] as LoraTrainingPreset[]).map((preset) => (
                   <button
@@ -2150,7 +2169,7 @@ function App() {
         <div className="modal-backdrop">
           <section className="modal-panel lora-create-modal">
             <div className="modal-header">
-              <PanelTitle icon={<Boxes size={18} />} title="LoRAプロジェクト新規作成" />
+              <PanelTitle icon={<Boxes size={18} />} title={loraProjectDialogMode === "edit" ? "LoRAプロジェクト編集" : "LoRAプロジェクト新規作成"} />
               <button className="icon-button" onClick={() => setLoraCreateDialogOpen(false)} title="閉じる">
                 <X size={17} />
               </button>
@@ -2181,7 +2200,7 @@ function App() {
               <button onClick={() => setLoraCreateDialogOpen(false)}>キャンセル</button>
               <button className="primary" disabled={action.busy || !loraName.trim() || !selectedCheckpoint} onClick={() => void saveLoraProject()}>
                 <CheckCircle2 size={17} />
-                作成
+                {loraProjectDialogMode === "edit" ? "保存" : "作成"}
               </button>
             </div>
           </section>

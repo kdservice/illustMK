@@ -400,13 +400,20 @@ label {
   overflow-wrap: anywhere;
 }
 
-.toggle-row {
-  display: flex;
-  align-items: center;
-  gap: 8px;
+.toggle-button {
+  width: fit-content;
+  min-width: 118px;
+  border: 1px solid #29406f;
+  background: #0d1830;
   color: #e8eefc;
   font-size: 13px;
-  font-weight: 700;
+  font-weight: 800;
+}
+
+.toggle-button.active {
+  border-color: #44bcff;
+  background: #15335f;
+  color: #ffffff;
 }
 
 .lora-project-card,
