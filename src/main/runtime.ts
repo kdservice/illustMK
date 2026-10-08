@@ -1453,9 +1453,9 @@ export async function startLoraTrainingProject(id: string): Promise<LoraTraining
 export async function getLoraCaptionWorkspace(projectId: string): Promise<LoraCaptionWorkspace> {
   const project = await findLoraTrainingProject(projectId);
   await normalizeLoraDatasetStructure(project);
-  const tags = await getLoraCaptionTags(project);
   const imageDir = loraTrainingImageDir(project);
   const imageFiles = (await listFiles(imageDir)).filter(isImageFileName);
+  const tags = await importExistingCaptionTags(project, imageFiles);
   const images = await Promise.all(
     imageFiles.map(async (fileName) => {
       const tagIds = await readCaptionTagIds(project, fileName, tags);
@@ -1773,11 +1773,42 @@ async function uniquePath(parent: string, fileName: string): Promise<string> {
 async function readCaptionTagIds(project: LoraTrainingProject, fileName: string, tags: LoraCaptionTag[]): Promise<string[]> {
   const captionPath = join(loraTrainingImageDir(project), replaceImageExtension(fileName, ".txt"));
   if (!(await exists(captionPath))) return [];
-  const text = await readFile(captionPath, "utf8");
-  const captionTags = text.split(",").map((tag) => tag.trim().toLowerCase()).filter(Boolean);
+  const captionTags = await readCaptionTags(captionPath);
   return tags
     .filter((tag) => captionTags.includes(tag.englishName.trim().toLowerCase()))
     .map((tag) => tag.id);
+}
+
+async function importExistingCaptionTags(project: LoraTrainingProject, imageFiles: string[]): Promise<LoraCaptionTag[]> {
+  const tags = await getLoraCaptionTags(project);
+  const existingEnglish = new Set(tags.map((tag) => tag.englishName.trim().toLowerCase()).filter(Boolean));
+  const now = new Date().toISOString();
+  const imported: LoraCaptionTag[] = [];
+  for (const imageFile of imageFiles) {
+    const captionPath = join(loraTrainingImageDir(project), replaceImageExtension(imageFile, ".txt"));
+    if (!(await exists(captionPath))) continue;
+    const captionTags = await readCaptionTags(captionPath);
+    for (const captionTag of captionTags) {
+      if (existingEnglish.has(captionTag)) continue;
+      existingEnglish.add(captionTag);
+      imported.push({
+        id: randomUUID(),
+        japaneseName: captionTag,
+        englishName: captionTag,
+        createdAt: now,
+        updatedAt: now
+      });
+    }
+  }
+  if (!imported.length) return tags;
+  const nextTags = [...tags, ...imported];
+  await saveLoraCaptionTags(project, nextTags);
+  return nextTags;
+}
+
+async function readCaptionTags(captionPath: string): Promise<string[]> {
+  const text = await readFile(captionPath, "utf8");
+  return text.split(",").map((tag) => safeCaptionTag(tag).toLowerCase()).filter(Boolean);
 }
 
 async function translateMissingCaptionTags(ollamaUrl: string, model: string, tags: LoraCaptionTag[]): Promise<LoraCaptionTag[]> {
