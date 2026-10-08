@@ -247,6 +247,7 @@ export type LoraTrainingProject = {
   id: string;
   name: string;
   triggerWord: string;
+  sourceLora: string;
   baseCheckpoint: string;
   datasetPath: string;
   outputName: string;
@@ -265,6 +266,7 @@ export type SaveLoraTrainingProjectRequest = {
   id?: string;
   name: string;
   triggerWord: string;
+  sourceLora?: string;
   baseCheckpoint: string;
   datasetPath?: string;
   outputName?: string;
@@ -1348,7 +1350,7 @@ export async function getLoraTrainingProjects(): Promise<LoraTrainingProject[]> 
   try {
     const text = await readFile(loraTrainingProjectsPath, "utf8");
     const parsed = JSON.parse(text) as LoraTrainingProject[];
-    return Array.isArray(parsed) ? parsed.filter(isLoraTrainingProject) : [];
+    return Array.isArray(parsed) ? parsed.filter(isLoraTrainingProject).map((project) => ({ ...project, sourceLora: project.sourceLora ?? "" })) : [];
   } catch {
     return [];
   }
@@ -1371,6 +1373,7 @@ export async function saveLoraTrainingProject(request: SaveLoraTrainingProjectRe
     id,
     name,
     triggerWord: request.triggerWord.trim(),
+    sourceLora: request.sourceLora?.trim() ?? existing?.sourceLora ?? "",
     baseCheckpoint: request.baseCheckpoint.trim(),
     datasetPath,
     outputName,
@@ -1460,8 +1463,14 @@ export async function trainLoraTrainingProject(id: string, onLog: RuntimeLogSink
     "--mixed_precision",
     "no"
   ];
+  if (project.sourceLora.trim()) {
+    commandArgs.push("--network_weights", join(paths.loras, project.sourceLora));
+  }
   if (project.triggerWord.trim()) {
     onLog({ level: "info", line: `Trigger Word: ${project.triggerWord.trim()}` });
+  }
+  if (project.sourceLora.trim()) {
+    onLog({ level: "info", line: `追加学習元LoRA: ${project.sourceLora.trim()}` });
   }
 
   try {
@@ -1530,6 +1539,14 @@ async function validateLoraTrainingProject(project: LoraTrainingProject, loraOut
   const imageCount = datasetFiles.filter((file) => /\.(png|jpe?g|webp)$/i.test(file)).length;
   const captionCount = datasetFiles.filter((file) => /\.txt$/i.test(file)).length;
   const now = new Date().toISOString();
+  if (project.sourceLora.trim() && !(await exists(join(loraOutputPath, project.sourceLora)))) {
+    return {
+      ...project,
+      status: "blocked",
+      updatedAt: now,
+      message: `追加学習元LoRAが見つかりません: ${project.sourceLora}`
+    };
+  }
   if (imageCount === 0) {
     return {
       ...project,
@@ -1558,6 +1575,7 @@ function isLoraTrainingProject(value: unknown): value is LoraTrainingProject {
     typeof project.id === "string" &&
     typeof project.name === "string" &&
     typeof project.triggerWord === "string" &&
+    (typeof project.sourceLora === "string" || project.sourceLora === undefined) &&
     typeof project.baseCheckpoint === "string" &&
     typeof project.datasetPath === "string" &&
     typeof project.outputName === "string" &&

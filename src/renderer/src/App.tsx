@@ -121,6 +121,7 @@ function App() {
   const [loraProjects, setLoraProjects] = useState<LoraTrainingProject[]>([]);
   const [loraName, setLoraName] = useState("");
   const [loraTriggerWord, setLoraTriggerWord] = useState("");
+  const [loraSourceLora, setLoraSourceLora] = useState("");
   const [loraDatasetPath, setLoraDatasetPath] = useState("");
   const [loraOutputName, setLoraOutputName] = useState("");
   const [loraResolution, setLoraResolution] = useState(1024);
@@ -578,6 +579,7 @@ function App() {
         window.illustMK.loraProjects.save({
           name: loraName,
           triggerWord: loraTriggerWord,
+          sourceLora: loraSourceLora || undefined,
           baseCheckpoint: selectedCheckpoint,
           datasetPath: loraDatasetPath || undefined,
           outputName: loraOutputName || undefined,
@@ -1201,6 +1203,19 @@ function App() {
                 )}
               </select>
             </div>
+            <div className="field">
+              <label>追加学習元LoRA</label>
+              <select value={loraSourceLora} onChange={(event) => setLoraSourceLora(event.target.value)}>
+                <option value="">なし（新規LoRA）</option>
+                {status?.loras.length ? (
+                  status.loras.map((file) => (
+                    <option key={file.name} value={file.name}>
+                      {file.name} ({file.sizeLabel})
+                    </option>
+                  ))
+                ) : null}
+              </select>
+            </div>
             <div className="two-columns">
               <div className="field">
                 <label>Dataset Path</label>
@@ -1253,6 +1268,7 @@ function App() {
                     <div className="lora-project-meta">
                       <span>Trigger: {project.triggerWord || "なし"}</span>
                       <span>Base: {project.baseCheckpoint}</span>
+                      <span>Source LoRA: {project.sourceLora || "なし"}</span>
                     </div>
                     <p>{project.message}</p>
                     <small>{project.datasetPath}</small>
