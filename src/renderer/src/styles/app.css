@@ -294,16 +294,21 @@ label {
 
 .lora-layout {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  grid-template-columns: minmax(260px, 30%) minmax(0, 70%);
   gap: 14px;
   margin-top: 14px;
-  align-items: start;
+  align-items: stretch;
 }
 
 .lora-project-panel,
 .lora-apply-panel {
   display: grid;
   gap: 12px;
+}
+
+.lora-sidebar {
+  min-height: min(720px, calc(100vh - 270px));
+  grid-template-rows: auto minmax(0, 1fr) auto;
 }
 
 .lora-create-header {
@@ -353,6 +358,19 @@ label {
   gap: 10px;
 }
 
+.lora-sidebar .lora-project-list {
+  align-content: start;
+  overflow: auto;
+}
+
+.lora-sidebar-actions {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+  padding-top: 10px;
+  border-top: 1px solid #142444;
+}
+
 .lora-settings-block {
   margin-top: 8px;
   padding-top: 10px;
@@ -399,6 +417,10 @@ label {
   padding: 12px;
   display: grid;
   gap: 8px;
+}
+
+.lora-create-modal {
+  width: min(560px, 94vw);
 }
 
 .lora-project-card {

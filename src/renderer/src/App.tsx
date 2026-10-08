@@ -144,6 +144,7 @@ function App() {
   const [imagePreviewOpen, setImagePreviewOpen] = useState(false);
   const [loraProjects, setLoraProjects] = useState<LoraTrainingProject[]>([]);
   const [selectedLoraProjectId, setSelectedLoraProjectId] = useState<string | null>(null);
+  const [loraCreateDialogOpen, setLoraCreateDialogOpen] = useState(false);
   const [loraName, setLoraName] = useState("");
   const [loraTriggerWord, setLoraTriggerWord] = useState("");
   const [loraAdditionalTraining, setLoraAdditionalTraining] = useState(false);
@@ -655,6 +656,12 @@ function App() {
     setSelectedLoras((current) => current.map((lora) => (lora.name === name ? { ...lora, [field]: value } : lora)));
   }
 
+  function openNewLoraDialog(): void {
+    setLoraName("");
+    setLoraTriggerWord("");
+    setLoraCreateDialogOpen(true);
+  }
+
   async function saveLoraProject(): Promise<void> {
     await runAction(
       "LoRAプロジェクトを保存中",
@@ -667,8 +674,18 @@ function App() {
       (projects) => {
         setLoraProjects(projects);
         setSelectedLoraProjectId(projects[0]?.id ?? null);
+        setLoraCreateDialogOpen(false);
       }
     );
+  }
+
+  async function deleteSelectedLoraProject(): Promise<void> {
+    if (!selectedLoraProject) return;
+    if (!window.confirm(`${selectedLoraProject.name} を削除します。Datasetを含むプロジェクトディレクトリを削除します。出力済みLoRAファイルは削除しません。`)) return;
+    await runAction("LoRAプロジェクトを削除中", () => window.illustMK.loraProjects.delete(selectedLoraProject.id), (projects) => {
+      setLoraProjects(projects);
+      setSelectedLoraProjectId(projects[0]?.id ?? null);
+    });
   }
 
   async function startLoraProject(id: string): Promise<void> {
@@ -1491,56 +1508,9 @@ function App() {
         </section>
       ) : mainTab === "lora" ? (
         <section className="lora-layout">
-          <section className="panel lora-project-panel">
+          <section className="panel lora-project-panel lora-sidebar">
             <div className="lora-create-header">
-              <PanelTitle icon={<Boxes size={18} />} title="LoRA新規作成 / 一覧" />
-            </div>
-            <div className="lora-flow">
-              <span>1. プロジェクト</span>
-              <span>2. Dataset投入</span>
-              <span>3. 学習前チェック</span>
-              <span>4. 学習操作</span>
-            </div>
-            <div className="lora-settings-block">
-              <PanelTitle icon={<Pencil size={18} />} title="基本情報" />
-            </div>
-            <div className="two-columns">
-              <div className="field">
-                <label>LoRA名</label>
-                <input placeholder="my_character_lora" value={loraName} onChange={(event) => setLoraName(event.target.value)} />
-              </div>
-              <div className="field">
-                <label>Trigger Word</label>
-                <input placeholder="mkchar" value={loraTriggerWord} onChange={(event) => setLoraTriggerWord(event.target.value)} />
-              </div>
-            </div>
-            <div className="field">
-              <label>Base Checkpoint</label>
-              <select value={selectedCheckpoint} onChange={(event) => setSelectedCheckpoint(event.target.value)}>
-                {status?.checkpoints.length ? (
-                  status.checkpoints.map((file) => (
-                    <option key={file.name} value={file.name}>
-                      {file.name}
-                    </option>
-                  ))
-                ) : (
-                  <option value="">未追加</option>
-                )}
-              </select>
-            </div>
-            <div className="button-row">
-              <button className="primary" disabled={action.busy || !loraName.trim() || !selectedCheckpoint} onClick={() => void saveLoraProject()}>
-                <CheckCircle2 size={17} />
-                プロジェクト保存
-              </button>
-              <button disabled={action.busy} onClick={() => void loadLoraProjects()}>
-                <RefreshCw size={17} />
-                再読込
-              </button>
-              <button disabled={action.busy} onClick={() => void importLoraProjectFile()}>
-                <Plus size={17} />
-                インポート
-              </button>
+              <PanelTitle icon={<Boxes size={18} />} title="LoRAプロジェクト" />
             </div>
             <div className="lora-project-list">
               {loraProjects.length ? (
@@ -1571,14 +1541,28 @@ function App() {
                 <p className="empty">まだLoRAプロジェクトがありません。</p>
               )}
             </div>
+            <div className="lora-sidebar-actions">
+              <button className="primary" disabled={action.busy} onClick={openNewLoraDialog}>
+                <Plus size={17} />
+                新規
+              </button>
+              <button disabled={action.busy} onClick={() => void importLoraProjectFile()}>
+                <Plus size={17} />
+                インポート
+              </button>
+              <button disabled={action.busy} onClick={() => void loadLoraProjects()}>
+                <RefreshCw size={17} />
+                更新
+              </button>
+              <button className="danger" disabled={action.busy || !selectedLoraProject || selectedLoraProject.status === "running"} onClick={() => void deleteSelectedLoraProject()}>
+                <Trash2 size={17} />
+                削除
+              </button>
+            </div>
           </section>
           <section className="panel lora-project-panel">
             <div className="lora-create-header">
               <PanelTitle icon={<TerminalSquare size={18} />} title="LoRA学習ジョブ" />
-              <button className="danger" disabled={action.busy || !loraProjects.length} onClick={() => void clearLoraProjectHistory()}>
-                <Trash2 size={17} />
-                履歴消去
-              </button>
             </div>
             <div className="lora-control-panel">
               <div className="field">
@@ -2175,6 +2159,47 @@ function App() {
             </div>
             <div className="image-preview-frame">
               <img src={captionPreviewImage.imageDataUrl} alt={captionPreviewImage.fileName} />
+            </div>
+          </section>
+        </div>
+      ) : null}
+      {loraCreateDialogOpen ? (
+        <div className="modal-backdrop">
+          <section className="modal-panel lora-create-modal">
+            <div className="modal-header">
+              <PanelTitle icon={<Boxes size={18} />} title="LoRAプロジェクト新規作成" />
+              <button className="icon-button" onClick={() => setLoraCreateDialogOpen(false)} title="閉じる">
+                <X size={17} />
+              </button>
+            </div>
+            <div className="field">
+              <label>名前</label>
+              <input placeholder="my_character_lora" value={loraName} onChange={(event) => setLoraName(event.target.value)} />
+            </div>
+            <div className="field">
+              <label>ターゲット / Trigger Word</label>
+              <input placeholder="mkchar" value={loraTriggerWord} onChange={(event) => setLoraTriggerWord(event.target.value)} />
+            </div>
+            <div className="field">
+              <label>Base Checkpoint</label>
+              <select value={selectedCheckpoint} onChange={(event) => setSelectedCheckpoint(event.target.value)}>
+                {status?.checkpoints.length ? (
+                  status.checkpoints.map((file) => (
+                    <option key={file.name} value={file.name}>
+                      {file.name}
+                    </option>
+                  ))
+                ) : (
+                  <option value="">未追加</option>
+                )}
+              </select>
+            </div>
+            <div className="modal-actions">
+              <button onClick={() => setLoraCreateDialogOpen(false)}>キャンセル</button>
+              <button className="primary" disabled={action.busy || !loraName.trim() || !selectedCheckpoint} onClick={() => void saveLoraProject()}>
+                <CheckCircle2 size={17} />
+                作成
+              </button>
             </div>
           </section>
         </div>

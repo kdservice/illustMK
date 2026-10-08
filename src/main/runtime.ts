@@ -1476,6 +1476,18 @@ export async function clearLoraTrainingProjects(): Promise<LoraTrainingProject[]
   return [];
 }
 
+export async function deleteLoraTrainingProject(id: string): Promise<LoraTrainingProject[]> {
+  const paths = await ensureRuntimeFiles();
+  const projects = await getLoraTrainingProjects();
+  const project = projects.find((item) => item.id === id);
+  if (!project) throw new Error("LoRAプロジェクトが見つかりません。");
+  if (project.status === "running") throw new Error("実行中のLoRAプロジェクトは削除できません。先に停止してください。");
+  await rm(join(paths.loraProjects, safeFileName(project.name)), { recursive: true, force: true });
+  const nextProjects = projects.filter((item) => item.id !== id);
+  await saveLoraTrainingProjects(nextProjects);
+  return nextProjects;
+}
+
 export async function saveLoraTrainingProject(request: SaveLoraTrainingProjectRequest): Promise<LoraTrainingProject[]> {
   const name = request.name.trim();
   if (!name) throw new Error("LoRA名を入力してください。");
