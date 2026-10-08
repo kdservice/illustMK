@@ -17,6 +17,7 @@ import {
   getAppSettings,
   getIllustrationTags,
   getLlmChatHistory,
+  getLoraTrainingProjects,
   getOllamaStatus,
   getSavedPromptHistory,
   generateTagJapaneseDescription,
@@ -29,6 +30,7 @@ import {
   searchHuggingFaceLlmModels,
   saveAppSettings,
   saveIllustrationTag,
+  saveLoraTrainingProject,
   savePromptHistoryEntry,
   sendLlmChatPrompt,
   showComfyContainerLogs,
@@ -38,6 +40,7 @@ import {
   startOllama,
   startRuntime,
   startRuntimeWithLogs,
+  startLoraTrainingProject,
   stopDockerEngine,
   stopNativeRuntime,
   stopOllama,
@@ -53,6 +56,7 @@ import {
   type LlmChatRequest,
   type PromptEnhanceRequest,
   type SaveIllustrationTagRequest,
+  type SaveLoraTrainingProjectRequest,
   type SavePromptHistoryRequest,
   type TagDescriptionRequest,
   type TagTranslationRequest,
@@ -251,6 +255,9 @@ function registerIpc(): void {
   ipcMain.handle("tags:translate-en", (_event, request: TagTranslationRequest) => translateTagDescription(request));
   ipcMain.handle("tags:save", (_event, request: SaveIllustrationTagRequest) => saveIllustrationTag(request));
   ipcMain.handle("tags:delete", (_event, id: string) => deleteIllustrationTag(id));
+  ipcMain.handle("lora-projects:list", () => getLoraTrainingProjects());
+  ipcMain.handle("lora-projects:save", (_event, request: SaveLoraTrainingProjectRequest) => saveLoraTrainingProject(request));
+  ipcMain.handle("lora-projects:start", (_event, id: string) => startLoraTrainingProject(id));
   ipcMain.handle("ollama:status", (_event, ollamaUrl?: string) => getOllamaStatus(ollamaUrl));
   ipcMain.handle("ollama:start", () => startOllama());
   ipcMain.handle("ollama:stop", () => stopOllama());

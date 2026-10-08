@@ -23,6 +23,7 @@ export type RuntimePaths = {
   vae: string;
   outputs: string;
   workflows: string;
+  loraProjects: string;
   native: string;
   nativeComfy: string;
   nativeVenv: string;
@@ -56,6 +57,7 @@ export type RuntimeStatus = {
   comfyUrl: string;
   containerState: string;
   checkpoints: ModelFileInfo[];
+  loras: ModelFileInfo[];
   outputs: string[];
 };
 
@@ -221,12 +223,51 @@ export type TestGenerationRequest = {
   prompt: string;
   negativePrompt: string;
   checkpoint: string;
+  loras?: GenerationLora[];
   width: number;
   height: number;
   steps: number;
   cfg: number;
   seed: number;
   comfyUrl: string;
+};
+
+export type GenerationLora = {
+  name: string;
+  modelStrength: number;
+  clipStrength: number;
+};
+
+export type LoraTrainingProject = {
+  id: string;
+  name: string;
+  triggerWord: string;
+  baseCheckpoint: string;
+  datasetPath: string;
+  outputName: string;
+  resolution: number;
+  repeats: number;
+  epochs: number;
+  networkDim: number;
+  learningRate: string;
+  createdAt: string;
+  updatedAt: string;
+  status: "draft" | "ready" | "blocked";
+  message: string;
+};
+
+export type SaveLoraTrainingProjectRequest = {
+  id?: string;
+  name: string;
+  triggerWord: string;
+  baseCheckpoint: string;
+  datasetPath?: string;
+  outputName?: string;
+  resolution: number;
+  repeats: number;
+  epochs: number;
+  networkDim: number;
+  learningRate: string;
 };
 
 export type PromptHistoryEntry = {
@@ -272,6 +313,7 @@ const settingsPath = join(appDataRoot, "settings.json");
 const llmChatHistoryPath = join(appDataRoot, "llm-chat-history.json");
 const illustrationTagsPath = join(appDataRoot, "illustration-tags.json");
 const promptHistoryPath = join(appDataRoot, "prompt-history.json");
+const loraTrainingProjectsPath = join(appDataRoot, "lora-training-projects.json");
 const comfyPort = Number(process.env.ILLUSTMK_COMFY_PORT ?? "8188");
 let nativeProcess: ChildProcess | null = null;
 let ollamaProcess: ChildProcess | null = null;
@@ -307,6 +349,7 @@ export function getRuntimePaths(): RuntimePaths {
     vae: join(root, "models", "vae"),
     outputs: join(root, "outputs"),
     workflows: join(root, "workflows"),
+    loraProjects: join(root, "lora-projects"),
     native,
     nativeComfy: join(native, "ComfyUI"),
     nativeVenv: join(native, "venv"),
@@ -328,6 +371,7 @@ export async function ensureRuntimeFiles(): Promise<RuntimePaths> {
     mkdir(paths.vae, { recursive: true }),
     mkdir(paths.outputs, { recursive: true }),
     mkdir(paths.workflows, { recursive: true }),
+    mkdir(paths.loraProjects, { recursive: true }),
     mkdir(paths.native, { recursive: true }),
     mkdir(join(paths.native, "logs"), { recursive: true }),
     mkdir(paths.ollamaModels, { recursive: true }),
@@ -382,6 +426,7 @@ export async function getStatus(comfyUrl = `http://127.0.0.1:${comfyPort}`): Pro
     composeReady,
     comfyReachable,
     checkpoints,
+    loras,
     outputs,
     containerState
   ] =
@@ -396,6 +441,7 @@ export async function getStatus(comfyUrl = `http://127.0.0.1:${comfyPort}`): Pro
       exists(paths.composeFile),
       checkComfy(comfyUrl),
       listModelFiles(paths.checkpoints),
+      listModelFiles(paths.loras),
       listFiles(paths.outputs),
       getContainerState()
     ]);
@@ -421,6 +467,7 @@ export async function getStatus(comfyUrl = `http://127.0.0.1:${comfyPort}`): Pro
     comfyUrl,
     containerState,
     checkpoints,
+    loras,
     outputs
   };
 }
@@ -1263,6 +1310,67 @@ export async function clearPromptHistory(): Promise<PromptHistoryEntry[]> {
   return [];
 }
 
+export async function getLoraTrainingProjects(): Promise<LoraTrainingProject[]> {
+  try {
+    const text = await readFile(loraTrainingProjectsPath, "utf8");
+    const parsed = JSON.parse(text) as LoraTrainingProject[];
+    return Array.isArray(parsed) ? parsed.filter(isLoraTrainingProject) : [];
+  } catch {
+    return [];
+  }
+}
+
+export async function saveLoraTrainingProject(request: SaveLoraTrainingProjectRequest): Promise<LoraTrainingProject[]> {
+  const name = request.name.trim();
+  if (!name) throw new Error("LoRA名を入力してください。");
+  if (!request.baseCheckpoint.trim()) throw new Error("ベースCheckpointを選択してください。");
+  const paths = await ensureRuntimeFiles();
+  const now = new Date().toISOString();
+  const projects = await getLoraTrainingProjects();
+  const existing = request.id ? projects.find((project) => project.id === request.id) : null;
+  const id = existing?.id ?? randomUUID();
+  const safeName = safeFileName(name);
+  const projectRoot = join(paths.loraProjects, safeName);
+  const datasetPath = request.datasetPath?.trim() || join(projectRoot, "dataset");
+  const outputName = request.outputName?.trim() || `${safeName}.safetensors`;
+  const project: LoraTrainingProject = {
+    id,
+    name,
+    triggerWord: request.triggerWord.trim(),
+    baseCheckpoint: request.baseCheckpoint.trim(),
+    datasetPath,
+    outputName,
+    resolution: request.resolution,
+    repeats: request.repeats,
+    epochs: request.epochs,
+    networkDim: request.networkDim,
+    learningRate: request.learningRate.trim() || "1e-4",
+    createdAt: existing?.createdAt ?? now,
+    updatedAt: now,
+    status: "draft",
+    message: "プロジェクトを作成しました。datasetに学習画像とcaptionを配置してください。"
+  };
+  await mkdir(datasetPath, { recursive: true });
+  await mkdir(join(projectRoot, "config"), { recursive: true });
+  await writeFile(join(projectRoot, "config", "lora-training.json"), JSON.stringify(project, null, 2), "utf8");
+  const nextProjects = existing
+    ? projects.map((item) => (item.id === existing.id ? project : item))
+    : [project, ...projects];
+  await saveLoraTrainingProjects(nextProjects);
+  return nextProjects;
+}
+
+export async function startLoraTrainingProject(id: string): Promise<LoraTrainingProject[]> {
+  const paths = await ensureRuntimeFiles();
+  const projects = await getLoraTrainingProjects();
+  const project = projects.find((item) => item.id === id);
+  if (!project) throw new Error("LoRAプロジェクトが見つかりません。");
+  const updated = await validateLoraTrainingProject(project, paths.loras);
+  const nextProjects = projects.map((item) => (item.id === id ? updated : item));
+  await saveLoraTrainingProjects(nextProjects);
+  return nextProjects;
+}
+
 export async function savePromptHistoryEntry(request: SavePromptHistoryRequest): Promise<PromptHistoryEntry[]> {
   const entry: PromptHistoryEntry = {
     id: randomUUID(),
@@ -1292,6 +1400,63 @@ async function civitaiAuthHeader(): Promise<Record<string, string>> {
 async function savePromptHistory(history: PromptHistoryEntry[]): Promise<void> {
   await mkdir(appDataRoot, { recursive: true });
   await writeFile(promptHistoryPath, JSON.stringify(history, null, 2), "utf8");
+}
+
+async function saveLoraTrainingProjects(projects: LoraTrainingProject[]): Promise<void> {
+  await mkdir(appDataRoot, { recursive: true });
+  await writeFile(loraTrainingProjectsPath, JSON.stringify(projects, null, 2), "utf8");
+}
+
+async function validateLoraTrainingProject(project: LoraTrainingProject, loraOutputPath: string): Promise<LoraTrainingProject> {
+  const datasetFiles = await listFiles(project.datasetPath);
+  const imageCount = datasetFiles.filter((file) => /\.(png|jpe?g|webp)$/i.test(file)).length;
+  const captionCount = datasetFiles.filter((file) => /\.txt$/i.test(file)).length;
+  const now = new Date().toISOString();
+  if (imageCount === 0) {
+    return {
+      ...project,
+      status: "blocked",
+      updatedAt: now,
+      message: "datasetに学習画像がありません。画像と必要なcaptionを追加してください。"
+    };
+  }
+  await mkdir(loraOutputPath, { recursive: true });
+  return {
+    ...project,
+    status: "ready",
+    updatedAt: now,
+    message: [
+      "学習前チェックOKです。",
+      `画像 ${imageCount}件 / caption ${captionCount}件`,
+      "Phase4の次ステップでsd-scripts/kohya実行環境に接続します。"
+    ].join(" ")
+  };
+}
+
+function isLoraTrainingProject(value: unknown): value is LoraTrainingProject {
+  if (!value || typeof value !== "object") return false;
+  const project = value as Partial<LoraTrainingProject>;
+  return (
+    typeof project.id === "string" &&
+    typeof project.name === "string" &&
+    typeof project.triggerWord === "string" &&
+    typeof project.baseCheckpoint === "string" &&
+    typeof project.datasetPath === "string" &&
+    typeof project.outputName === "string" &&
+    typeof project.resolution === "number" &&
+    typeof project.repeats === "number" &&
+    typeof project.epochs === "number" &&
+    typeof project.networkDim === "number" &&
+    typeof project.learningRate === "string" &&
+    typeof project.createdAt === "string" &&
+    typeof project.updatedAt === "string" &&
+    (project.status === "draft" || project.status === "ready" || project.status === "blocked") &&
+    typeof project.message === "string"
+  );
+}
+
+function safeFileName(value: string): string {
+  return value.trim().replace(/[^a-zA-Z0-9._-]+/g, "-").replace(/^-+|-+$/g, "") || `lora-${Date.now()}`;
 }
 
 function isPromptHistoryEntry(value: unknown): value is PromptHistoryEntry {
@@ -1426,6 +1591,7 @@ export async function runTestGeneration(request: TestGenerationRequest): Promise
   }
   const workflow = testWorkflowTemplate();
   workflow["4"].inputs.ckpt_name = request.checkpoint;
+  applyLorasToWorkflow(workflow, request.loras ?? []);
   workflow["6"].inputs.text = request.prompt;
   workflow["7"].inputs.text = request.negativePrompt;
   workflow["5"].inputs.width = request.width;
@@ -1483,6 +1649,33 @@ export async function runTestGeneration(request: TestGenerationRequest): Promise
     message: "生成完了を待機しましたが、新しい画像を確認できませんでした。",
     promptId
   };
+}
+
+function applyLorasToWorkflow(
+  workflow: Record<string, { class_type: string; inputs: Record<string, unknown> }>,
+  loras: GenerationLora[]
+): void {
+  const activeLoras = loras.filter((lora) => lora.name.trim() && (lora.modelStrength !== 0 || lora.clipStrength !== 0));
+  let modelSource: [string, number] = ["4", 0];
+  let clipSource: [string, number] = ["4", 1];
+  activeLoras.forEach((lora, index) => {
+    const nodeId = String(20 + index);
+    workflow[nodeId] = {
+      class_type: "LoraLoader",
+      inputs: {
+        lora_name: lora.name,
+        strength_model: lora.modelStrength,
+        strength_clip: lora.clipStrength,
+        model: modelSource,
+        clip: clipSource
+      }
+    };
+    modelSource = [nodeId, 0];
+    clipSource = [nodeId, 1];
+  });
+  workflow["3"].inputs.model = modelSource;
+  workflow["6"].inputs.clip = clipSource;
+  workflow["7"].inputs.clip = clipSource;
 }
 
 async function imageDataUrl(path: string): Promise<string> {

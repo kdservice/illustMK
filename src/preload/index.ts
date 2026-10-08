@@ -8,6 +8,7 @@ import type {
   HuggingFaceLlmModelCard,
   LlmChatMessage,
   LlmChatRequest,
+  LoraTrainingProject,
   IllustrationTag,
   OllamaStatus,
   PromptEnhanceRequest,
@@ -16,6 +17,7 @@ import type {
   RuntimePaths,
   RuntimeStatus,
   SaveIllustrationTagRequest,
+  SaveLoraTrainingProjectRequest,
   SavePromptHistoryRequest,
   TagDescriptionRequest,
   TagTranslationRequest,
@@ -84,6 +86,12 @@ const api = {
     translateEnglish: (request: TagTranslationRequest): Promise<string> => ipcRenderer.invoke("tags:translate-en", request),
     save: (request: SaveIllustrationTagRequest): Promise<IllustrationTag[]> => ipcRenderer.invoke("tags:save", request),
     delete: (id: string): Promise<IllustrationTag[]> => ipcRenderer.invoke("tags:delete", id)
+  },
+  loraProjects: {
+    list: (): Promise<LoraTrainingProject[]> => ipcRenderer.invoke("lora-projects:list"),
+    save: (request: SaveLoraTrainingProjectRequest): Promise<LoraTrainingProject[]> =>
+      ipcRenderer.invoke("lora-projects:save", request),
+    start: (id: string): Promise<LoraTrainingProject[]> => ipcRenderer.invoke("lora-projects:start", id)
   },
   promptHistory: {
     list: (): Promise<PromptHistoryEntry[]> => ipcRenderer.invoke("prompt-history:list"),

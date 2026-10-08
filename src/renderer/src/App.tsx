@@ -19,9 +19,11 @@ import {
 import type {
   CivitaiModelCard,
   DownloadRequest,
+  GenerationLora,
   HuggingFaceLlmModelCard,
   IllustrationTag,
   LlmChatMessage,
+  LoraTrainingProject,
   OllamaStatus,
   PromptEnhanceMode,
   PromptHistoryEntry,
@@ -103,6 +105,7 @@ function App() {
   const [promptEnhanceMode, setPromptEnhanceMode] = useState<PromptEnhanceMode>("balanced-detail");
   const [promptNotes, setPromptNotes] = useState("");
   const [selectedCheckpoint, setSelectedCheckpoint] = useState("");
+  const [selectedLoras, setSelectedLoras] = useState<GenerationLora[]>([]);
   const [prompt, setPrompt] = useState("masterpiece, best quality, 1girl, anime style, soft light");
   const [negativePrompt, setNegativePrompt] = useState("low quality, worst quality, blurry, bad anatomy");
   const [lastImage, setLastImage] = useState<string | null>(null);
@@ -115,12 +118,23 @@ function App() {
   const [promptHistory, setPromptHistory] = useState<PromptHistoryEntry[]>([]);
   const [promptHistoryOpen, setPromptHistoryOpen] = useState(false);
   const [imagePreviewOpen, setImagePreviewOpen] = useState(false);
+  const [loraProjects, setLoraProjects] = useState<LoraTrainingProject[]>([]);
+  const [loraName, setLoraName] = useState("");
+  const [loraTriggerWord, setLoraTriggerWord] = useState("");
+  const [loraDatasetPath, setLoraDatasetPath] = useState("");
+  const [loraOutputName, setLoraOutputName] = useState("");
+  const [loraResolution, setLoraResolution] = useState(1024);
+  const [loraRepeats, setLoraRepeats] = useState(10);
+  const [loraEpochs, setLoraEpochs] = useState(10);
+  const [loraNetworkDim, setLoraNetworkDim] = useState(16);
+  const [loraLearningRate, setLoraLearningRate] = useState("1e-4");
   const [action, setAction] = useState<ActionState>({ busy: false, message: "待機中", error: null });
   const [logs, setLogs] = useState<LogLine[]>([]);
   const [autoFollowLogs, setAutoFollowLogs] = useState(true);
   const [downloadProgress, setDownloadProgress] = useState<number | null>(null);
-  const [mainTab, setMainTab] = useState<"environment" | "llm" | "generate">("environment");
+  const [mainTab, setMainTab] = useState<"environment" | "llm" | "lora" | "generate">("environment");
   const [runtimeTab, setRuntimeTab] = useState<"macos" | "docker">("macos");
+  const [generateTab, setGenerateTab] = useState<"prompt" | "lora">("prompt");
   const logViewRef = useRef<HTMLDivElement | null>(null);
   const currentOperationId = useRef<string | null>(null);
 
@@ -175,6 +189,7 @@ function App() {
     void loadLlmChatHistory();
     void loadIllustrationTags();
     void loadPromptHistory();
+    void loadLoraProjects();
   }, []);
 
   useEffect(() => {
@@ -431,6 +446,10 @@ function App() {
     setPromptHistory(await window.illustMK.promptHistory.list());
   }
 
+  async function loadLoraProjects(): Promise<void> {
+    setLoraProjects(await window.illustMK.loraProjects.list());
+  }
+
   async function clearPromptHistory(): Promise<void> {
     if (!window.confirm("プロンプト履歴を削除します。元に戻せません。")) return;
     await runAction("プロンプト履歴を削除中", () => window.illustMK.promptHistory.clear(), (history) => {
@@ -538,6 +557,46 @@ function App() {
     setSelectedTagIds((current) => (current.includes(id) ? current.filter((tagId) => tagId !== id) : [...current, id]));
   }
 
+  function toggleGenerationLora(name: string): void {
+    setSelectedLoras((current) =>
+      current.some((lora) => lora.name === name)
+        ? current.filter((lora) => lora.name !== name)
+        : [...current, { name, modelStrength: 0.8, clipStrength: 0.8 }]
+    );
+  }
+
+  function updateGenerationLora(name: string, field: "modelStrength" | "clipStrength", value: number): void {
+    setSelectedLoras((current) => current.map((lora) => (lora.name === name ? { ...lora, [field]: value } : lora)));
+  }
+
+  async function saveLoraProject(): Promise<void> {
+    await runAction(
+      "LoRAプロジェクトを保存中",
+      () =>
+        window.illustMK.loraProjects.save({
+          name: loraName,
+          triggerWord: loraTriggerWord,
+          baseCheckpoint: selectedCheckpoint,
+          datasetPath: loraDatasetPath || undefined,
+          outputName: loraOutputName || undefined,
+          resolution: loraResolution,
+          repeats: loraRepeats,
+          epochs: loraEpochs,
+          networkDim: loraNetworkDim,
+          learningRate: loraLearningRate
+        }),
+      (projects) => {
+        setLoraProjects(projects);
+      }
+    );
+  }
+
+  async function startLoraProject(id: string): Promise<void> {
+    await runAction("LoRA学習前チェック中", () => window.illustMK.loraProjects.start(id), (projects) => {
+      setLoraProjects(projects);
+    });
+  }
+
   async function enhanceJapanesePrompt(): Promise<void> {
     await runAction(
       "日本語プロンプトを生成向けに変換中",
@@ -583,6 +642,7 @@ function App() {
     prompt: effectivePrompt,
     negativePrompt,
     checkpoint: selectedCheckpoint,
+    loras: selectedLoras,
     width: generationWidth,
     height: generationHeight,
     steps: 20,
@@ -622,6 +682,9 @@ function App() {
         </button>
         <button className={mainTab === "llm" ? "tab active" : "tab"} onClick={() => setMainTab("llm")}>
           LLM
+        </button>
+        <button className={mainTab === "lora" ? "tab active" : "tab"} onClick={() => setMainTab("lora")}>
+          LoRA
         </button>
         <button className={mainTab === "generate" ? "tab active" : "tab"} onClick={() => setMainTab("generate")}>
           生成
@@ -1070,6 +1133,107 @@ function App() {
             </div>
           </section>
         </section>
+      ) : mainTab === "lora" ? (
+        <section className="lora-layout">
+          <section className="panel lora-project-panel">
+            <PanelTitle icon={<Boxes size={18} />} title="LoRA新規 / 学習" />
+            <div className="two-columns">
+              <div className="field">
+                <label>LoRA名</label>
+                <input placeholder="my_character_lora" value={loraName} onChange={(event) => setLoraName(event.target.value)} />
+              </div>
+              <div className="field">
+                <label>Trigger Word</label>
+                <input placeholder="mkchar" value={loraTriggerWord} onChange={(event) => setLoraTriggerWord(event.target.value)} />
+              </div>
+            </div>
+            <div className="field">
+              <label>Base Checkpoint</label>
+              <select value={selectedCheckpoint} onChange={(event) => setSelectedCheckpoint(event.target.value)}>
+                {status?.checkpoints.length ? (
+                  status.checkpoints.map((file) => (
+                    <option key={file.name} value={file.name}>
+                      {file.name}
+                    </option>
+                  ))
+                ) : (
+                  <option value="">未追加</option>
+                )}
+              </select>
+            </div>
+            <div className="two-columns">
+              <div className="field">
+                <label>Dataset Path</label>
+                <input placeholder="未指定ならDataPathに作成" value={loraDatasetPath} onChange={(event) => setLoraDatasetPath(event.target.value)} />
+              </div>
+              <div className="field">
+                <label>Output Name</label>
+                <input placeholder="未指定ならLoRA名.safetensors" value={loraOutputName} onChange={(event) => setLoraOutputName(event.target.value)} />
+              </div>
+            </div>
+            <div className="lora-train-grid">
+              <div className="field">
+                <label>Resolution</label>
+                <input type="number" min="512" step="64" value={loraResolution} onChange={(event) => setLoraResolution(Number(event.target.value))} />
+              </div>
+              <div className="field">
+                <label>Repeats</label>
+                <input type="number" min="1" value={loraRepeats} onChange={(event) => setLoraRepeats(Number(event.target.value))} />
+              </div>
+              <div className="field">
+                <label>Epochs</label>
+                <input type="number" min="1" value={loraEpochs} onChange={(event) => setLoraEpochs(Number(event.target.value))} />
+              </div>
+              <div className="field">
+                <label>Network Dim</label>
+                <input type="number" min="1" value={loraNetworkDim} onChange={(event) => setLoraNetworkDim(Number(event.target.value))} />
+              </div>
+              <div className="field">
+                <label>Learning Rate</label>
+                <input value={loraLearningRate} onChange={(event) => setLoraLearningRate(event.target.value)} />
+              </div>
+            </div>
+            <div className="button-row">
+              <button className="primary" disabled={action.busy || !loraName.trim() || !selectedCheckpoint} onClick={() => void saveLoraProject()}>
+                <CheckCircle2 size={17} />
+                プロジェクト保存
+              </button>
+              <button disabled={action.busy} onClick={() => void loadLoraProjects()}>
+                <RefreshCw size={17} />
+                再読込
+              </button>
+            </div>
+          </section>
+          <section className="panel lora-project-panel">
+            <PanelTitle icon={<TerminalSquare size={18} />} title="LoRA学習ジョブ" />
+            <div className="lora-project-list">
+              {loraProjects.length ? (
+                loraProjects.map((project) => (
+                  <article className="lora-project-card" key={project.id}>
+                    <header>
+                      <strong>{project.name}</strong>
+                      <span>{project.status}</span>
+                    </header>
+                    <p>{project.message}</p>
+                    <small>{project.datasetPath}</small>
+                    <div className="button-row">
+                      <button disabled={action.busy} onClick={() => void startLoraProject(project.id)}>
+                        <Play size={15} />
+                        学習前チェック
+                      </button>
+                      <button onClick={() => void window.illustMK.app.openPath(project.datasetPath)}>
+                        <FolderOpen size={15} />
+                        Dataset
+                      </button>
+                    </div>
+                  </article>
+                ))
+              ) : (
+                <p className="empty">まだLoRAプロジェクトがありません。</p>
+              )}
+            </div>
+          </section>
+        </section>
       ) : (
         <section className="generate-layout">
           <section className="panel preview-panel">
@@ -1089,26 +1253,43 @@ function App() {
           </section>
 
           <section className="panel generate-panel">
-            <PromptTransformPanel
-              japanesePrompt={japanesePrompt}
-              setJapanesePrompt={setJapanesePrompt}
-              prompt={prompt}
-              setPrompt={setPrompt}
-              negativePrompt={negativePrompt}
-              setNegativePrompt={setNegativePrompt}
-              promptNotes={promptNotes}
-              promptEnhanceMode={promptEnhanceMode}
-              setPromptEnhanceMode={setPromptEnhanceMode}
-              canEnhancePrompt={canEnhancePrompt}
-              disabledReason={enhancePromptDisabledReason}
-              onEnhance={() => void enhanceJapanesePrompt()}
-              illustrationTags={illustrationTags}
-              selectedTagIds={selectedTagIds}
-              onToggleTag={toggleIllustrationTag}
-              onAddTag={openNewTagDialog}
-              onEditTag={openEditTagDialog}
-              onDeleteTag={(id) => void deleteIllustrationTag(id)}
-            />
+            <div className="runtime-tabs">
+              <button className={generateTab === "prompt" ? "runtime-tab active" : "runtime-tab"} onClick={() => setGenerateTab("prompt")}>
+                プロンプト
+              </button>
+              <button className={generateTab === "lora" ? "runtime-tab active" : "runtime-tab"} onClick={() => setGenerateTab("lora")}>
+                LoRA
+              </button>
+            </div>
+            {generateTab === "prompt" ? (
+              <PromptTransformPanel
+                japanesePrompt={japanesePrompt}
+                setJapanesePrompt={setJapanesePrompt}
+                prompt={prompt}
+                setPrompt={setPrompt}
+                negativePrompt={negativePrompt}
+                setNegativePrompt={setNegativePrompt}
+                promptNotes={promptNotes}
+                promptEnhanceMode={promptEnhanceMode}
+                setPromptEnhanceMode={setPromptEnhanceMode}
+                canEnhancePrompt={canEnhancePrompt}
+                disabledReason={enhancePromptDisabledReason}
+                onEnhance={() => void enhanceJapanesePrompt()}
+                illustrationTags={illustrationTags}
+                selectedTagIds={selectedTagIds}
+                onToggleTag={toggleIllustrationTag}
+                onAddTag={openNewTagDialog}
+                onEditTag={openEditTagDialog}
+                onDeleteTag={(id) => void deleteIllustrationTag(id)}
+              />
+            ) : (
+              <GenerationLoraPanel
+                loras={status?.loras ?? []}
+                selectedLoras={selectedLoras}
+                onToggleLora={toggleGenerationLora}
+                onUpdateLora={updateGenerationLora}
+              />
+            )}
             <div className="field">
               <label>Checkpoint</label>
               <select value={selectedCheckpoint} onChange={(event) => setSelectedCheckpoint(event.target.value)}>
@@ -1178,6 +1359,7 @@ function App() {
                   async () => {
                     appendLog("info", `ComfyUI Positive Prompt: ${testRequest.prompt}`);
                     appendLog("info", `ComfyUI Negative Prompt: ${testRequest.negativePrompt}`);
+                    appendLog("info", `ComfyUI LoRA: ${selectedLoras.length ? selectedLoras.map((lora) => `${lora.name} model=${lora.modelStrength} clip=${lora.clipStrength}`).join(", ") : "なし"}`);
                     appendLog("info", `ComfyUI Size/Seed: ${testRequest.width}x${testRequest.height} / ${testRequest.seed}`);
                     const result = await window.illustMK.runtime.testGenerate(testRequest);
                     const history = await window.illustMK.promptHistory.save({
@@ -1505,6 +1687,70 @@ function TagSelector({
   );
 }
 
+function GenerationLoraPanel({
+  loras,
+  selectedLoras,
+  onToggleLora,
+  onUpdateLora
+}: {
+  loras: RuntimeStatus["loras"];
+  selectedLoras: GenerationLora[];
+  onToggleLora: (name: string) => void;
+  onUpdateLora: (name: string, field: "modelStrength" | "clipStrength", value: number) => void;
+}) {
+  return (
+    <div className="lora-apply-panel">
+      <div className="tag-builder-header">
+        <h2>LoRA適用</h2>
+        <span>{selectedLoras.length}件選択</span>
+      </div>
+      <div className="lora-apply-list">
+        {loras.length ? (
+          loras.map((lora) => {
+            const selected = selectedLoras.find((item) => item.name === lora.name);
+            return (
+              <article className={selected ? "lora-apply-card selected" : "lora-apply-card"} key={lora.name}>
+                <button onClick={() => onToggleLora(lora.name)}>
+                  <strong>{lora.name}</strong>
+                  <small>{lora.sizeLabel}</small>
+                </button>
+                {selected ? (
+                  <div className="lora-strength-grid">
+                    <label>
+                      Model
+                      <input
+                        type="number"
+                        min="-2"
+                        max="2"
+                        step="0.05"
+                        value={selected.modelStrength}
+                        onChange={(event) => onUpdateLora(lora.name, "modelStrength", Number(event.target.value))}
+                      />
+                    </label>
+                    <label>
+                      CLIP
+                      <input
+                        type="number"
+                        min="-2"
+                        max="2"
+                        step="0.05"
+                        value={selected.clipStrength}
+                        onChange={(event) => onUpdateLora(lora.name, "clipStrength", Number(event.target.value))}
+                      />
+                    </label>
+                  </div>
+                ) : null}
+              </article>
+            );
+          })
+        ) : (
+          <p className="empty">まだLoRAがありません。環境タブのモデル追加でLoRAを保存してください。</p>
+        )}
+      </div>
+    </div>
+  );
+}
+
 function LogPanel({
   action,
   logs,
@@ -1566,6 +1812,7 @@ function StatusGrid({ status, ollamaStatus }: { status: RuntimeStatus | null; ol
     ["Runtime", status?.pathsReady ? "OK" : "未初期化"],
     ["ComfyUI", status?.comfyReachable ? "接続中" : "未接続"],
     ["Image Models", `${status?.checkpoints.length ?? 0}`],
+    ["LoRA", `${status?.loras.length ?? 0}`],
     ["Ollama", ollamaStatus?.reachable && ollamaStatus.dataLinked ? "接続OK" : ollamaStatus?.reachable ? "保存先NG" : ollamaStatus?.installed ? "未起動" : "未検出"],
     ["LLM Models", `${ollamaStatus?.models.length ?? 0}`]
   ];

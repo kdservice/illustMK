@@ -282,6 +282,79 @@ label {
   min-height: 0;
 }
 
+.lora-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 14px;
+  margin-top: 14px;
+  align-items: start;
+}
+
+.lora-project-panel,
+.lora-apply-panel {
+  display: grid;
+  gap: 12px;
+}
+
+.lora-train-grid {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.lora-project-list,
+.lora-apply-list {
+  display: grid;
+  gap: 10px;
+}
+
+.lora-project-card,
+.lora-apply-card {
+  border: 1px solid #1c2d53;
+  border-radius: 8px;
+  background: #081125;
+  padding: 12px;
+  display: grid;
+  gap: 8px;
+}
+
+.lora-project-card header {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  align-items: center;
+}
+
+.lora-project-card p,
+.lora-project-card small {
+  margin: 0;
+  color: #91a3c9;
+  overflow-wrap: anywhere;
+}
+
+.lora-apply-card.selected {
+  border-color: #44bcff;
+  background: #0c1b35;
+}
+
+.lora-apply-card > button {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  align-items: center;
+}
+
+.lora-strength-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.lora-strength-grid label {
+  display: grid;
+  gap: 4px;
+}
+
 .llm-chat-panel {
   display: grid;
   grid-template-rows: auto minmax(320px, 1fr) auto;
