@@ -113,6 +113,7 @@ function App() {
   const [seedValue, setSeedValue] = useState(-1);
   const [promptHistory, setPromptHistory] = useState<PromptHistoryEntry[]>([]);
   const [promptHistoryOpen, setPromptHistoryOpen] = useState(false);
+  const [imagePreviewOpen, setImagePreviewOpen] = useState(false);
   const [action, setAction] = useState<ActionState>({ busy: false, message: "待機中", error: null });
   const [logs, setLogs] = useState<LogLine[]>([]);
   const [autoFollowLogs, setAutoFollowLogs] = useState(true);
@@ -1058,9 +1059,11 @@ function App() {
         <section className="generate-layout">
           <section className="panel preview-panel">
             <PanelTitle icon={<ImageIcon size={18} />} title="テスト生成" />
-            <div className="preview-stage">
+            <div className="preview-stage" style={{ aspectRatio: `${generationWidth} / ${generationHeight}` }}>
               {lastImage ? (
-                <img src={imageUrl(lastImage)} alt="Generated preview" />
+                <button className="preview-image-button" type="button" onClick={() => setImagePreviewOpen(true)} title="拡大表示">
+                  <img src={imageUrl(lastImage)} alt="Generated preview" />
+                </button>
               ) : (
                 <div className="placeholder">
                   <ImageIcon size={42} />
@@ -1305,6 +1308,21 @@ function App() {
                 <Trash2 size={17} />
                 履歴削除
               </button>
+            </div>
+          </section>
+        </div>
+      ) : null}
+      {imagePreviewOpen && lastImage ? (
+        <div className="modal-backdrop" onClick={() => setImagePreviewOpen(false)}>
+          <section className="modal-panel image-preview-modal" onClick={(event) => event.stopPropagation()}>
+            <div className="modal-header">
+              <PanelTitle icon={<ImageIcon size={18} />} title="生成画像プレビュー" />
+              <button className="icon-button" onClick={() => setImagePreviewOpen(false)} title="閉じる">
+                <Square size={16} />
+              </button>
+            </div>
+            <div className="image-preview-frame" style={{ aspectRatio: `${generationWidth} / ${generationHeight}` }}>
+              <img src={imageUrl(lastImage)} alt="Generated preview enlarged" />
             </div>
           </section>
         </div>
