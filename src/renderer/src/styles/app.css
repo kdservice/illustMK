@@ -306,6 +306,30 @@ label {
   gap: 12px;
 }
 
+.lora-create-header {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  align-items: center;
+}
+
+.lora-flow,
+.lora-project-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.lora-flow span,
+.lora-project-meta span {
+  border: 1px solid #1c2d53;
+  border-radius: 999px;
+  color: #91a3c9;
+  background: #071020;
+  padding: 5px 9px;
+  font-size: 12px;
+}
+
 .lora-train-grid {
   display: grid;
   grid-template-columns: repeat(5, minmax(0, 1fr));

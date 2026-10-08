@@ -1164,7 +1164,19 @@ function App() {
       ) : mainTab === "lora" ? (
         <section className="lora-layout">
           <section className="panel lora-project-panel">
-            <PanelTitle icon={<Boxes size={18} />} title="LoRA新規 / 学習" />
+            <div className="lora-create-header">
+              <PanelTitle icon={<Boxes size={18} />} title="LoRA新規作成" />
+              <button className="primary" disabled={action.busy || !loraName.trim() || !selectedCheckpoint} onClick={() => void saveLoraProject()}>
+                <CheckCircle2 size={17} />
+                LoRAを新規作成
+              </button>
+            </div>
+            <div className="lora-flow">
+              <span>1. 作成</span>
+              <span>2. Dataset投入</span>
+              <span>3. 学習前チェック</span>
+              <span>4. 学習開始</span>
+            </div>
             <div className="two-columns">
               <div className="field">
                 <label>LoRA名</label>
@@ -1222,10 +1234,6 @@ function App() {
               </div>
             </div>
             <div className="button-row">
-              <button className="primary" disabled={action.busy || !loraName.trim() || !selectedCheckpoint} onClick={() => void saveLoraProject()}>
-                <CheckCircle2 size={17} />
-                プロジェクト保存
-              </button>
               <button disabled={action.busy} onClick={() => void loadLoraProjects()}>
                 <RefreshCw size={17} />
                 再読込
@@ -1242,9 +1250,17 @@ function App() {
                       <strong>{project.name}</strong>
                       <span>{project.status}</span>
                     </header>
+                    <div className="lora-project-meta">
+                      <span>Trigger: {project.triggerWord || "なし"}</span>
+                      <span>Base: {project.baseCheckpoint}</span>
+                    </div>
                     <p>{project.message}</p>
                     <small>{project.datasetPath}</small>
                     <div className="button-row">
+                      <button onClick={() => void window.illustMK.app.openPath(project.datasetPath)}>
+                        <FolderOpen size={15} />
+                        Datasetを開く
+                      </button>
                       <button disabled={action.busy} onClick={() => void startLoraProject(project.id)}>
                         <Play size={15} />
                         学習前チェック
@@ -1252,10 +1268,6 @@ function App() {
                       <button className="primary" disabled={action.busy} onClick={() => void trainLoraProject(project.id)}>
                         <WandSparkles size={15} />
                         学習開始
-                      </button>
-                      <button onClick={() => void window.illustMK.app.openPath(project.datasetPath)}>
-                        <FolderOpen size={15} />
-                        Dataset
                       </button>
                     </div>
                   </article>
