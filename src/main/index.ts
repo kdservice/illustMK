@@ -22,6 +22,7 @@ import {
   getSavedPromptHistory,
   generateTagJapaneseDescription,
   initNativeRuntime,
+  installLoraRuntime,
   installOllama,
   installNativeRuntime,
   pullOllamaModel,
@@ -46,6 +47,7 @@ import {
   stopOllama,
   uninstallOllama,
   translateTagDescription,
+  trainLoraTrainingProject,
   clearPromptHistory,
   clearLlmChatHistory,
   stopRuntime,
@@ -178,7 +180,7 @@ function registerIpc(): void {
   ipcMain.handle("runtime:build", () => buildRuntime());
   ipcMain.handle("runtime:start", () => startRuntime());
   ipcMain.handle("runtime:stop", () => stopRuntime());
-  ipcMain.handle("runtime:run-operation", async (event, request: { id: string; operation: string; model?: string; ollamaUrl?: string }) => {
+  ipcMain.handle("runtime:run-operation", async (event, request: { id: string; operation: string; model?: string; ollamaUrl?: string; projectId?: string }) => {
     const sendLog = (level: "info" | "stdout" | "stderr", line: string) => {
       event.sender.send("runtime:operation-log", { id: request.id, level, line });
     };
@@ -201,6 +203,12 @@ function registerIpc(): void {
       }
       if (request.operation === "native-install") {
         return await installNativeRuntime((log) => sendLog(log.level, log.line));
+      }
+      if (request.operation === "lora-install") {
+        return await installLoraRuntime((log) => sendLog(log.level, log.line));
+      }
+      if (request.operation === "lora-train") {
+        return await trainLoraTrainingProject(request.projectId ?? "", (log) => sendLog(log.level, log.line));
       }
       if (request.operation === "native-start") {
         return await startNativeRuntime((log) => sendLog(log.level, log.line));

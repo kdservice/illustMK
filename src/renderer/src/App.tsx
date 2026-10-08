@@ -237,24 +237,26 @@ function App() {
     }
   }
 
-  async function runStreamOperation(operation: string, message: string): Promise<void> {
+  async function runStreamOperation(operation: string, message: string, options: { projectId?: string } = {}): Promise<void> {
     const id = crypto.randomUUID();
     currentOperationId.current = id;
     appendLog("info", message, id);
     setAction({ busy: true, message, error: null });
     setDownloadProgress(null);
     try {
-      const result = await window.illustMK.runtime.runOperation({ id, operation });
+      const result = await window.illustMK.runtime.runOperation({ id, operation, ...options });
       appendLog("info", result, id);
       setAction({ busy: false, message: "完了しました", error: null });
       await refreshStatus();
       await refreshOllamaStatus();
+      await loadLoraProjects();
     } catch (error) {
       const errorText = error instanceof Error ? error.message : String(error);
       appendLog("stderr", errorText, id);
       setAction({ busy: false, message: "失敗しました", error: errorText });
       await refreshStatus();
       await refreshOllamaStatus();
+      await loadLoraProjects();
     }
   }
 
@@ -597,6 +599,10 @@ function App() {
     });
   }
 
+  async function trainLoraProject(id: string): Promise<void> {
+    await runStreamOperation("lora-train", "LoRA学習を開始中", { projectId: id });
+  }
+
   async function enhanceJapanesePrompt(): Promise<void> {
     await runAction(
       "日本語プロンプトを生成向けに変換中",
@@ -753,6 +759,26 @@ function App() {
               <p>アプリ: /Users/kds/Projects/illustMK</p>
               <p>ランタイム: {paths?.root ?? "/Volumes/ARC-8050T2/illustMK"}</p>
               <p>macOS ComfyUI: {paths?.nativeComfy ?? "未初期化"}</p>
+            </div>
+          </section>
+
+          <section className="panel lora-env-panel">
+            <PanelTitle icon={<Boxes size={18} />} title="LoRA" />
+            <div className="button-grid">
+              <button onClick={() => void runStreamOperation("lora-install", "LoRA学習環境をインストール中")}>
+                <Download size={17} />
+                インストール
+              </button>
+              <button onClick={() => void loadLoraProjects()}>
+                <RefreshCw size={17} />
+                再読込
+              </button>
+            </div>
+            <div className="paths">
+              <p>sd-scripts: {paths?.loraScripts ?? "/Volumes/ARC-8050T2/illustMK/lora-runtime/sd-scripts"}</p>
+              <p>venv: {paths?.loraVenv ?? "/Volumes/ARC-8050T2/illustMK/lora-runtime/venv"}</p>
+              <p>projects: {paths?.loraProjects ?? "/Volumes/ARC-8050T2/illustMK/lora-projects"}</p>
+              <p>outputs: {paths?.loras ?? "/Volumes/ARC-8050T2/illustMK/models/loras"}</p>
             </div>
           </section>
 
@@ -1220,6 +1246,10 @@ function App() {
                       <button disabled={action.busy} onClick={() => void startLoraProject(project.id)}>
                         <Play size={15} />
                         学習前チェック
+                      </button>
+                      <button className="primary" disabled={action.busy} onClick={() => void trainLoraProject(project.id)}>
+                        <WandSparkles size={15} />
+                        学習開始
                       </button>
                       <button onClick={() => void window.illustMK.app.openPath(project.datasetPath)}>
                         <FolderOpen size={15} />

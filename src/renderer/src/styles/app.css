@@ -236,7 +236,7 @@ label {
 
 .environment-layout {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: 14px;
   margin-top: 14px;
 }
@@ -249,13 +249,17 @@ label {
   order: 2;
 }
 
-.llm-panel {
+.lora-env-panel {
   order: 3;
+}
+
+.llm-panel {
+  order: 4;
 }
 
 .environment-log {
   grid-column: 1 / -1;
-  order: 4;
+  order: 5;
 }
 
 .generate-layout {

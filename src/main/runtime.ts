@@ -24,6 +24,11 @@ export type RuntimePaths = {
   outputs: string;
   workflows: string;
   loraProjects: string;
+  loraRuntime: string;
+  loraScripts: string;
+  loraVenv: string;
+  loraPython: string;
+  loraLog: string;
   native: string;
   nativeComfy: string;
   nativeVenv: string;
@@ -252,7 +257,7 @@ export type LoraTrainingProject = {
   learningRate: string;
   createdAt: string;
   updatedAt: string;
-  status: "draft" | "ready" | "blocked";
+  status: "draft" | "ready" | "running" | "complete" | "blocked" | "failed";
   message: string;
 };
 
@@ -336,6 +341,7 @@ export function getRuntimePaths(): RuntimePaths {
   const native = join(root, "native");
   const docker = join(root, "docker", "comfyui");
   const ollama = join(root, "llm", "ollama");
+  const loraRuntime = join(root, "lora-runtime");
   return {
     root,
     llm: join(root, "llm"),
@@ -350,6 +356,11 @@ export function getRuntimePaths(): RuntimePaths {
     outputs: join(root, "outputs"),
     workflows: join(root, "workflows"),
     loraProjects: join(root, "lora-projects"),
+    loraRuntime,
+    loraScripts: join(loraRuntime, "sd-scripts"),
+    loraVenv: join(loraRuntime, "venv"),
+    loraPython: join(loraRuntime, "venv", "bin", "python"),
+    loraLog: join(loraRuntime, "logs", "lora-training.log"),
     native,
     nativeComfy: join(native, "ComfyUI"),
     nativeVenv: join(native, "venv"),
@@ -372,6 +383,8 @@ export async function ensureRuntimeFiles(): Promise<RuntimePaths> {
     mkdir(paths.outputs, { recursive: true }),
     mkdir(paths.workflows, { recursive: true }),
     mkdir(paths.loraProjects, { recursive: true }),
+    mkdir(paths.loraRuntime, { recursive: true }),
+    mkdir(join(paths.loraRuntime, "logs"), { recursive: true }),
     mkdir(paths.native, { recursive: true }),
     mkdir(join(paths.native, "logs"), { recursive: true }),
     mkdir(paths.ollamaModels, { recursive: true }),
@@ -497,6 +510,27 @@ export async function installNativeRuntime(onLog: RuntimeLogSink): Promise<strin
   await spawnNativeCommand(paths.nativePython, ["-m", "pip", "install", "--upgrade", "pip"], onLog);
   await spawnNativeCommand(paths.nativePython, ["-m", "pip", "install", "-r", join(paths.nativeComfy, "requirements.txt")], onLog);
   return "macOS ComfyUI環境のインストールが完了しました。";
+}
+
+export async function installLoraRuntime(onLog: RuntimeLogSink): Promise<string> {
+  const paths = await ensureRuntimeFiles();
+  if (!(await exists(paths.loraScripts))) {
+    await spawnNativeCommand("git", ["clone", "--depth", "1", "https://github.com/kohya-ss/sd-scripts.git", paths.loraScripts], onLog);
+  } else {
+    onLog({ level: "info", line: "sd-scripts は既に存在します。" });
+  }
+
+  if (!(await exists(paths.loraPython))) {
+    await spawnNativeCommand("python3", ["-m", "venv", paths.loraVenv], onLog);
+  } else {
+    onLog({ level: "info", line: "LoRA venv は既に存在します。" });
+  }
+
+  await spawnNativeCommand(paths.loraPython, ["-m", "pip", "install", "--upgrade", "pip", "setuptools", "wheel"], onLog);
+  await spawnNativeCommand(paths.loraPython, ["-m", "pip", "install", "-r", join(paths.loraScripts, "requirements.txt")], onLog, {
+    cwd: paths.loraScripts
+  });
+  return "LoRA学習環境のインストールが完了しました。";
 }
 
 export async function startNativeRuntime(onLog: RuntimeLogSink): Promise<string> {
@@ -1371,6 +1405,90 @@ export async function startLoraTrainingProject(id: string): Promise<LoraTraining
   return nextProjects;
 }
 
+export async function trainLoraTrainingProject(id: string, onLog: RuntimeLogSink): Promise<string> {
+  const paths = await ensureRuntimeFiles();
+  if (!(await exists(paths.loraPython)) || !(await exists(join(paths.loraScripts, "sdxl_train_network.py")))) {
+    throw new Error("LoRA学習環境が未インストールです。環境タブのLoRAパネルで「インストール」を実行してください。");
+  }
+  const projects = await getLoraTrainingProjects();
+  const project = projects.find((item) => item.id === id);
+  if (!project) throw new Error("LoRAプロジェクトが見つかりません。");
+  const readyProject = await validateLoraTrainingProject(project, paths.loras);
+  if (readyProject.status === "blocked") {
+    await saveLoraTrainingProjects(projects.map((item) => (item.id === id ? readyProject : item)));
+    throw new Error(readyProject.message);
+  }
+
+  const runningProject: LoraTrainingProject = {
+    ...readyProject,
+    status: "running",
+    updatedAt: new Date().toISOString(),
+    message: "LoRA学習を実行中です。ログは下段に表示します。"
+  };
+  await saveLoraTrainingProjects(projects.map((item) => (item.id === id ? runningProject : item)));
+
+  await writeFile(paths.loraLog, "", "utf8");
+  onLog({ level: "info", line: `LoRA学習ログ: ${paths.loraLog}` });
+  const outputBaseName = project.outputName.replace(/\.safetensors$/i, "");
+  const commandArgs = [
+    "sdxl_train_network.py",
+    "--pretrained_model_name_or_path",
+    join(paths.checkpoints, project.baseCheckpoint),
+    "--train_data_dir",
+    project.datasetPath,
+    "--output_dir",
+    paths.loras,
+    "--output_name",
+    outputBaseName,
+    "--save_model_as",
+    "safetensors",
+    "--resolution",
+    `${project.resolution},${project.resolution}`,
+    "--train_batch_size",
+    "1",
+    "--max_train_epochs",
+    String(project.epochs),
+    "--network_module",
+    "networks.lora",
+    "--network_dim",
+    String(project.networkDim),
+    "--learning_rate",
+    project.learningRate,
+    "--caption_extension",
+    ".txt",
+    "--enable_bucket",
+    "--mixed_precision",
+    "no"
+  ];
+  if (project.triggerWord.trim()) {
+    onLog({ level: "info", line: `Trigger Word: ${project.triggerWord.trim()}` });
+  }
+
+  try {
+    await spawnNativeCommand(paths.loraPython, commandArgs, onLog, { cwd: paths.loraScripts });
+  } catch (error) {
+    const failedProjects = await getLoraTrainingProjects();
+    const failedProject: LoraTrainingProject = {
+      ...runningProject,
+      status: "failed",
+      updatedAt: new Date().toISOString(),
+      message: error instanceof Error ? error.message : String(error)
+    };
+    await saveLoraTrainingProjects(failedProjects.map((item) => (item.id === id ? failedProject : item)));
+    throw error;
+  }
+
+  const completedProjects = await getLoraTrainingProjects();
+  const completedProject: LoraTrainingProject = {
+    ...runningProject,
+    status: "complete",
+    updatedAt: new Date().toISOString(),
+    message: `LoRA学習が完了しました。出力: ${join(paths.loras, `${outputBaseName}.safetensors`)}`
+  };
+  await saveLoraTrainingProjects(completedProjects.map((item) => (item.id === id ? completedProject : item)));
+  return completedProject.message;
+}
+
 export async function savePromptHistoryEntry(request: SavePromptHistoryRequest): Promise<PromptHistoryEntry[]> {
   const entry: PromptHistoryEntry = {
     id: randomUUID(),
@@ -1450,7 +1568,12 @@ function isLoraTrainingProject(value: unknown): value is LoraTrainingProject {
     typeof project.learningRate === "string" &&
     typeof project.createdAt === "string" &&
     typeof project.updatedAt === "string" &&
-    (project.status === "draft" || project.status === "ready" || project.status === "blocked") &&
+    (project.status === "draft" ||
+      project.status === "ready" ||
+      project.status === "running" ||
+      project.status === "complete" ||
+      project.status === "blocked" ||
+      project.status === "failed") &&
     typeof project.message === "string"
   );
 }
@@ -2115,10 +2238,11 @@ function spawnDockerFile(command: string, args: string[], onLog: RuntimeLogSink)
   });
 }
 
-function spawnNativeCommand(command: string, args: string[], onLog: RuntimeLogSink): Promise<void> {
+function spawnNativeCommand(command: string, args: string[], onLog: RuntimeLogSink, options: { cwd?: string } = {}): Promise<void> {
   return new Promise((resolve, reject) => {
     onLog({ level: "info", line: `$ ${command} ${args.join(" ")}` });
     const child = spawn(command, args, {
+      cwd: options.cwd,
       env: {
         ...process.env,
         PYTORCH_ENABLE_MPS_FALLBACK: "1",

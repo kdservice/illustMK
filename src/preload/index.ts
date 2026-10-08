@@ -45,7 +45,7 @@ const api = {
     build: (): Promise<string> => ipcRenderer.invoke("runtime:build"),
     start: (): Promise<string> => ipcRenderer.invoke("runtime:start"),
     stop: (): Promise<string> => ipcRenderer.invoke("runtime:stop"),
-    runOperation: (request: { id: string; operation: string; model?: string; ollamaUrl?: string }): Promise<string> =>
+    runOperation: (request: { id: string; operation: string; model?: string; ollamaUrl?: string; projectId?: string }): Promise<string> =>
       ipcRenderer.invoke("runtime:run-operation", request),
     onOperationLog: (callback: (event: OperationLog) => void): (() => void) => {
       const listener = (_event: Electron.IpcRendererEvent, payload: OperationLog) => callback(payload);
