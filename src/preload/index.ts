@@ -5,6 +5,7 @@ import type {
   DeleteModelRequest,
   DownloadRequest,
   DownloadResult,
+  HuggingFaceLlmModelCard,
   LlmChatMessage,
   LlmChatRequest,
   IllustrationTag,
@@ -58,6 +59,8 @@ const api = {
       nsfw?: boolean;
       baseModels?: string[];
     }): Promise<CivitaiModelCard[]> => ipcRenderer.invoke("runtime:search-civitai", options),
+    searchHuggingFaceLlm: (options: { query: string; limit?: number }): Promise<HuggingFaceLlmModelCard[]> =>
+      ipcRenderer.invoke("runtime:search-huggingface-llm", options),
     testGenerate: (request: TestGenerationRequest): Promise<TestGenerationResult> =>
       ipcRenderer.invoke("runtime:test-generate", request)
   },

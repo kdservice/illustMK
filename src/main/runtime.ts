@@ -109,6 +109,18 @@ export type CivitaiModelCard = {
   sha256?: string;
 };
 
+export type HuggingFaceLlmModelCard = {
+  id: string;
+  name: string;
+  author: string;
+  pullName: string;
+  downloads: number;
+  likes: number;
+  updatedAt: string | null;
+  tags: string[];
+  ggufFiles: string[];
+};
+
 export type AppSettings = {
   civitaiApiKey: string;
   huggingFaceApiKey: string;
@@ -736,6 +748,31 @@ export async function searchCivitaiModels(options: {
     .flatMap(normalizeCivitaiModel)
     .filter((model) => isAllowedBaseModel(model, options.baseModels ?? defaultBaseModelFilters))
     .slice(0, options.limit ?? 10);
+}
+
+export async function searchHuggingFaceLlmModels(options: { query: string; limit?: number }): Promise<HuggingFaceLlmModelCard[]> {
+  const query = options.query.trim();
+  if (!query) throw new Error("検索語を入力してください。");
+  const params = new URLSearchParams({
+    search: query,
+    filter: "gguf",
+    sort: "downloads",
+    direction: "-1",
+    limit: String(options.limit ?? 20),
+    full: "true"
+  });
+  const response = await fetch(`https://huggingface.co/api/models?${params.toString()}`, {
+    headers: {
+      Accept: "application/json",
+      ...(await huggingFaceAuthHeader())
+    },
+    signal: AbortSignal.timeout(20000)
+  });
+  if (!response.ok) {
+    throw new Error(`Hugging Face検索に失敗しました: HTTP ${response.status}`);
+  }
+  const json = (await response.json()) as Array<Record<string, unknown>>;
+  return json.map(normalizeHuggingFaceModelCard).filter((model) => model.ggufFiles.length || model.tags.includes("gguf"));
 }
 
 export async function getOllamaStatus(ollamaUrl = "http://127.0.0.1:11434"): Promise<OllamaStatus> {
@@ -2027,6 +2064,32 @@ function normalizeCivitaiModel(item: unknown): CivitaiModelCard[] {
       sha256: hashes.SHA256 ? String(hashes.SHA256) : undefined
     }
   ];
+}
+
+function normalizeHuggingFaceModelCard(item: Record<string, unknown>): HuggingFaceLlmModelCard {
+  const id = String(item.id ?? item.modelId ?? "");
+  const name = id.split("/").pop() ?? id;
+  const author = id.includes("/") ? id.split("/")[0] : "";
+  const siblings = Array.isArray(item.siblings) ? item.siblings : [];
+  const ggufFiles = siblings
+    .map((sibling) => {
+      if (!sibling || typeof sibling !== "object") return "";
+      const value = (sibling as { rfilename?: unknown }).rfilename;
+      return typeof value === "string" ? value : "";
+    })
+    .filter((file) => file.toLowerCase().endsWith(".gguf"));
+  const tags = Array.isArray(item.tags) ? item.tags.map(String) : [];
+  return {
+    id,
+    name,
+    author,
+    pullName: `hf.co/${id}`,
+    downloads: Number(item.downloads ?? 0),
+    likes: Number(item.likes ?? 0),
+    updatedAt: item.lastModified ? String(item.lastModified) : null,
+    tags,
+    ggufFiles
+  };
 }
 
 const defaultBaseModelFilters = ["SDXL", "Pony", "Illustrious", "Animagine"];

@@ -24,6 +24,7 @@ import {
   pullOllamaModel,
   runTestGeneration,
   searchCivitaiModels,
+  searchHuggingFaceLlmModels,
   saveAppSettings,
   saveIllustrationTag,
   sendLlmChatPrompt,
@@ -173,6 +174,7 @@ function registerIpc(): void {
   );
   ipcMain.handle("runtime:delete-model", (_event, request: DeleteModelRequest) => deleteModelFile(request));
   ipcMain.handle("runtime:search-civitai", (_event, options) => searchCivitaiModels(options));
+  ipcMain.handle("runtime:search-huggingface-llm", (_event, options) => searchHuggingFaceLlmModels(options));
   ipcMain.handle("runtime:test-generate", (_event, request: TestGenerationRequest) => runTestGeneration(request));
   ipcMain.handle("tags:list", () => getIllustrationTags());
   ipcMain.handle("tags:generate-ja", (_event, request: TagDescriptionRequest) => generateTagJapaneseDescription(request));

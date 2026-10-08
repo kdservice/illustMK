@@ -19,6 +19,7 @@ import {
 import type {
   CivitaiModelCard,
   DownloadRequest,
+  HuggingFaceLlmModelCard,
   IllustrationTag,
   LlmChatMessage,
   OllamaStatus,
@@ -85,6 +86,7 @@ function App() {
   const [ollamaModel, setOllamaModel] = useState("qwen2.5:3b-instruct");
   const [ollamaStatus, setOllamaStatus] = useState<OllamaStatus | null>(null);
   const [llmCatalogQuery, setLlmCatalogQuery] = useState("");
+  const [hfLlmModels, setHfLlmModels] = useState<HuggingFaceLlmModelCard[]>([]);
   const [llmPrompt, setLlmPrompt] = useState("");
   const [llmChatHistory, setLlmChatHistory] = useState<LlmChatMessage[]>([]);
   const [illustrationTags, setIllustrationTags] = useState<IllustrationTag[]>([]);
@@ -402,6 +404,17 @@ function App() {
     });
   }
 
+  async function searchHuggingFaceLlmModels(): Promise<void> {
+    await runAction(
+      "Hugging Face LLMを検索中",
+      () => window.illustMK.runtime.searchHuggingFaceLlm({ query: llmCatalogQuery, limit: 20 }),
+      (models) => {
+        setHfLlmModels(models);
+        appendLog("info", `${models.length}件のHF GGUFモデルを取得しました。`);
+      }
+    );
+  }
+
   async function loadIllustrationTags(): Promise<void> {
     setIllustrationTags(await window.illustMK.tags.list());
   }
@@ -714,8 +727,33 @@ function App() {
               </button>
             </div>
             <div className="field catalog-search">
-              <label>LLM Catalog</label>
-              <input placeholder="qwen, gemma, spark..." value={llmCatalogQuery} onChange={(event) => setLlmCatalogQuery(event.target.value)} />
+              <label>LLM Search</label>
+              <div className="inline">
+                <input placeholder="DanTagGen, qwen gguf, gemma gguf..." value={llmCatalogQuery} onChange={(event) => setLlmCatalogQuery(event.target.value)} />
+                <button className="icon-button" disabled={action.busy || !llmCatalogQuery.trim()} onClick={() => void searchHuggingFaceLlmModels()} title="HF検索">
+                  <RefreshCw size={17} />
+                </button>
+              </div>
+            </div>
+            {hfLlmModels.length ? (
+              <div className="llm-catalog-list">
+                {hfLlmModels.map((model) => (
+                  <article className="llm-catalog-card" key={model.id}>
+                    <button className="llm-select-button" onClick={() => setOllamaModel(model.pullName)}>
+                      <span>{model.id}</span>
+                      <small>HF GGUF / DL {model.downloads.toLocaleString()}</small>
+                    </button>
+                    <p>{model.ggufFiles.slice(0, 3).join(", ") || "GGUF repo"}</p>
+                    <button disabled={!ollamaStatus?.reachable || !ollamaStatus.dataLinked || action.busy} onClick={() => void runOllamaPull(model.pullName)}>
+                      <Download size={15} />
+                      Download
+                    </button>
+                  </article>
+                ))}
+              </div>
+            ) : null}
+            <div className="model-list">
+              <h2>おすすめ</h2>
             </div>
             <div className="llm-catalog-list">
               {filteredLlmModels.map((model) => (
