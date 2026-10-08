@@ -1,5 +1,5 @@
 import { app, BrowserWindow, ipcMain, screen, shell, type Rectangle } from "electron";
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { mkdir, readFile, stat, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import {
   buildRuntime,
@@ -51,6 +51,7 @@ import {
   translateTagDescription,
   trainLoraTrainingProject,
   clearPromptHistory,
+  clearLoraTrainingProjects,
   clearLlmChatHistory,
   stopRuntime,
   stopRuntimeWithLogs,
@@ -269,6 +270,7 @@ function registerIpc(): void {
   ipcMain.handle("lora-projects:list", () => getLoraTrainingProjects());
   ipcMain.handle("lora-projects:save", (_event, request: SaveLoraTrainingProjectRequest) => saveLoraTrainingProject(request));
   ipcMain.handle("lora-projects:start", (_event, id: string) => startLoraTrainingProject(id));
+  ipcMain.handle("lora-projects:clear", () => clearLoraTrainingProjects());
   ipcMain.handle("lora-captions:get", (_event, projectId: string) => getLoraCaptionWorkspace(projectId));
   ipcMain.handle("lora-captions:save", (_event, request: SaveLoraCaptionWorkspaceRequest) => saveLoraCaptionWorkspace(request));
   ipcMain.handle("ollama:status", (_event, ollamaUrl?: string) => getOllamaStatus(ollamaUrl));
@@ -281,5 +283,12 @@ function registerIpc(): void {
   ipcMain.handle("ollama:chat-history", () => getLlmChatHistory());
   ipcMain.handle("ollama:clear-chat-history", () => clearLlmChatHistory());
   ipcMain.handle("ollama:chat", (_event, request: LlmChatRequest) => sendLlmChatPrompt(request));
-  ipcMain.handle("app:open-path", (_event, path: string) => shell.openPath(path));
+  ipcMain.handle("app:open-path", async (_event, path: string) => {
+    const pathStat = await stat(path).catch(() => null);
+    if (pathStat?.isDirectory()) {
+      return shell.openPath(path);
+    }
+    shell.showItemInFolder(path);
+    return "";
+  });
 }

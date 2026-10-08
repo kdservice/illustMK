@@ -584,8 +584,14 @@ export async function installLoraRuntime(onLog: RuntimeLogSink): Promise<string>
     onLog({ level: "info", line: "sd-scripts は既に存在します。" });
   }
 
+  const venvPython = await resolveLoraVenvPython(onLog);
+  if (await shouldRebuildLoraVenv(paths, onLog)) {
+    onLog({ level: "info", line: `LoRA venv をMPS優先で作り直します: ${paths.loraVenv}` });
+    await rm(paths.loraVenv, { recursive: true, force: true });
+  }
+
   if (!(await exists(paths.loraPython))) {
-    await spawnNativeCommand("python3", ["-m", "venv", paths.loraVenv], onLog);
+    await spawnNativeCommand(venvPython, ["-m", "venv", paths.loraVenv], onLog);
   } else {
     onLog({ level: "info", line: "LoRA venv は既に存在します。" });
   }
@@ -594,7 +600,17 @@ export async function installLoraRuntime(onLog: RuntimeLogSink): Promise<string>
   await spawnNativeCommand(paths.loraPython, ["-m", "pip", "install", "-r", join(paths.loraScripts, "requirements.txt")], onLog, {
     cwd: paths.loraScripts
   });
-  await spawnNativeCommand(paths.loraPython, ["-m", "pip", "install", "torchvision"], onLog, { cwd: paths.loraScripts });
+  await spawnNativeCommand(
+    paths.loraPython,
+    ["-m", "pip", "install", "--pre", "--upgrade", "torch", "torchvision", "--extra-index-url", "https://download.pytorch.org/whl/nightly/cpu"],
+    onLog,
+    { cwd: paths.loraScripts }
+  );
+  const mpsStatus = await getLoraMpsStatus(paths.loraPython);
+  onLog({ level: mpsStatus.available ? "info" : "stderr", line: mpsStatus.message });
+  if (!mpsStatus.available) {
+    throw new Error("LoRA学習環境のMPS / Metal acceleration が有効になりませんでした。ログのtorch/macOS情報を確認してください。");
+  }
   return "LoRA学習環境のインストールが完了しました。";
 }
 
@@ -1419,6 +1435,11 @@ export async function getLoraTrainingProjects(): Promise<LoraTrainingProject[]> 
   }
 }
 
+export async function clearLoraTrainingProjects(): Promise<LoraTrainingProject[]> {
+  await saveLoraTrainingProjects([]);
+  return [];
+}
+
 export async function saveLoraTrainingProject(request: SaveLoraTrainingProjectRequest): Promise<LoraTrainingProject[]> {
   const name = request.name.trim();
   if (!name) throw new Error("LoRA名を入力してください。");
@@ -1584,6 +1605,8 @@ export async function trainLoraTrainingProject(id: string, onLog: RuntimeLogSink
 
   await writeFile(paths.loraLog, "", "utf8");
   onLog({ level: "info", line: `LoRA学習ログ: ${paths.loraLog}` });
+  const mpsStatus = await getLoraMpsStatus(paths.loraPython);
+  onLog({ level: mpsStatus.available ? "info" : "stderr", line: mpsStatus.message });
   const outputBaseName = project.outputName.replace(/\.safetensors$/i, "");
   const commandArgs = [
     "sdxl_train_network.py",
@@ -1626,7 +1649,12 @@ export async function trainLoraTrainingProject(id: string, onLog: RuntimeLogSink
   }
 
   try {
-    await spawnNativeCommand(paths.loraPython, commandArgs, onLog, { cwd: paths.loraScripts });
+    const acceleratePath = join(paths.loraVenv, "bin", "accelerate");
+    if (mpsStatus.available && await exists(acceleratePath)) {
+      await spawnNativeCommand(acceleratePath, ["launch", "--num_processes", "1", ...commandArgs], onLog, { cwd: paths.loraScripts });
+    } else {
+      await spawnNativeCommand(paths.loraPython, commandArgs, onLog, { cwd: paths.loraScripts });
+    }
     const outputPath = join(paths.loras, `${outputBaseName}.safetensors`);
     if (!(await exists(outputPath))) {
       throw new Error(
@@ -1969,6 +1997,112 @@ function safeCaptionTag(value: string): string {
 
 function replaceImageExtension(fileName: string, ext: string): string {
   return fileName.replace(/\.(png|jpe?g|webp)$/i, ext);
+}
+
+async function resolveLoraVenvPython(onLog: RuntimeLogSink): Promise<string> {
+  const candidates = [
+    "/opt/homebrew/bin/python3.12",
+    "/opt/homebrew/opt/python@3.12/bin/python3.12",
+    "python3.12",
+    "python3.11",
+    "python3"
+  ];
+  for (const candidate of candidates) {
+    if (await canRun(candidate, ["--version"])) {
+      const version = await pythonShortVersion(candidate);
+      if (version === "3.12") {
+        onLog({ level: "info", line: `LoRA venv Python: ${candidate} (${version})` });
+        return candidate;
+      }
+    }
+  }
+  if (await canRun("brew", ["--version"])) {
+    onLog({ level: "info", line: "python3.12 が無いため Homebrew で python@3.12 をインストールします。" });
+    await spawnNativeCommand("brew", ["install", "python@3.12"], onLog);
+    if (await canRun("/opt/homebrew/bin/python3.12", ["--version"])) {
+      return "/opt/homebrew/bin/python3.12";
+    }
+  }
+  throw new Error("LoRA MPS用のPython 3.12が見つかりません。Homebrewのpython@3.12インストールにも失敗しました。");
+}
+
+async function shouldRebuildLoraVenv(paths: RuntimePaths, onLog: RuntimeLogSink): Promise<boolean> {
+  if (!(await exists(paths.loraPython))) return false;
+  const version = await pythonShortVersion(paths.loraPython);
+  if (version !== "3.12") {
+    onLog({ level: "info", line: `LoRA venv Pythonが${version || "不明"}のため再構築します。MPS優先では3.12を使います。` });
+    return true;
+  }
+  if (await pythonHasModule(paths.loraPython, "torch")) {
+    const mpsStatus = await getLoraMpsStatus(paths.loraPython);
+    if (!mpsStatus.available) {
+      onLog({ level: "stderr", line: mpsStatus.message });
+      return true;
+    }
+  }
+  return false;
+}
+
+async function canRun(command: string, args: string[]): Promise<boolean> {
+  try {
+    await execFileAsync(command, args, { timeout: 10000 });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function pythonShortVersion(pythonPath: string): Promise<string> {
+  try {
+    const { stdout } = await execFileAsync(
+      pythonPath,
+      ["-c", "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')"],
+      { timeout: 10000 }
+    );
+    return stdout.trim();
+  } catch {
+    return "";
+  }
+}
+
+async function pythonHasModule(pythonPath: string, moduleName: string): Promise<boolean> {
+  return canRun(pythonPath, ["-c", `import ${moduleName}`]);
+}
+
+async function getLoraMpsStatus(pythonPath: string): Promise<{ available: boolean; message: string }> {
+  try {
+    const { stdout, stderr } = await execFileAsync(
+      pythonPath,
+      [
+        "-c",
+        [
+          "import json, torch, platform",
+          "result={'built': torch.backends.mps.is_built(), 'available': torch.backends.mps.is_available(), 'torch': torch.__version__, 'mac': platform.mac_ver()[0]}",
+          "print(json.dumps(result, ensure_ascii=False))"
+        ].join("; ")
+      ],
+      {
+        timeout: 10000,
+        env: {
+          ...process.env,
+          SYSTEM_VERSION_COMPAT: "0"
+        }
+      }
+    );
+    const parsed = JSON.parse(stdout.trim()) as { built?: boolean; available?: boolean; torch?: string; mac?: string };
+    if (parsed.available) {
+      return { available: true, message: `MPS / Metal acceleration: 利用可能 (torch ${parsed.torch}, macOS ${parsed.mac})` };
+    }
+    return {
+      available: false,
+      message: `MPS / Metal acceleration: 利用不可 (built=${Boolean(parsed.built)}, available=${Boolean(parsed.available)}, torch ${parsed.torch ?? "unknown"}, macOS ${parsed.mac ?? "unknown"})`
+    };
+  } catch (error) {
+    return {
+      available: false,
+      message: `MPS / Metal acceleration: 確認失敗 ${normalizeCommandError(error)}`
+    };
+  }
 }
 
 async function resolveLoraTrainDataDir(datasetPath: string): Promise<string> {
@@ -2715,14 +2849,16 @@ function spawnDockerFile(command: string, args: string[], onLog: RuntimeLogSink)
   });
 }
 
-function spawnNativeCommand(command: string, args: string[], onLog: RuntimeLogSink, options: { cwd?: string } = {}): Promise<void> {
+function spawnNativeCommand(command: string, args: string[], onLog: RuntimeLogSink, options: { cwd?: string; env?: NodeJS.ProcessEnv } = {}): Promise<void> {
   return new Promise((resolve, reject) => {
     onLog({ level: "info", line: `$ ${command} ${args.join(" ")}` });
     const child = spawn(command, args, {
       cwd: options.cwd,
       env: {
         ...process.env,
+        ...options.env,
         PYTORCH_ENABLE_MPS_FALLBACK: "1",
+        SYSTEM_VERSION_COMPAT: "0",
         PATH: `/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:${process.env.PATH ?? ""}`
       }
     });
@@ -2762,8 +2898,15 @@ function pipeProcessToLog(child: ChildProcessWithoutNullStreams, logPath: string
 
 function emitChunk(level: RuntimeLogEvent["level"], chunk: string, onLog: RuntimeLogSink): void {
   for (const line of chunk.split(/\r?\n/)) {
-    if (line.trim()) onLog({ level, line });
+    const cleanLine = stripAnsi(line);
+    if (cleanLine.trim()) onLog({ level, line: cleanLine });
   }
+}
+
+function stripAnsi(value: string): string {
+  return value
+    .replace(/\u001b\][^\u0007]*(?:\u0007|\u001b\\)/g, "")
+    .replace(/\u001b\[[0-?]*[ -/]*[@-~]/g, "");
 }
 
 async function writeNativeExtraModelPaths(paths: RuntimePaths): Promise<void> {

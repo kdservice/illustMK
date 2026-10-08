@@ -147,6 +147,7 @@ function App() {
   const [captionImageTagEditingId, setCaptionImageTagEditingId] = useState<string | null>(null);
   const [captionImageTagJapanese, setCaptionImageTagJapanese] = useState("");
   const [captionImageTagEnglish, setCaptionImageTagEnglish] = useState("");
+  const [captionPreviewImage, setCaptionPreviewImage] = useState<LoraCaptionWorkspace["images"][number] | null>(null);
   const [action, setAction] = useState<ActionState>({ busy: false, message: "待機中", error: null });
   const [logs, setLogs] = useState<LogLine[]>([]);
   const [autoFollowLogs, setAutoFollowLogs] = useState(true);
@@ -377,15 +378,22 @@ function App() {
   }
 
   function appendLog(level: LogLine["level"], line: string, id = currentOperationId.current ?? "manual"): void {
+    const cleanLine = stripAnsi(line);
     setLogs((current) => [
       ...current.slice(-300),
       {
         id,
         level,
-        line,
+        line: cleanLine,
         time: new Date().toLocaleTimeString("ja-JP", { hour12: false })
       }
     ]);
+  }
+
+  function stripAnsi(value: string): string {
+    return value
+      .replace(/\u001b\][^\u0007]*(?:\u0007|\u001b\\)/g, "")
+      .replace(/\u001b\[[0-?]*[ -/]*[@-~]/g, "");
   }
 
   function handleLogScroll(): void {
@@ -649,6 +657,7 @@ function App() {
     setSelectedCaptionTagId(null);
     resetCaptionTagEditor();
     closeCaptionImageTagEditor();
+    setCaptionPreviewImage(null);
   }
 
   function resetCaptionTagEditor(): void {
@@ -815,9 +824,17 @@ function App() {
         setCaptionWorkspace(workspace);
         setCaptionTags(workspace.tags);
         setCaptionImages(workspace.images);
+        closeCaptionEditor();
         void loadLoraProjects();
       }
     );
+  }
+
+  async function clearLoraProjectHistory(): Promise<void> {
+    if (!window.confirm("LoRA学習ジョブ履歴を消去します。DatasetやLoRAファイルは削除しません。")) return;
+    await runAction("LoRA学習ジョブ履歴を消去中", () => window.illustMK.loraProjects.clear(), (projects) => {
+      setLoraProjects(projects);
+    });
   }
 
   async function enhanceJapanesePrompt(): Promise<void> {
@@ -1471,7 +1488,13 @@ function App() {
             </div>
           </section>
           <section className="panel lora-project-panel">
-            <PanelTitle icon={<TerminalSquare size={18} />} title="LoRA学習ジョブ" />
+            <div className="lora-create-header">
+              <PanelTitle icon={<TerminalSquare size={18} />} title="LoRA学習ジョブ" />
+              <button className="danger" disabled={action.busy || !loraProjects.length} onClick={() => void clearLoraProjectHistory()}>
+                <Trash2 size={17} />
+                履歴消去
+              </button>
+            </div>
             <div className="lora-project-list">
               {loraProjects.length ? (
                 loraProjects.map((project) => (
@@ -1876,7 +1899,9 @@ function App() {
                     captionImages.map((image) => (
                       <article className="caption-image-card" key={image.fileName}>
                         <div className="caption-image-frame">
-                          <img src={image.imageDataUrl} alt={image.fileName} />
+                          <button className="caption-image-preview-button" onClick={() => setCaptionPreviewImage(image)} title="拡大表示">
+                            <img src={image.imageDataUrl} alt={image.fileName} />
+                          </button>
                           <button className="caption-add-button" disabled={!selectedCaptionTagId} onClick={() => addSelectedTagToCaptionImage(image.fileName)} title="選択中タグを追加">
                             <Plus size={18} />
                           </button>
@@ -1984,6 +2009,21 @@ function App() {
             </div>
             <div className="modal-actions">
               <button onClick={closeCaptionImageTagEditor}>閉じる</button>
+            </div>
+          </section>
+        </div>
+      ) : null}
+      {captionPreviewImage ? (
+        <div className="modal-backdrop image-tag-backdrop" onClick={() => setCaptionPreviewImage(null)}>
+          <section className="modal-panel image-preview-modal" onClick={(event) => event.stopPropagation()}>
+            <div className="modal-header">
+              <PanelTitle icon={<ImageIcon size={18} />} title={captionPreviewImage.fileName} />
+              <button className="icon-button" onClick={() => setCaptionPreviewImage(null)} title="閉じる">
+                <X size={17} />
+              </button>
+            </div>
+            <div className="image-preview-frame">
+              <img src={captionPreviewImage.imageDataUrl} alt={captionPreviewImage.fileName} />
             </div>
           </section>
         </div>

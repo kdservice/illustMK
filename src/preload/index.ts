@@ -93,7 +93,8 @@ const api = {
     list: (): Promise<LoraTrainingProject[]> => ipcRenderer.invoke("lora-projects:list"),
     save: (request: SaveLoraTrainingProjectRequest): Promise<LoraTrainingProject[]> =>
       ipcRenderer.invoke("lora-projects:save", request),
-    start: (id: string): Promise<LoraTrainingProject[]> => ipcRenderer.invoke("lora-projects:start", id)
+    start: (id: string): Promise<LoraTrainingProject[]> => ipcRenderer.invoke("lora-projects:start", id),
+    clear: (): Promise<LoraTrainingProject[]> => ipcRenderer.invoke("lora-projects:clear")
   },
   loraCaptions: {
     get: (projectId: string): Promise<LoraCaptionWorkspace> => ipcRenderer.invoke("lora-captions:get", projectId),
