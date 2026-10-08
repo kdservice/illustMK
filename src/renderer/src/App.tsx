@@ -133,16 +133,18 @@ function App() {
     () => illustrationTags.filter((tag) => selectedTagIds.includes(tag.id)),
     [illustrationTags, selectedTagIds]
   );
-  const selectedTagSignature = useMemo(() => [...selectedTagIds].sort().join(","), [selectedTagIds]);
-  const integratedTagSignature = useMemo(() => [...promptIntegratedTagIds].sort().join(","), [promptIntegratedTagIds]);
-  const shouldAppendSelectedTags = selectedTags.length > 0 && selectedTagSignature !== integratedTagSignature;
+  const promptIntegratedTagIdSet = useMemo(() => new Set(promptIntegratedTagIds), [promptIntegratedTagIds]);
+  const tagsToAppend = useMemo(
+    () => selectedTags.filter((tag) => !promptIntegratedTagIdSet.has(tag.id)),
+    [promptIntegratedTagIdSet, selectedTags]
+  );
   const effectivePrompt = useMemo(() => {
-    const tagPromptText = selectedTags
+    const tagPromptText = tagsToAppend
       .map((tag) => `${tag.englishName || tag.name} detail: ${tag.englishDescription}`)
       .filter((part) => part.trim())
       .join("\n");
-    return [prompt, shouldAppendSelectedTags ? tagPromptText : ""].filter((part) => part.trim()).join("\n");
-  }, [prompt, selectedTags, shouldAppendSelectedTags]);
+    return [prompt, tagPromptText].filter((part) => part.trim()).join("\n");
+  }, [prompt, tagsToAppend]);
   const canGenerate = Boolean(status?.comfyReachable && selectedCheckpointInfo?.simpleWorkflowReady && !action.busy);
   const canDownloadLlm = Boolean(ollamaStatus?.reachable && ollamaStatus.dataLinked && ollamaModel.trim() && !action.busy);
   const canSendLlmPrompt = Boolean(ollamaStatus?.reachable && ollamaStatus.dataLinked && ollamaModel.trim() && llmPrompt.trim() && !action.busy);
@@ -541,13 +543,12 @@ function App() {
     if (!window.confirm("タグを削除します。元に戻せません。")) return;
     await runAction("タグを削除中", () => window.illustMK.tags.delete(id), (tags) => {
       setIllustrationTags(tags);
-      setPromptIntegratedTagIds([]);
+      setPromptIntegratedTagIds((current) => current.filter((tagId) => tagId !== id));
       setSelectedTagIds((current) => current.filter((tagId) => tagId !== id));
     });
   }
 
   function toggleIllustrationTag(id: string): void {
-    setPromptIntegratedTagIds([]);
     setSelectedTagIds((current) => (current.includes(id) ? current.filter((tagId) => tagId !== id) : [...current, id]));
   }
 
