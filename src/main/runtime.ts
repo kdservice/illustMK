@@ -160,6 +160,7 @@ export type PromptEnhanceRequest = {
   japanesePrompt: string;
   currentPrompt: string;
   currentNegativePrompt: string;
+  selectedTags?: Pick<IllustrationTag, "name" | "englishName" | "englishDescription">[];
   mode?: PromptEnhanceMode;
 };
 
@@ -1027,18 +1028,26 @@ export async function enhancePromptWithOllama(request: PromptEnhanceRequest): Pr
     "Return strict JSON only with keys: positivePrompt, negativePrompt, notes.",
     "positivePrompt should be comma-separated English tags and short phrases.",
     "negativePrompt should be comma-separated English tags.",
-    "Use only the Japanese request in this call as source material.",
+    "Use only the Japanese request and the selected tag details in this call as source material.",
     "Do not reuse, infer from, or continue any previous prompt, previous answer, chat history, or unrelated context.",
-    "Do not invent concrete visual details that are not present in the Japanese request or its definitions.",
+    "Do not invent concrete visual details that are not present in the Japanese request, its definitions, or the selected tag details.",
     "The Japanese request may contain definitions, footnotes, detail sections, or explanatory text after the main sentence.",
     "Treat definitions and footnotes as mandatory visual requirements, not commentary.",
     "If a term is defined, expand the term using its definition instead of only translating the label.",
+    "If selected tag details are provided, integrate them into positivePrompt as mandatory visual requirements.",
+    "When multiple tags are selected, keep each tag's details conceptually separate and do not assign one tag's details to the wrong subject.",
+    "Do not output tag detail labels such as 'school_uniform detail:' in positivePrompt; convert them into ordinary image-generation phrases.",
     "Preserve concrete visual details about clothing, shape, color, material, pose, expression, setting, lighting, and composition.",
     promptEnhanceModeInstruction(request.mode ?? "balanced-detail"),
     "Do not include markdown."
   ].join("\n");
+  const selectedTagText = (request.selectedTags ?? [])
+    .map((tag) => `${tag.englishName || tag.name} detail: ${tag.englishDescription}`)
+    .filter((line) => line.trim())
+    .join("\n");
   const userText = [
-    `Japanese request: ${request.japanesePrompt}`
+    `Japanese request: ${request.japanesePrompt}`,
+    selectedTagText ? `Selected tag details:\n${selectedTagText}` : "Selected tag details: none"
   ].join("\n");
 
   const response = await fetch(`${request.ollamaUrl.replace(/\/$/, "")}/api/generate`, {

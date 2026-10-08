@@ -105,6 +105,7 @@ function App() {
   const [selectedCheckpoint, setSelectedCheckpoint] = useState("");
   const [prompt, setPrompt] = useState("masterpiece, best quality, 1girl, anime style, soft light");
   const [negativePrompt, setNegativePrompt] = useState("low quality, worst quality, blurry, bad anatomy");
+  const [promptIntegratedTagIds, setPromptIntegratedTagIds] = useState<string[]>([]);
   const [lastImage, setLastImage] = useState<string | null>(null);
   const [generationResult, setGenerationResult] = useState<TestGenerationResult | null>(null);
   const [imageSizePreset, setImageSizePreset] = useState("768x1024");
@@ -132,13 +133,16 @@ function App() {
     () => illustrationTags.filter((tag) => selectedTagIds.includes(tag.id)),
     [illustrationTags, selectedTagIds]
   );
+  const selectedTagSignature = useMemo(() => [...selectedTagIds].sort().join(","), [selectedTagIds]);
+  const integratedTagSignature = useMemo(() => [...promptIntegratedTagIds].sort().join(","), [promptIntegratedTagIds]);
+  const shouldAppendSelectedTags = selectedTags.length > 0 && selectedTagSignature !== integratedTagSignature;
   const effectivePrompt = useMemo(() => {
     const tagPromptText = selectedTags
       .map((tag) => `${tag.englishName || tag.name} detail: ${tag.englishDescription}`)
       .filter((part) => part.trim())
       .join("\n");
-    return [prompt, tagPromptText].filter((part) => part.trim()).join("\n");
-  }, [prompt, selectedTags]);
+    return [prompt, shouldAppendSelectedTags ? tagPromptText : ""].filter((part) => part.trim()).join("\n");
+  }, [prompt, selectedTags, shouldAppendSelectedTags]);
   const canGenerate = Boolean(status?.comfyReachable && selectedCheckpointInfo?.simpleWorkflowReady && !action.busy);
   const canDownloadLlm = Boolean(ollamaStatus?.reachable && ollamaStatus.dataLinked && ollamaModel.trim() && !action.busy);
   const canSendLlmPrompt = Boolean(ollamaStatus?.reachable && ollamaStatus.dataLinked && ollamaModel.trim() && llmPrompt.trim() && !action.busy);
@@ -447,6 +451,7 @@ function App() {
   function applyPromptHistory(entry: PromptHistoryEntry): void {
     setJapanesePrompt(entry.japanesePrompt ?? "");
     setPrompt(entry.prompt);
+    setPromptIntegratedTagIds([]);
     setNegativePrompt(entry.negativePrompt);
     setSelectedCheckpoint(entry.checkpoint);
     setGenerationWidth(entry.width);
@@ -536,11 +541,13 @@ function App() {
     if (!window.confirm("タグを削除します。元に戻せません。")) return;
     await runAction("タグを削除中", () => window.illustMK.tags.delete(id), (tags) => {
       setIllustrationTags(tags);
+      setPromptIntegratedTagIds([]);
       setSelectedTagIds((current) => current.filter((tagId) => tagId !== id));
     });
   }
 
   function toggleIllustrationTag(id: string): void {
+    setPromptIntegratedTagIds([]);
     setSelectedTagIds((current) => (current.includes(id) ? current.filter((tagId) => tagId !== id) : [...current, id]));
   }
 
@@ -554,12 +561,18 @@ function App() {
           japanesePrompt,
           currentPrompt: prompt,
           currentNegativePrompt: negativePrompt,
+          selectedTags: selectedTags.map((tag) => ({
+            name: tag.name,
+            englishName: tag.englishName || tag.name,
+            englishDescription: tag.englishDescription
+          })),
           mode: promptEnhanceMode
         }),
       (result) => {
         setPrompt(result.positivePrompt);
         setNegativePrompt(result.negativePrompt);
         setPromptNotes(result.notes);
+        setPromptIntegratedTagIds(selectedTagIds);
       }
     );
   }
@@ -1103,6 +1116,7 @@ function App() {
               canEnhancePrompt={canEnhancePrompt}
               disabledReason={enhancePromptDisabledReason}
               onEnhance={() => void enhanceJapanesePrompt()}
+              onPromptEdited={() => setPromptIntegratedTagIds([])}
             />
             <div className="tag-builder">
               <div className="tag-builder-header">
@@ -1394,7 +1408,8 @@ function PromptTransformPanel({
   setPromptEnhanceMode,
   canEnhancePrompt,
   disabledReason,
-  onEnhance
+  onEnhance,
+  onPromptEdited
 }: {
   japanesePrompt: string;
   setJapanesePrompt: (value: string) => void;
@@ -1408,6 +1423,7 @@ function PromptTransformPanel({
   canEnhancePrompt: boolean;
   disabledReason: string;
   onEnhance: () => void;
+  onPromptEdited: () => void;
 }) {
   return (
     <div className="prompt-transform">
@@ -1436,7 +1452,13 @@ function PromptTransformPanel({
       {promptNotes ? <p className="result-message">{promptNotes}</p> : null}
       <div className="field">
         <label>Positive Prompt</label>
-        <textarea value={prompt} onChange={(event) => setPrompt(event.target.value)} />
+        <textarea
+          value={prompt}
+          onChange={(event) => {
+            setPrompt(event.target.value);
+            onPromptEdited();
+          }}
+        />
       </div>
       <div className="field">
         <label>Negative Prompt</label>
