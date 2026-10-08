@@ -1027,7 +1027,9 @@ export async function enhancePromptWithOllama(request: PromptEnhanceRequest): Pr
     "Return strict JSON only with keys: positivePrompt, negativePrompt, notes.",
     "positivePrompt should be comma-separated English tags and short phrases.",
     "negativePrompt should be comma-separated English tags.",
-    "Keep existing useful prompt fragments if provided, but remove contradictions.",
+    "Use only the Japanese request in this call as source material.",
+    "Do not reuse, infer from, or continue any previous prompt, previous answer, chat history, or unrelated context.",
+    "Do not invent concrete visual details that are not present in the Japanese request or its definitions.",
     "The Japanese request may contain definitions, footnotes, detail sections, or explanatory text after the main sentence.",
     "Treat definitions and footnotes as mandatory visual requirements, not commentary.",
     "If a term is defined, expand the term using its definition instead of only translating the label.",
@@ -1036,9 +1038,7 @@ export async function enhancePromptWithOllama(request: PromptEnhanceRequest): Pr
     "Do not include markdown."
   ].join("\n");
   const userText = [
-    `Japanese request: ${request.japanesePrompt}`,
-    `Current positive prompt: ${request.currentPrompt}`,
-    `Current negative prompt: ${request.currentNegativePrompt}`
+    `Japanese request: ${request.japanesePrompt}`
   ].join("\n");
 
   const response = await fetch(`${request.ollamaUrl.replace(/\/$/, "")}/api/generate`, {
