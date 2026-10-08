@@ -12,6 +12,7 @@ import type {
   OllamaStatus,
   PromptEnhanceRequest,
   PromptEnhanceResult,
+  PromptHistoryEntry,
   RuntimePaths,
   RuntimeStatus,
   SaveIllustrationTagRequest,
@@ -82,6 +83,11 @@ const api = {
     translateEnglish: (request: TagTranslationRequest): Promise<string> => ipcRenderer.invoke("tags:translate-en", request),
     save: (request: SaveIllustrationTagRequest): Promise<IllustrationTag[]> => ipcRenderer.invoke("tags:save", request),
     delete: (id: string): Promise<IllustrationTag[]> => ipcRenderer.invoke("tags:delete", id)
+  },
+  promptHistory: {
+    list: (): Promise<PromptHistoryEntry[]> => ipcRenderer.invoke("prompt-history:list"),
+    save: (request: TestGenerationRequest): Promise<PromptHistoryEntry[]> => ipcRenderer.invoke("prompt-history:save", request),
+    clear: (): Promise<PromptHistoryEntry[]> => ipcRenderer.invoke("prompt-history:clear")
   },
   app: {
     openPath: (path: string): Promise<string> => ipcRenderer.invoke("app:open-path", path)

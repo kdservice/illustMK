@@ -599,6 +599,70 @@ label {
   min-height: 150px;
 }
 
+.generation-controls {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 8px;
+  align-items: start;
+}
+
+.prompt-inspector {
+  border: 1px solid #1c2d53;
+  border-radius: 8px;
+  background: #081125;
+  padding: 12px;
+}
+
+.prompt-inspector textarea {
+  min-height: 120px;
+  font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+  font-size: 12px;
+}
+
+.prompt-history-list {
+  display: grid;
+  gap: 10px;
+}
+
+.prompt-history-card {
+  border: 1px solid #1c2d53;
+  border-radius: 8px;
+  background: #081125;
+  padding: 12px;
+}
+
+.prompt-history-card header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.prompt-history-card header strong {
+  color: #dbe7ff;
+  font-size: 12px;
+}
+
+.prompt-history-card header span,
+.prompt-history-card header time,
+.prompt-history-card small {
+  color: #8293b8;
+  font-size: 12px;
+}
+
+.prompt-history-card p {
+  margin: 0 0 8px;
+  color: #dbe7ff;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+
+.prompt-history-card button {
+  width: 100%;
+  margin-top: 10px;
+}
+
 .model-list {
   margin-top: 16px;
 }

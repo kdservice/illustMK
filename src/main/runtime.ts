@@ -226,6 +226,19 @@ export type TestGenerationRequest = {
   comfyUrl: string;
 };
 
+export type PromptHistoryEntry = {
+  id: string;
+  prompt: string;
+  negativePrompt: string;
+  checkpoint: string;
+  width: number;
+  height: number;
+  steps: number;
+  cfg: number;
+  seed: number;
+  createdAt: string;
+};
+
 export type TestGenerationResult = {
   ok: boolean;
   message: string;
@@ -246,6 +259,7 @@ const appDataRoot = process.env.ILLUSTMK_APP_DATA_ROOT ?? join(process.cwd(), ".
 const settingsPath = join(appDataRoot, "settings.json");
 const llmChatHistoryPath = join(appDataRoot, "llm-chat-history.json");
 const illustrationTagsPath = join(appDataRoot, "illustration-tags.json");
+const promptHistoryPath = join(appDataRoot, "prompt-history.json");
 const comfyPort = Number(process.env.ILLUSTMK_COMFY_PORT ?? "8188");
 let nativeProcess: ChildProcess | null = null;
 let ollamaProcess: ChildProcess | null = null;
@@ -1208,9 +1222,65 @@ export async function deleteIllustrationTag(id: string): Promise<IllustrationTag
   return tags;
 }
 
+export async function getSavedPromptHistory(): Promise<PromptHistoryEntry[]> {
+  try {
+    const text = await readFile(promptHistoryPath, "utf8");
+    const parsed = JSON.parse(text) as PromptHistoryEntry[];
+    return Array.isArray(parsed) ? parsed.filter(isPromptHistoryEntry) : [];
+  } catch {
+    return [];
+  }
+}
+
+export async function clearPromptHistory(): Promise<PromptHistoryEntry[]> {
+  await mkdir(appDataRoot, { recursive: true });
+  await writeFile(promptHistoryPath, "[]", "utf8");
+  return [];
+}
+
+export async function savePromptHistoryEntry(request: TestGenerationRequest): Promise<PromptHistoryEntry[]> {
+  const entry: PromptHistoryEntry = {
+    id: randomUUID(),
+    prompt: request.prompt,
+    negativePrompt: request.negativePrompt,
+    checkpoint: request.checkpoint,
+    width: request.width,
+    height: request.height,
+    steps: request.steps,
+    cfg: request.cfg,
+    seed: request.seed,
+    createdAt: new Date().toISOString()
+  };
+  const history = [entry, ...(await getSavedPromptHistory()).filter((item) => item.prompt !== request.prompt || item.negativePrompt !== request.negativePrompt)].slice(0, 100);
+  await savePromptHistory(history);
+  return history;
+}
+
 async function civitaiAuthHeader(): Promise<Record<string, string>> {
   const settings = await getAppSettings();
   return settings.civitaiApiKey ? { Authorization: `Bearer ${settings.civitaiApiKey}` } : {};
+}
+
+async function savePromptHistory(history: PromptHistoryEntry[]): Promise<void> {
+  await mkdir(appDataRoot, { recursive: true });
+  await writeFile(promptHistoryPath, JSON.stringify(history, null, 2), "utf8");
+}
+
+function isPromptHistoryEntry(value: unknown): value is PromptHistoryEntry {
+  if (!value || typeof value !== "object") return false;
+  const entry = value as Partial<PromptHistoryEntry>;
+  return (
+    typeof entry.id === "string" &&
+    typeof entry.prompt === "string" &&
+    typeof entry.negativePrompt === "string" &&
+    typeof entry.checkpoint === "string" &&
+    typeof entry.width === "number" &&
+    typeof entry.height === "number" &&
+    typeof entry.steps === "number" &&
+    typeof entry.cfg === "number" &&
+    typeof entry.seed === "number" &&
+    typeof entry.createdAt === "string"
+  );
 }
 
 async function assertOllamaReady(ollamaUrl: string): Promise<void> {

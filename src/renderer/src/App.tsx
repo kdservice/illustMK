@@ -24,6 +24,7 @@ import type {
   LlmChatMessage,
   OllamaStatus,
   PromptEnhanceMode,
+  PromptHistoryEntry,
   RuntimePaths,
   RuntimeStatus,
   TestGenerationRequest,
@@ -105,6 +106,13 @@ function App() {
   const [negativePrompt, setNegativePrompt] = useState("low quality, worst quality, blurry, bad anatomy");
   const [lastImage, setLastImage] = useState<string | null>(null);
   const [generationResult, setGenerationResult] = useState<TestGenerationResult | null>(null);
+  const [imageSizePreset, setImageSizePreset] = useState("768x1024");
+  const [generationWidth, setGenerationWidth] = useState(768);
+  const [generationHeight, setGenerationHeight] = useState(1024);
+  const [seedMode, setSeedMode] = useState<"random" | "fixed">("random");
+  const [seedValue, setSeedValue] = useState(-1);
+  const [promptHistory, setPromptHistory] = useState<PromptHistoryEntry[]>([]);
+  const [promptHistoryOpen, setPromptHistoryOpen] = useState(false);
   const [action, setAction] = useState<ActionState>({ busy: false, message: "待機中", error: null });
   const [logs, setLogs] = useState<LogLine[]>([]);
   const [autoFollowLogs, setAutoFollowLogs] = useState(true);
@@ -167,6 +175,7 @@ function App() {
     void loadSettings();
     void loadLlmChatHistory();
     void loadIllustrationTags();
+    void loadPromptHistory();
   }, []);
 
   useEffect(() => {
@@ -419,6 +428,39 @@ function App() {
     setIllustrationTags(await window.illustMK.tags.list());
   }
 
+  async function loadPromptHistory(): Promise<void> {
+    setPromptHistory(await window.illustMK.promptHistory.list());
+  }
+
+  async function clearPromptHistory(): Promise<void> {
+    if (!window.confirm("プロンプト履歴を削除します。元に戻せません。")) return;
+    await runAction("プロンプト履歴を削除中", () => window.illustMK.promptHistory.clear(), (history) => {
+      setPromptHistory(history);
+    });
+  }
+
+  function applyPromptHistory(entry: PromptHistoryEntry): void {
+    setPrompt(entry.prompt);
+    setNegativePrompt(entry.negativePrompt);
+    setSelectedCheckpoint(entry.checkpoint);
+    setGenerationWidth(entry.width);
+    setGenerationHeight(entry.height);
+    setImageSizePreset(`${entry.width}x${entry.height}`);
+    setSeedValue(entry.seed);
+    setSeedMode(entry.seed >= 0 ? "fixed" : "random");
+    setPromptHistoryOpen(false);
+  }
+
+  function updateImageSizePreset(value: string): void {
+    setImageSizePreset(value);
+    if (value === "custom") return;
+    const [width, height] = value.split("x").map(Number);
+    if (Number.isFinite(width) && Number.isFinite(height)) {
+      setGenerationWidth(width);
+      setGenerationHeight(height);
+    }
+  }
+
   function openNewTagDialog(): void {
     setTagEditingId(null);
     setTagName("");
@@ -524,11 +566,11 @@ function App() {
     prompt: effectivePrompt,
     negativePrompt,
     checkpoint: selectedCheckpoint,
-    width: 768,
-    height: 1024,
+    width: generationWidth,
+    height: generationHeight,
     steps: 20,
     cfg: 7,
-    seed: -1,
+    seed: seedMode === "random" ? -1 : seedValue,
     comfyUrl
   };
 
@@ -1087,17 +1129,75 @@ function App() {
                 )}
               </select>
             </div>
+            <div className="generation-controls">
+              <div className="field">
+                <label>画像サイズ</label>
+                <select value={imageSizePreset} onChange={(event) => updateImageSizePreset(event.target.value)}>
+                  <option value="768x1024">768 x 1024</option>
+                  <option value="1024x1024">1024 x 1024</option>
+                  <option value="1024x1536">1024 x 1536</option>
+                  <option value="1536x1024">1536 x 1024</option>
+                  <option value="custom">Custom</option>
+                </select>
+              </div>
+              <div className="two-columns">
+                <div className="field">
+                  <label>Width</label>
+                  <input type="number" min="256" step="64" value={generationWidth} onChange={(event) => setGenerationWidth(Number(event.target.value))} />
+                </div>
+                <div className="field">
+                  <label>Height</label>
+                  <input type="number" min="256" step="64" value={generationHeight} onChange={(event) => setGenerationHeight(Number(event.target.value))} />
+                </div>
+              </div>
+              <div className="field">
+                <label>Seed</label>
+                <select value={seedMode} onChange={(event) => setSeedMode(event.target.value as "random" | "fixed")}>
+                  <option value="random">Random (-1)</option>
+                  <option value="fixed">Fixed</option>
+                </select>
+              </div>
+              <div className="field">
+                <label>Seed Value</label>
+                <input type="number" disabled={seedMode === "random"} value={seedValue} onChange={(event) => setSeedValue(Number(event.target.value))} />
+              </div>
+            </div>
+            <div className="prompt-inspector">
+              <div className="tag-builder-header">
+                <div>
+                  <h2>ComfyUIへ渡す最終Positive Prompt</h2>
+                  <p>タグ選択分もここに展開されます。</p>
+                </div>
+                <button onClick={() => setPromptHistoryOpen(true)}>
+                  <RefreshCw size={17} />
+                  履歴
+                </button>
+              </div>
+              <textarea value={effectivePrompt} readOnly />
+            </div>
 
             <button
               className="generate"
               disabled={!canGenerate}
               onClick={() =>
-                void runAction("ComfyUIでテスト生成中", () => window.illustMK.runtime.testGenerate(testRequest), (result) => {
-                  setGenerationResult(result);
-                  if (result.imageDataUrl || result.imagePath) {
-                    setLastImage(result.imageDataUrl ?? result.imagePath ?? null);
+                void runAction(
+                  "ComfyUIでテスト生成中",
+                  async () => {
+                    appendLog("info", `ComfyUI Positive Prompt: ${testRequest.prompt}`);
+                    appendLog("info", `ComfyUI Negative Prompt: ${testRequest.negativePrompt}`);
+                    appendLog("info", `ComfyUI Size/Seed: ${testRequest.width}x${testRequest.height} / ${testRequest.seed}`);
+                    const result = await window.illustMK.runtime.testGenerate(testRequest);
+                    const history = await window.illustMK.promptHistory.save(testRequest);
+                    return { result, history };
+                  },
+                  ({ result, history }) => {
+                    setGenerationResult(result);
+                    setPromptHistory(history);
+                    if (result.imageDataUrl || result.imagePath) {
+                      setLastImage(result.imageDataUrl ?? result.imagePath ?? null);
+                    }
                   }
-                })
+                )
               }
             >
               <WandSparkles size={18} />
@@ -1163,6 +1263,45 @@ function App() {
               <button className="primary" disabled={action.busy || !tagName.trim() || !tagPrompt.trim() || !tagJapaneseDescription.trim()} onClick={() => void saveTagFromDialog()}>
                 <CheckCircle2 size={17} />
                 保存
+              </button>
+            </div>
+          </section>
+        </div>
+      ) : null}
+      {promptHistoryOpen ? (
+        <div className="modal-backdrop">
+          <section className="modal-panel prompt-history-modal">
+            <div className="modal-header">
+              <PanelTitle icon={<RefreshCw size={18} />} title="プロンプト履歴" />
+              <button className="icon-button" onClick={() => setPromptHistoryOpen(false)} title="閉じる">
+                <Square size={16} />
+              </button>
+            </div>
+            <div className="prompt-history-list">
+              {promptHistory.length ? (
+                promptHistory.map((entry) => (
+                  <article className="prompt-history-card" key={entry.id}>
+                    <header>
+                      <strong>{entry.checkpoint || "checkpoint未選択"}</strong>
+                      <span>{entry.width} x {entry.height} / seed {entry.seed}</span>
+                      <time>{new Date(entry.createdAt).toLocaleString("ja-JP", { hour12: false })}</time>
+                    </header>
+                    <p>{entry.prompt}</p>
+                    <small>{entry.negativePrompt}</small>
+                    <button onClick={() => applyPromptHistory(entry)}>
+                      <CheckCircle2 size={17} />
+                      流用
+                    </button>
+                  </article>
+                ))
+              ) : (
+                <p className="empty">まだ履歴がありません。</p>
+              )}
+            </div>
+            <div className="modal-actions">
+              <button className="danger" disabled={!promptHistory.length || action.busy} onClick={() => void clearPromptHistory()}>
+                <Trash2 size={17} />
+                履歴削除
               </button>
             </div>
           </section>
