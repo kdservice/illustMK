@@ -186,6 +186,7 @@ export type LlmChatRequest = {
 export type IllustrationTag = {
   id: string;
   name: string;
+  englishName: string;
   sourcePrompt: string;
   japaneseDescription: string;
   englishDescription: string;
@@ -209,6 +210,7 @@ export type TagTranslationRequest = {
 export type SaveIllustrationTagRequest = {
   id?: string;
   name: string;
+  englishName: string;
   sourcePrompt: string;
   japaneseDescription: string;
   englishDescription: string;
@@ -1152,8 +1154,8 @@ export async function sendLlmChatPrompt(request: LlmChatRequest): Promise<LlmCha
 export async function getIllustrationTags(): Promise<IllustrationTag[]> {
   try {
     const text = await readFile(illustrationTagsPath, "utf8");
-    const parsed = JSON.parse(text) as IllustrationTag[];
-    return Array.isArray(parsed) ? parsed.filter(isIllustrationTag) : [];
+    const parsed = JSON.parse(text) as unknown[];
+    return Array.isArray(parsed) ? parsed.map(normalizeIllustrationTag).filter((tag): tag is IllustrationTag => Boolean(tag)) : [];
   } catch {
     return [];
   }
@@ -1194,10 +1196,12 @@ export async function translateTagDescription(request: TagTranslationRequest): P
 
 export async function saveIllustrationTag(request: SaveIllustrationTagRequest): Promise<IllustrationTag[]> {
   const name = request.name.trim();
+  const englishName = request.englishName.trim();
   const sourcePrompt = request.sourcePrompt.trim();
   const japaneseDescription = request.japaneseDescription.trim();
   const englishDescription = request.englishDescription.trim();
   if (!name) throw new Error("タグ名を入力してください。");
+  if (!englishName) throw new Error("英名タグ名を入力してください。");
   if (!sourcePrompt) throw new Error("タグ作成用プロンプトを入力してください。");
   if (!japaneseDescription) throw new Error("日本語説明文を入力してください。");
   if (!englishDescription) throw new Error("英訳説明文を入力してください。");
@@ -1208,6 +1212,7 @@ export async function saveIllustrationTag(request: SaveIllustrationTagRequest): 
   const nextTag: IllustrationTag = {
     id: existing?.id ?? randomUUID(),
     name,
+    englishName,
     sourcePrompt,
     japaneseDescription,
     englishDescription,
@@ -1320,18 +1325,31 @@ async function saveIllustrationTags(tags: IllustrationTag[]): Promise<void> {
   await writeFile(illustrationTagsPath, JSON.stringify(tags, null, 2), "utf8");
 }
 
-function isIllustrationTag(value: unknown): value is IllustrationTag {
-  if (!value || typeof value !== "object") return false;
+function normalizeIllustrationTag(value: unknown): IllustrationTag | null {
+  if (!value || typeof value !== "object") return null;
   const tag = value as Partial<IllustrationTag>;
-  return (
-    typeof tag.id === "string" &&
-    typeof tag.name === "string" &&
-    typeof tag.sourcePrompt === "string" &&
-    typeof tag.japaneseDescription === "string" &&
-    typeof tag.englishDescription === "string" &&
-    typeof tag.createdAt === "string" &&
-    typeof tag.updatedAt === "string"
-  );
+  const { id, name, englishName, sourcePrompt, japaneseDescription, englishDescription, createdAt, updatedAt } = tag;
+  if (
+    typeof id !== "string" ||
+    typeof name !== "string" ||
+    typeof sourcePrompt !== "string" ||
+    typeof japaneseDescription !== "string" ||
+    typeof englishDescription !== "string" ||
+    typeof createdAt !== "string" ||
+    typeof updatedAt !== "string"
+  ) {
+    return null;
+  }
+  return {
+    id,
+    name,
+    englishName: typeof englishName === "string" && englishName.trim() ? englishName : name,
+    sourcePrompt,
+    japaneseDescription,
+    englishDescription,
+    createdAt,
+    updatedAt
+  };
 }
 
 async function saveLlmChatHistory(history: LlmChatMessage[]): Promise<void> {

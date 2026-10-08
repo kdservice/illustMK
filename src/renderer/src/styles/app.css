@@ -554,6 +554,15 @@ label {
 .tag-chip > button:first-child {
   min-height: 34px;
   padding: 0 10px;
+  display: grid;
+  gap: 2px;
+  text-align: left;
+}
+
+.tag-chip > button:first-child small {
+  color: #8aa0c8;
+  font-size: 11px;
+  line-height: 1;
 }
 
 .tag-chip.selected > button:first-child {

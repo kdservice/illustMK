@@ -95,6 +95,7 @@ function App() {
   const [tagDialogOpen, setTagDialogOpen] = useState(false);
   const [tagEditingId, setTagEditingId] = useState<string | null>(null);
   const [tagName, setTagName] = useState("");
+  const [tagEnglishName, setTagEnglishName] = useState("");
   const [tagPrompt, setTagPrompt] = useState("");
   const [tagJapaneseDescription, setTagJapaneseDescription] = useState("");
   const [tagEnglishDescription, setTagEnglishDescription] = useState("");
@@ -132,8 +133,11 @@ function App() {
     [illustrationTags, selectedTagIds]
   );
   const effectivePrompt = useMemo(() => {
-    const tagPromptText = selectedTags.map((tag) => tag.englishDescription).filter(Boolean).join(", ");
-    return [prompt, tagPromptText].filter((part) => part.trim()).join(", ");
+    const tagPromptText = selectedTags
+      .map((tag) => `${tag.englishName || tag.name} detail: ${tag.englishDescription}`)
+      .filter((part) => part.trim())
+      .join("\n");
+    return [prompt, tagPromptText].filter((part) => part.trim()).join("\n");
   }, [prompt, selectedTags]);
   const canGenerate = Boolean(status?.comfyReachable && selectedCheckpointInfo?.simpleWorkflowReady && !action.busy);
   const canDownloadLlm = Boolean(ollamaStatus?.reachable && ollamaStatus.dataLinked && ollamaModel.trim() && !action.busy);
@@ -466,6 +470,7 @@ function App() {
   function openNewTagDialog(): void {
     setTagEditingId(null);
     setTagName("");
+    setTagEnglishName("");
     setTagPrompt("");
     setTagJapaneseDescription("");
     setTagEnglishDescription("");
@@ -475,6 +480,7 @@ function App() {
   function openEditTagDialog(tag: IllustrationTag): void {
     setTagEditingId(tag.id);
     setTagName(tag.name);
+    setTagEnglishName(tag.englishName || tag.name);
     setTagPrompt(tag.sourcePrompt);
     setTagJapaneseDescription(tag.japaneseDescription);
     setTagEnglishDescription(tag.englishDescription);
@@ -504,6 +510,7 @@ function App() {
         return window.illustMK.tags.save({
           id: tagEditingId ?? undefined,
           name: tagName,
+          englishName: tagEnglishName,
           sourcePrompt: tagPrompt,
           japaneseDescription: tagJapaneseDescription,
           englishDescription
@@ -1105,6 +1112,7 @@ function App() {
                     <div className={selectedTagIds.includes(tag.id) ? "tag-chip selected" : "tag-chip"} key={tag.id}>
                       <button onClick={() => toggleIllustrationTag(tag.id)}>
                         <span>{tag.name}</span>
+                        <small>{tag.englishName || tag.name}</small>
                       </button>
                       <button className="icon-button" onClick={() => openEditTagDialog(tag)} title="編集">
                         <Bot size={15} />
@@ -1231,6 +1239,12 @@ function App() {
                 <input placeholder="制服" value={tagName} onChange={(event) => setTagName(event.target.value)} />
               </div>
               <div className="field">
+                <label>英名タグ名</label>
+                <input placeholder="school_uniform" value={tagEnglishName} onChange={(event) => setTagEnglishName(event.target.value)} />
+              </div>
+            </div>
+            <div className="two-columns">
+              <div className="field">
                 <label>LLM Model</label>
                 <input value={ollamaModel} onChange={(event) => setOllamaModel(event.target.value)} />
               </div>
@@ -1264,7 +1278,7 @@ function App() {
             ) : null}
             <div className="modal-actions">
               <button onClick={() => setTagDialogOpen(false)}>キャンセル</button>
-              <button className="primary" disabled={action.busy || !tagName.trim() || !tagPrompt.trim() || !tagJapaneseDescription.trim()} onClick={() => void saveTagFromDialog()}>
+              <button className="primary" disabled={action.busy || !tagName.trim() || !tagEnglishName.trim() || !tagPrompt.trim() || !tagJapaneseDescription.trim()} onClick={() => void saveTagFromDialog()}>
                 <CheckCircle2 size={17} />
                 保存
               </button>

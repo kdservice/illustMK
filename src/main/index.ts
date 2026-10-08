@@ -1,4 +1,5 @@
-import { app, BrowserWindow, ipcMain, shell } from "electron";
+import { app, BrowserWindow, ipcMain, screen, shell, type Rectangle } from "electron";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import {
   buildRuntime,
@@ -60,10 +61,58 @@ import {
 
 let mainWindow: BrowserWindow | null = null;
 
+type WindowState = {
+  x?: number;
+  y?: number;
+  width: number;
+  height: number;
+};
+
+function windowStatePath(): string {
+  return join(app.getPath("userData"), "window-state.json");
+}
+
+async function loadWindowState(): Promise<WindowState | null> {
+  try {
+    const parsed = JSON.parse(await readFile(windowStatePath(), "utf8")) as Partial<WindowState>;
+    if (!Number.isFinite(parsed.width) || !Number.isFinite(parsed.height)) return null;
+    return {
+      x: Number.isFinite(parsed.x) ? parsed.x : undefined,
+      y: Number.isFinite(parsed.y) ? parsed.y : undefined,
+      width: Math.max(1120, Number(parsed.width)),
+      height: Math.max(760, Number(parsed.height))
+    };
+  } catch {
+    return null;
+  }
+}
+
+function isVisibleWindowState(state: WindowState): state is Required<WindowState> {
+  if (!Number.isFinite(state.x) || !Number.isFinite(state.y)) return false;
+  const bounds: Rectangle = { x: Number(state.x), y: Number(state.y), width: state.width, height: state.height };
+  return screen.getAllDisplays().some((display) => {
+    const area = display.workArea;
+    const right = bounds.x + bounds.width;
+    const bottom = bounds.y + bounds.height;
+    return bounds.x < area.x + area.width && right > area.x && bounds.y < area.y + area.height && bottom > area.y;
+  });
+}
+
+async function saveWindowState(window: BrowserWindow): Promise<void> {
+  if (window.isDestroyed() || window.isMinimized()) return;
+  const bounds = window.getBounds();
+  await mkdir(app.getPath("userData"), { recursive: true });
+  await writeFile(windowStatePath(), JSON.stringify(bounds, null, 2), "utf8");
+}
+
 async function createWindow(): Promise<void> {
+  const savedState = await loadWindowState();
+  const restoredState = savedState && isVisibleWindowState(savedState) ? savedState : null;
   mainWindow = new BrowserWindow({
-    width: 1440,
-    height: 980,
+    x: restoredState?.x,
+    y: restoredState?.y,
+    width: restoredState?.width ?? 1440,
+    height: restoredState?.height ?? 980,
     minWidth: 1120,
     minHeight: 760,
     title: "illustMK",
@@ -73,6 +122,20 @@ async function createWindow(): Promise<void> {
       contextIsolation: true,
       nodeIntegration: false
     }
+  });
+
+  let saveTimer: NodeJS.Timeout | null = null;
+  const scheduleWindowStateSave = () => {
+    if (!mainWindow) return;
+    if (saveTimer) clearTimeout(saveTimer);
+    saveTimer = setTimeout(() => {
+      if (mainWindow) void saveWindowState(mainWindow);
+    }, 300);
+  };
+  mainWindow.on("resize", scheduleWindowStateSave);
+  mainWindow.on("move", scheduleWindowStateSave);
+  mainWindow.on("close", () => {
+    if (mainWindow) void saveWindowState(mainWindow);
   });
 
   const devServerUrl = process.env.VITE_DEV_SERVER_URL;
