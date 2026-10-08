@@ -16,6 +16,7 @@ import type {
   RuntimePaths,
   RuntimeStatus,
   SaveIllustrationTagRequest,
+  SavePromptHistoryRequest,
   TagDescriptionRequest,
   TagTranslationRequest,
   TestGenerationRequest,
@@ -86,7 +87,7 @@ const api = {
   },
   promptHistory: {
     list: (): Promise<PromptHistoryEntry[]> => ipcRenderer.invoke("prompt-history:list"),
-    save: (request: TestGenerationRequest): Promise<PromptHistoryEntry[]> => ipcRenderer.invoke("prompt-history:save", request),
+    save: (request: SavePromptHistoryRequest): Promise<PromptHistoryEntry[]> => ipcRenderer.invoke("prompt-history:save", request),
     clear: (): Promise<PromptHistoryEntry[]> => ipcRenderer.invoke("prompt-history:clear")
   },
   app: {

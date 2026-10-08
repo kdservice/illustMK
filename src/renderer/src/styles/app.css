@@ -658,6 +658,10 @@ label {
   overflow-wrap: anywhere;
 }
 
+.prompt-history-card .history-japanese {
+  color: #7fe4ff;
+}
+
 .prompt-history-card button {
   width: 100%;
   margin-top: 10px;

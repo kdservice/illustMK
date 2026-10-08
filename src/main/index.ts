@@ -52,6 +52,7 @@ import {
   type LlmChatRequest,
   type PromptEnhanceRequest,
   type SaveIllustrationTagRequest,
+  type SavePromptHistoryRequest,
   type TagDescriptionRequest,
   type TagTranslationRequest,
   type TestGenerationRequest
@@ -180,7 +181,7 @@ function registerIpc(): void {
   ipcMain.handle("runtime:search-huggingface-llm", (_event, options) => searchHuggingFaceLlmModels(options));
   ipcMain.handle("runtime:test-generate", (_event, request: TestGenerationRequest) => runTestGeneration(request));
   ipcMain.handle("prompt-history:list", () => getSavedPromptHistory());
-  ipcMain.handle("prompt-history:save", (_event, request: TestGenerationRequest) => savePromptHistoryEntry(request));
+  ipcMain.handle("prompt-history:save", (_event, request: SavePromptHistoryRequest) => savePromptHistoryEntry(request));
   ipcMain.handle("prompt-history:clear", () => clearPromptHistory());
   ipcMain.handle("tags:list", () => getIllustrationTags());
   ipcMain.handle("tags:generate-ja", (_event, request: TagDescriptionRequest) => generateTagJapaneseDescription(request));

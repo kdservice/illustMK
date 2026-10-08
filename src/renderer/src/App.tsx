@@ -440,6 +440,7 @@ function App() {
   }
 
   function applyPromptHistory(entry: PromptHistoryEntry): void {
+    setJapanesePrompt(entry.japanesePrompt ?? "");
     setPrompt(entry.prompt);
     setNegativePrompt(entry.negativePrompt);
     setSelectedCheckpoint(entry.checkpoint);
@@ -1187,7 +1188,7 @@ function App() {
                     appendLog("info", `ComfyUI Negative Prompt: ${testRequest.negativePrompt}`);
                     appendLog("info", `ComfyUI Size/Seed: ${testRequest.width}x${testRequest.height} / ${testRequest.seed}`);
                     const result = await window.illustMK.runtime.testGenerate(testRequest);
-                    const history = await window.illustMK.promptHistory.save(testRequest);
+                    const history = await window.illustMK.promptHistory.save({ ...testRequest, japanesePrompt });
                     return { result, history };
                   },
                   ({ result, history }) => {
@@ -1286,6 +1287,7 @@ function App() {
                       <span>{entry.width} x {entry.height} / seed {entry.seed}</span>
                       <time>{new Date(entry.createdAt).toLocaleString("ja-JP", { hour12: false })}</time>
                     </header>
+                    {entry.japanesePrompt ? <p className="history-japanese">{entry.japanesePrompt}</p> : null}
                     <p>{entry.prompt}</p>
                     <small>{entry.negativePrompt}</small>
                     <button onClick={() => applyPromptHistory(entry)}>

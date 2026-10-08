@@ -228,6 +228,7 @@ export type TestGenerationRequest = {
 
 export type PromptHistoryEntry = {
   id: string;
+  japanesePrompt: string;
   prompt: string;
   negativePrompt: string;
   checkpoint: string;
@@ -237,6 +238,10 @@ export type PromptHistoryEntry = {
   cfg: number;
   seed: number;
   createdAt: string;
+};
+
+export type SavePromptHistoryRequest = TestGenerationRequest & {
+  japanesePrompt: string;
 };
 
 export type TestGenerationResult = {
@@ -1226,7 +1231,9 @@ export async function getSavedPromptHistory(): Promise<PromptHistoryEntry[]> {
   try {
     const text = await readFile(promptHistoryPath, "utf8");
     const parsed = JSON.parse(text) as PromptHistoryEntry[];
-    return Array.isArray(parsed) ? parsed.filter(isPromptHistoryEntry) : [];
+    return Array.isArray(parsed)
+      ? parsed.filter(isPromptHistoryEntry).map((entry) => ({ ...entry, japanesePrompt: entry.japanesePrompt ?? "" }))
+      : [];
   } catch {
     return [];
   }
@@ -1238,9 +1245,10 @@ export async function clearPromptHistory(): Promise<PromptHistoryEntry[]> {
   return [];
 }
 
-export async function savePromptHistoryEntry(request: TestGenerationRequest): Promise<PromptHistoryEntry[]> {
+export async function savePromptHistoryEntry(request: SavePromptHistoryRequest): Promise<PromptHistoryEntry[]> {
   const entry: PromptHistoryEntry = {
     id: randomUUID(),
+    japanesePrompt: request.japanesePrompt,
     prompt: request.prompt,
     negativePrompt: request.negativePrompt,
     checkpoint: request.checkpoint,
@@ -1251,7 +1259,7 @@ export async function savePromptHistoryEntry(request: TestGenerationRequest): Pr
     seed: request.seed,
     createdAt: new Date().toISOString()
   };
-  const history = [entry, ...(await getSavedPromptHistory()).filter((item) => item.prompt !== request.prompt || item.negativePrompt !== request.negativePrompt)].slice(0, 100);
+  const history = [entry, ...(await getSavedPromptHistory()).filter((item) => item.japanesePrompt !== request.japanesePrompt || item.prompt !== request.prompt || item.negativePrompt !== request.negativePrompt)].slice(0, 100);
   await savePromptHistory(history);
   return history;
 }
@@ -1271,6 +1279,7 @@ function isPromptHistoryEntry(value: unknown): value is PromptHistoryEntry {
   const entry = value as Partial<PromptHistoryEntry>;
   return (
     typeof entry.id === "string" &&
+    (typeof entry.japanesePrompt === "string" || entry.japanesePrompt === undefined) &&
     typeof entry.prompt === "string" &&
     typeof entry.negativePrompt === "string" &&
     typeof entry.checkpoint === "string" &&
