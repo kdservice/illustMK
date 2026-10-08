@@ -602,7 +602,7 @@ export async function installLoraRuntime(onLog: RuntimeLogSink): Promise<string>
   });
   await spawnNativeCommand(
     paths.loraPython,
-    ["-m", "pip", "install", "--pre", "--upgrade", "torch", "torchvision", "--extra-index-url", "https://download.pytorch.org/whl/nightly/cpu"],
+    ["-m", "pip", "install", "--upgrade", "torch", "torchvision", "torchaudio"],
     onLog,
     { cwd: paths.loraScripts }
   );
@@ -2001,36 +2001,41 @@ function replaceImageExtension(fileName: string, ext: string): string {
 
 async function resolveLoraVenvPython(onLog: RuntimeLogSink): Promise<string> {
   const candidates = [
+    "/opt/homebrew/bin/python3.10",
+    "/opt/homebrew/opt/python@3.10/bin/python3.10",
+    "python3.10",
+    "/opt/homebrew/bin/python3.11",
+    "/opt/homebrew/opt/python@3.11/bin/python3.11",
+    "python3.11",
     "/opt/homebrew/bin/python3.12",
     "/opt/homebrew/opt/python@3.12/bin/python3.12",
     "python3.12",
-    "python3.11",
     "python3"
   ];
   for (const candidate of candidates) {
     if (await canRun(candidate, ["--version"])) {
       const version = await pythonShortVersion(candidate);
-      if (version === "3.12") {
+      if (version === "3.10" || version === "3.11" || version === "3.12") {
         onLog({ level: "info", line: `LoRA venv Python: ${candidate} (${version})` });
         return candidate;
       }
     }
   }
   if (await canRun("brew", ["--version"])) {
-    onLog({ level: "info", line: "python3.12 が無いため Homebrew で python@3.12 をインストールします。" });
-    await spawnNativeCommand("brew", ["install", "python@3.12"], onLog);
-    if (await canRun("/opt/homebrew/bin/python3.12", ["--version"])) {
-      return "/opt/homebrew/bin/python3.12";
+    onLog({ level: "info", line: "python3.10 が無いため Homebrew で python@3.10 をインストールします。" });
+    await spawnNativeCommand("brew", ["install", "python@3.10"], onLog);
+    if (await canRun("/opt/homebrew/bin/python3.10", ["--version"])) {
+      return "/opt/homebrew/bin/python3.10";
     }
   }
-  throw new Error("LoRA MPS用のPython 3.12が見つかりません。Homebrewのpython@3.12インストールにも失敗しました。");
+  throw new Error("LoRA MPS用のPython 3.10〜3.12が見つかりません。Homebrewのpython@3.10インストールにも失敗しました。");
 }
 
 async function shouldRebuildLoraVenv(paths: RuntimePaths, onLog: RuntimeLogSink): Promise<boolean> {
   if (!(await exists(paths.loraPython))) return false;
   const version = await pythonShortVersion(paths.loraPython);
-  if (version !== "3.12") {
-    onLog({ level: "info", line: `LoRA venv Pythonが${version || "不明"}のため再構築します。MPS優先では3.12を使います。` });
+  if (version !== "3.10" && version !== "3.11") {
+    onLog({ level: "info", line: `LoRA venv Pythonが${version || "不明"}のため再構築します。MPS優先では3.10〜3.11を使います。` });
     return true;
   }
   if (await pythonHasModule(paths.loraPython, "torch")) {
