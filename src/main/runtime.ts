@@ -1635,8 +1635,16 @@ export async function trainLoraTrainingProject(id: string, onLog: RuntimeLogSink
     "--caption_extension",
     ".txt",
     "--enable_bucket",
+    "--sdpa",
+    "--cache_latents_to_disk",
+    "--cache_text_encoder_outputs_to_disk",
+    "--network_train_unet_only",
+    "--max_data_loader_n_workers",
+    "0",
+    "--save_precision",
+    "bf16",
     "--mixed_precision",
-    "no"
+    "bf16"
   ];
   if (project.sourceLora.trim()) {
     commandArgs.push("--network_weights", join(paths.loras, project.sourceLora));
@@ -1651,9 +1659,15 @@ export async function trainLoraTrainingProject(id: string, onLog: RuntimeLogSink
   try {
     const acceleratePath = join(paths.loraVenv, "bin", "accelerate");
     if (mpsStatus.available && await exists(acceleratePath)) {
-      await spawnNativeCommand(acceleratePath, ["launch", "--num_processes", "1", ...commandArgs], onLog, { cwd: paths.loraScripts });
+      await spawnNativeCommand(acceleratePath, ["launch", "--num_processes", "1", "--mixed_precision", "bf16", ...commandArgs], onLog, {
+        cwd: paths.loraScripts,
+        logPath: paths.loraLog
+      });
     } else {
-      await spawnNativeCommand(paths.loraPython, commandArgs, onLog, { cwd: paths.loraScripts });
+      await spawnNativeCommand(paths.loraPython, commandArgs, onLog, {
+        cwd: paths.loraScripts,
+        logPath: paths.loraLog
+      });
     }
     const outputPath = join(paths.loras, `${outputBaseName}.safetensors`);
     if (!(await exists(outputPath))) {
@@ -2854,9 +2868,12 @@ function spawnDockerFile(command: string, args: string[], onLog: RuntimeLogSink)
   });
 }
 
-function spawnNativeCommand(command: string, args: string[], onLog: RuntimeLogSink, options: { cwd?: string; env?: NodeJS.ProcessEnv } = {}): Promise<void> {
+function spawnNativeCommand(command: string, args: string[], onLog: RuntimeLogSink, options: { cwd?: string; env?: NodeJS.ProcessEnv; logPath?: string } = {}): Promise<void> {
   return new Promise((resolve, reject) => {
-    onLog({ level: "info", line: `$ ${command} ${args.join(" ")}` });
+    const logStream = options.logPath ? createWriteStream(options.logPath, { flags: "a" }) : null;
+    const commandLine = `$ ${command} ${args.join(" ")}`;
+    if (logStream) logStream.write(`${commandLine}\n`);
+    onLog({ level: "info", line: commandLine });
     const child = spawn(command, args, {
       cwd: options.cwd,
       env: {
@@ -2870,13 +2887,22 @@ function spawnNativeCommand(command: string, args: string[], onLog: RuntimeLogSi
     let stderr = "";
     child.stdout.setEncoding("utf8");
     child.stderr.setEncoding("utf8");
-    child.stdout.on("data", (chunk: string) => emitChunk("stdout", chunk, onLog));
+    child.stdout.on("data", (chunk: string) => {
+      if (logStream) logStream.write(chunk);
+      emitChunk("stdout", chunk, onLog);
+    });
     child.stderr.on("data", (chunk: string) => {
       stderr += chunk;
+      if (logStream) logStream.write(chunk);
       emitChunk("stderr", chunk, onLog);
     });
-    child.on("error", reject);
+    child.on("error", (error) => {
+      if (logStream) logStream.end();
+      reject(error);
+    });
     child.on("close", (code) => {
+      if (logStream) logStream.write(`\n[illustMK] command exited with code ${code}\n`);
+      if (logStream) logStream.end();
       if (code === 0) resolve();
       else reject(new Error(stderr.trim() || `${command} exited with code ${code}`));
     });
