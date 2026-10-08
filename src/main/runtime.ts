@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import { closeSync, createReadStream, createWriteStream, openSync } from "node:fs";
 import { access, cp, lstat, mkdir, readFile, readlink, readdir, rename, rm, stat, symlink, unlink, writeFile } from "node:fs/promises";
-import { basename, join, resolve } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 import { homedir } from "node:os";
 import { Transform } from "node:stream";
 import { pipeline } from "node:stream/promises";
@@ -1443,7 +1443,7 @@ export async function trainLoraTrainingProject(id: string, onLog: RuntimeLogSink
     "--pretrained_model_name_or_path",
     join(paths.checkpoints, project.baseCheckpoint),
     "--train_data_dir",
-    project.datasetPath,
+    await resolveLoraTrainDataDir(project.datasetPath),
     "--output_dir",
     paths.loras,
     "--output_name",
@@ -1480,6 +1480,16 @@ export async function trainLoraTrainingProject(id: string, onLog: RuntimeLogSink
 
   try {
     await spawnNativeCommand(paths.loraPython, commandArgs, onLog, { cwd: paths.loraScripts });
+    const outputPath = join(paths.loras, `${outputBaseName}.safetensors`);
+    if (!(await exists(outputPath))) {
+      throw new Error(
+        [
+          "LoRA学習は正常終了として返りましたが、出力ファイルが作成されていません。",
+          "sd-scripts側で学習データ不備などが発生した可能性があります。",
+          `未作成: ${outputPath}`
+        ].join("\n")
+      );
+    }
   } catch (error) {
     const failedProjects = await getLoraTrainingProjects();
     const failedProject: LoraTrainingProject = {
@@ -1540,9 +1550,9 @@ async function saveLoraTrainingProjects(projects: LoraTrainingProject[]): Promis
 }
 
 async function validateLoraTrainingProject(project: LoraTrainingProject, loraOutputPath: string): Promise<LoraTrainingProject> {
-  const datasetFiles = await listFiles(project.datasetPath);
-  const imageCount = datasetFiles.filter((file) => /\.(png|jpe?g|webp)$/i.test(file)).length;
-  const captionCount = datasetFiles.filter((file) => /\.txt$/i.test(file)).length;
+  const datasetSummary = await summarizeLoraDataset(project.datasetPath);
+  const imageCount = datasetSummary.imageCount;
+  const captionCount = datasetSummary.captionCount;
   const now = new Date().toISOString();
   if (project.sourceLora.trim() && !(await exists(join(loraOutputPath, project.sourceLora)))) {
     return {
@@ -1568,9 +1578,45 @@ async function validateLoraTrainingProject(project: LoraTrainingProject, loraOut
     message: [
       "学習前チェックOKです。",
       `画像 ${imageCount}件 / caption ${captionCount}件`,
-      "Phase4の次ステップでsd-scripts/kohya実行環境に接続します。"
+      `train_data_dir: ${datasetSummary.trainDataDir}`,
+      "sd-scripts/kohya実行環境で学習できます。"
     ].join(" ")
   };
+}
+
+async function resolveLoraTrainDataDir(datasetPath: string): Promise<string> {
+  return (await summarizeLoraDataset(datasetPath)).trainDataDir;
+}
+
+async function summarizeLoraDataset(datasetPath: string): Promise<{ imageCount: number; captionCount: number; trainDataDir: string }> {
+  const directFiles = await listFiles(datasetPath);
+  const directImageCount = directFiles.filter(isImageFileName).length;
+  const directCaptionCount = directFiles.filter((file) => /\.txt$/i.test(file)).length;
+  if (directImageCount > 0) {
+    return {
+      imageCount: directImageCount,
+      captionCount: directCaptionCount,
+      trainDataDir: dirname(datasetPath)
+    };
+  }
+
+  const childDirs = await listDirectories(datasetPath);
+  let imageCount = 0;
+  let captionCount = 0;
+  for (const childDir of childDirs) {
+    const childFiles = await listFiles(join(datasetPath, childDir));
+    imageCount += childFiles.filter(isImageFileName).length;
+    captionCount += childFiles.filter((file) => /\.txt$/i.test(file)).length;
+  }
+  return {
+    imageCount,
+    captionCount,
+    trainDataDir: datasetPath
+  };
+}
+
+function isImageFileName(file: string): boolean {
+  return /\.(png|jpe?g|webp)$/i.test(file);
 }
 
 function isLoraTrainingProject(value: unknown): value is LoraTrainingProject {
@@ -2120,6 +2166,22 @@ async function listFiles(path: string): Promise<string[]> {
       })
     );
     return files.filter((file): file is string => Boolean(file)).sort();
+  } catch {
+    return [];
+  }
+}
+
+async function listDirectories(path: string): Promise<string[]> {
+  try {
+    const entries = await readdir(path);
+    const dirs = await Promise.all(
+      entries.map(async (entry) => {
+        const entryPath = join(path, entry);
+        const entryStat = await stat(entryPath);
+        return entryStat.isDirectory() ? entry : null;
+      })
+    );
+    return dirs.filter((dir): dir is string => Boolean(dir)).sort();
   } catch {
     return [];
   }
