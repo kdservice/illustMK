@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import { closeSync, createReadStream, createWriteStream, openSync } from "node:fs";
 import { access, cp, lstat, mkdir, readFile, readlink, readdir, rename, rm, stat, symlink, unlink, writeFile } from "node:fs/promises";
-import { basename, dirname, join, resolve } from "node:path";
+import { basename, dirname, join, relative, resolve } from "node:path";
 import { homedir } from "node:os";
 import { Transform } from "node:stream";
 import { pipeline } from "node:stream/promises";
@@ -307,10 +307,7 @@ export type SaveLoraTrainingProjectRequest = {
   id?: string;
   name: string;
   triggerWord: string;
-  sourceLora?: string;
   baseCheckpoint: string;
-  datasetPath?: string;
-  outputName?: string;
   resolution: number;
   repeats: number;
   epochs: number;
@@ -1428,13 +1425,35 @@ export async function clearPromptHistory(): Promise<PromptHistoryEntry[]> {
 }
 
 export async function getLoraTrainingProjects(): Promise<LoraTrainingProject[]> {
+  const paths = await ensureRuntimeFiles();
+  const byId = new Map<string, LoraTrainingProject>();
   try {
     const text = await readFile(loraTrainingProjectsPath, "utf8");
     const parsed = JSON.parse(text) as LoraTrainingProject[];
-    return Array.isArray(parsed) ? parsed.filter(isLoraTrainingProject).map((project) => ({ ...project, sourceLora: project.sourceLora ?? "" })) : [];
+    if (Array.isArray(parsed)) {
+      for (const project of parsed.filter(isLoraTrainingProject)) {
+        byId.set(project.id, { ...project, sourceLora: project.sourceLora ?? "" });
+      }
+    }
   } catch {
-    return [];
+    // lora-projects.json is a cache. Project directories are the source of truth.
   }
+  const entries = await readdir(paths.loraProjects, { withFileTypes: true }).catch(() => []);
+  for (const entry of entries) {
+    if (!entry.isDirectory()) continue;
+    const configPath = join(paths.loraProjects, entry.name, "config", "lora-training.json");
+    try {
+      const project = JSON.parse(await readFile(configPath, "utf8")) as unknown;
+      if (isLoraTrainingProject(project)) {
+        byId.set(project.id, { ...project, sourceLora: project.sourceLora ?? "" });
+      }
+    } catch {
+      // Ignore directories that are not LoRA projects yet.
+    }
+  }
+  const projects = [...byId.values()].sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+  await saveLoraTrainingProjects(projects);
+  return projects;
 }
 
 export async function clearLoraTrainingProjects(): Promise<LoraTrainingProject[]> {
@@ -1453,17 +1472,13 @@ export async function saveLoraTrainingProject(request: SaveLoraTrainingProjectRe
   const id = existing?.id ?? randomUUID();
   const safeName = safeFileName(name);
   const projectRoot = join(paths.loraProjects, safeName);
-  const datasetPath = request.datasetPath?.trim() || join(projectRoot, "dataset");
-  const outputName = normalizeSafetensorsName(request.outputName?.trim() || `${safeName}.safetensors`);
-  const outputPath = join(paths.loras, outputName);
-  if (!existing && await exists(outputPath)) {
-    throw new Error(`同名のLoRAが既に完成済みです: ${outputName}\n別名にするか、追加学習元LoRAとして選択してください。`);
-  }
+  const datasetPath = existing?.datasetPath ?? join(projectRoot, "dataset");
+  const outputName = existing?.outputName ?? normalizeSafetensorsName(`${safeName}.safetensors`);
   const project: LoraTrainingProject = {
     id,
     name,
     triggerWord: request.triggerWord.trim(),
-    sourceLora: request.sourceLora?.trim() ?? existing?.sourceLora ?? "",
+    sourceLora: existing?.sourceLora ?? "",
     baseCheckpoint: request.baseCheckpoint.trim(),
     datasetPath,
     outputName,
@@ -1487,6 +1502,21 @@ export async function saveLoraTrainingProject(request: SaveLoraTrainingProjectRe
     : [project, ...projects];
   await saveLoraTrainingProjects(nextProjects);
   return nextProjects;
+}
+
+export async function importLoraFile(sourcePath: string): Promise<LoraTrainingProject[]> {
+  if (!sourcePath.trim()) throw new Error("インポートするLoRAファイルを選択してください。");
+  const paths = await ensureRuntimeFiles();
+  const fileName = normalizeSafetensorsName(basename(sourcePath));
+  const destination = join(paths.loras, fileName);
+  const from = resolve(sourcePath);
+  const to = resolve(destination);
+  const relation = relative(paths.loras, from);
+  await mkdir(paths.loras, { recursive: true });
+  if (relation.startsWith("..") || resolve(paths.loras, relation) !== from) {
+    if (!(await exists(to))) await cp(from, to);
+  }
+  return getLoraTrainingProjects();
 }
 
 export async function startLoraTrainingProject(id: string): Promise<LoraTrainingProject[]> {
@@ -1583,7 +1613,11 @@ export async function saveLoraCaptionWorkspace(request: SaveLoraCaptionWorkspace
   return getLoraCaptionWorkspace(project.id);
 }
 
-export async function trainLoraTrainingProject(id: string, onLog: RuntimeLogSink, options: { resume?: boolean } = {}): Promise<string> {
+export async function trainLoraTrainingProject(
+  id: string,
+  onLog: RuntimeLogSink,
+  options: { resume?: boolean; sourceLora?: string } = {}
+): Promise<string> {
   const paths = await ensureRuntimeFiles();
   if (!(await exists(paths.loraPython)) || !(await exists(join(paths.loraScripts, "sdxl_train_network.py")))) {
     throw new Error("LoRA学習環境が未インストールです。環境タブのLoRAパネルで「インストール」を実行してください。");
@@ -1617,6 +1651,10 @@ export async function trainLoraTrainingProject(id: string, onLog: RuntimeLogSink
   }
   if (resumeStatePath) {
     onLog({ level: "info", line: `LoRA学習stateから再開します: ${resumeStatePath}` });
+  }
+  const sourceLora = options.sourceLora?.trim() ?? "";
+  if (sourceLora && !(await exists(join(paths.loras, sourceLora)))) {
+    throw new Error(`追加学習元LoRAが見つかりません: ${sourceLora}`);
   }
   const commandArgs = [
     "sdxl_train_network.py",
@@ -1665,14 +1703,14 @@ export async function trainLoraTrainingProject(id: string, onLog: RuntimeLogSink
   if (resumeStatePath) {
     commandArgs.push("--resume", resumeStatePath);
   }
-  if (project.sourceLora.trim()) {
-    commandArgs.push("--network_weights", join(paths.loras, project.sourceLora));
+  if (sourceLora) {
+    commandArgs.push("--network_weights", join(paths.loras, sourceLora));
   }
   if (project.triggerWord.trim()) {
     onLog({ level: "info", line: `Trigger Word: ${project.triggerWord.trim()}` });
   }
-  if (project.sourceLora.trim()) {
-    onLog({ level: "info", line: `追加学習元LoRA: ${project.sourceLora.trim()}` });
+  if (sourceLora) {
+    onLog({ level: "info", line: `追加学習元LoRA: ${sourceLora}` });
   }
 
   try {
@@ -1801,14 +1839,6 @@ async function validateLoraTrainingProject(project: LoraTrainingProject, loraOut
   const imageCount = datasetSummary.imageCount;
   const captionCount = datasetSummary.captionCount;
   const now = new Date().toISOString();
-  if (project.sourceLora.trim() && !(await exists(join(loraOutputPath, project.sourceLora)))) {
-    return {
-      ...project,
-      status: "blocked",
-      updatedAt: now,
-      message: `追加学習元LoRAが見つかりません: ${project.sourceLora}`
-    };
-  }
   if (imageCount === 0) {
     return {
       ...project,

@@ -1,4 +1,4 @@
-import { app, BrowserWindow, ipcMain, screen, shell, type Rectangle } from "electron";
+import { app, BrowserWindow, dialog, ipcMain, screen, shell, type OpenDialogOptions, type Rectangle } from "electron";
 import { mkdir, readFile, stat, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import {
@@ -24,6 +24,7 @@ import {
   generateTagJapaneseDescription,
   initNativeRuntime,
   installLoraRuntime,
+  importLoraFile,
   installOllama,
   installNativeRuntime,
   pullOllamaModel,
@@ -195,7 +196,7 @@ function registerIpc(): void {
   ipcMain.handle("runtime:build", () => buildRuntime());
   ipcMain.handle("runtime:start", () => startRuntime());
   ipcMain.handle("runtime:stop", () => stopRuntime());
-  ipcMain.handle("runtime:run-operation", async (event, request: { id: string; operation: string; model?: string; ollamaUrl?: string; projectId?: string }) => {
+  ipcMain.handle("runtime:run-operation", async (event, request: { id: string; operation: string; model?: string; ollamaUrl?: string; projectId?: string; sourceLora?: string }) => {
     const sendLog = (level: "info" | "stdout" | "stderr", line: string) => {
       event.sender.send("runtime:operation-log", { id: request.id, level, line });
     };
@@ -223,10 +224,10 @@ function registerIpc(): void {
         return await installLoraRuntime((log) => sendLog(log.level, log.line));
       }
       if (request.operation === "lora-train") {
-        return await trainLoraTrainingProject(request.projectId ?? "", (log) => sendLog(log.level, log.line));
+        return await trainLoraTrainingProject(request.projectId ?? "", (log) => sendLog(log.level, log.line), { sourceLora: request.sourceLora });
       }
       if (request.operation === "lora-resume") {
-        return await trainLoraTrainingProject(request.projectId ?? "", (log) => sendLog(log.level, log.line), { resume: true });
+        return await trainLoraTrainingProject(request.projectId ?? "", (log) => sendLog(log.level, log.line), { resume: true, sourceLora: request.sourceLora });
       }
       if (request.operation === "native-start") {
         return await startNativeRuntime((log) => sendLog(log.level, log.line));
@@ -287,6 +288,16 @@ function registerIpc(): void {
   ipcMain.handle("lora-projects:pause", (_event, id: string) => pauseLoraTrainingProject(id));
   ipcMain.handle("lora-projects:stop", (_event, id: string) => stopLoraTrainingProject(id));
   ipcMain.handle("lora-projects:clear", () => clearLoraTrainingProjects());
+  ipcMain.handle("lora-projects:import", async () => {
+    const options: OpenDialogOptions = {
+      title: "LoRA safetensorsをインポート",
+      properties: ["openFile"],
+      filters: [{ name: "LoRA safetensors", extensions: ["safetensors"] }]
+    };
+    const result = mainWindow ? await dialog.showOpenDialog(mainWindow, options) : await dialog.showOpenDialog(options);
+    if (result.canceled || !result.filePaths[0]) return getLoraTrainingProjects();
+    return importLoraFile(result.filePaths[0]);
+  });
   ipcMain.handle("lora-captions:get", (_event, projectId: string) => getLoraCaptionWorkspace(projectId));
   ipcMain.handle("lora-captions:save", (_event, request: SaveLoraCaptionWorkspaceRequest) => saveLoraCaptionWorkspace(request));
   ipcMain.handle("ollama:status", (_event, ollamaUrl?: string) => getOllamaStatus(ollamaUrl));
