@@ -1565,28 +1565,11 @@ function App() {
               <PanelTitle icon={<TerminalSquare size={18} />} title="LoRA学習ジョブ" />
             </div>
             <div className="lora-control-panel">
-              <div className="field">
-                <label>操作対象LoRA</label>
-                <select
-                  value={selectedLoraProject?.id ?? ""}
-                  onChange={(event) => setSelectedLoraProjectId(event.target.value || null)}
-                >
-                  {loraProjects.length ? (
-                    loraProjects.map((project) => (
-                      <option key={project.id} value={project.id}>
-                        {project.name} / {project.status}
-                      </option>
-                    ))
-                  ) : (
-                    <option value="">未作成</option>
-                  )}
-                </select>
-              </div>
               <div className="lora-control-summary">
-                <strong>{selectedLoraProject?.name ?? "LoRA未選択"}</strong>
+                <strong>{selectedLoraProject?.name ?? "左の一覧からLoRAプロジェクトを選択してください"}</strong>
                 <span>{selectedLoraProject ? `status: ${selectedLoraProject.status}` : "status: -"}</span>
                 <span>{selectedLoraProject ? `output: ${selectedLoraProject.outputName}` : "output: -"}</span>
-                <small>{selectedLoraProject?.message ?? "プロジェクトを選択してください。"}</small>
+                <small>{selectedLoraProject?.message ?? "プロジェクト未選択です。"}</small>
               </div>
               <label className="toggle-row">
                 <input type="checkbox" checked={loraAdditionalTraining} onChange={(event) => setLoraAdditionalTraining(event.target.checked)} />
