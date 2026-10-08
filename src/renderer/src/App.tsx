@@ -497,23 +497,32 @@ function App() {
     );
   }
 
+  async function translateTagEnglishDescription(): Promise<void> {
+    await runAction(
+      "タグ説明文を英訳中",
+      () =>
+        window.illustMK.tags.translateEnglish({
+          ollamaUrl,
+          model: ollamaModel,
+          japaneseDescription: tagJapaneseDescription
+        }),
+      (englishDescription) => {
+        setTagEnglishDescription(englishDescription);
+      }
+    );
+  }
+
   async function saveTagFromDialog(): Promise<void> {
     await runAction(
       "タグを保存中",
       async () => {
-        const englishDescription = await window.illustMK.tags.translateEnglish({
-          ollamaUrl,
-          model: ollamaModel,
-          japaneseDescription: tagJapaneseDescription
-        });
-        setTagEnglishDescription(englishDescription);
         return window.illustMK.tags.save({
           id: tagEditingId ?? undefined,
           name: tagName,
           englishName: tagEnglishName,
           sourcePrompt: tagPrompt,
           japaneseDescription: tagJapaneseDescription,
-          englishDescription
+          englishDescription: tagEnglishDescription
         });
       },
       (tags) => {
@@ -1270,15 +1279,22 @@ function App() {
                 onChange={(event) => setTagJapaneseDescription(event.target.value)}
               />
             </div>
-            {tagEnglishDescription ? (
-              <div className="field">
-                <label>英訳説明文</label>
-                <textarea className="tag-description" value={tagEnglishDescription} onChange={(event) => setTagEnglishDescription(event.target.value)} />
-              </div>
-            ) : null}
+            <button className="primary" disabled={action.busy || !tagJapaneseDescription.trim()} onClick={() => void translateTagEnglishDescription()}>
+              <Bot size={17} />
+              英訳
+            </button>
+            <div className="field">
+              <label>英訳説明文</label>
+              <textarea
+                className="tag-description"
+                placeholder="英訳ボタンの結果がここに表示されます。手編集できます。"
+                value={tagEnglishDescription}
+                onChange={(event) => setTagEnglishDescription(event.target.value)}
+              />
+            </div>
             <div className="modal-actions">
               <button onClick={() => setTagDialogOpen(false)}>キャンセル</button>
-              <button className="primary" disabled={action.busy || !tagName.trim() || !tagEnglishName.trim() || !tagPrompt.trim() || !tagJapaneseDescription.trim()} onClick={() => void saveTagFromDialog()}>
+              <button className="primary" disabled={action.busy || !tagName.trim() || !tagEnglishName.trim() || !tagPrompt.trim() || !tagJapaneseDescription.trim() || !tagEnglishDescription.trim()} onClick={() => void saveTagFromDialog()}>
                 <CheckCircle2 size={17} />
                 保存
               </button>
