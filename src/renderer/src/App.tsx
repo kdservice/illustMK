@@ -27,6 +27,7 @@ import type {
   HuggingFaceLlmModelCard,
   IllustrationTag,
   LlmChatMessage,
+  LoraCaptionCustomTag,
   LoraCaptionTag,
   LoraCaptionWorkspace,
   LoraTrainingProject,
@@ -142,6 +143,10 @@ function App() {
   const [captionTagEditingId, setCaptionTagEditingId] = useState<string | null>(null);
   const [captionTagJapanese, setCaptionTagJapanese] = useState("");
   const [captionTagEnglish, setCaptionTagEnglish] = useState("");
+  const [captionImageEditFileName, setCaptionImageEditFileName] = useState<string | null>(null);
+  const [captionImageTagEditingId, setCaptionImageTagEditingId] = useState<string | null>(null);
+  const [captionImageTagJapanese, setCaptionImageTagJapanese] = useState("");
+  const [captionImageTagEnglish, setCaptionImageTagEnglish] = useState("");
   const [action, setAction] = useState<ActionState>({ busy: false, message: "待機中", error: null });
   const [logs, setLogs] = useState<LogLine[]>([]);
   const [autoFollowLogs, setAutoFollowLogs] = useState(true);
@@ -189,6 +194,10 @@ function App() {
     );
   }, [llmCatalogQuery]);
   const captionTagById = useMemo(() => new Map(captionTags.map((tag) => [tag.id, tag])), [captionTags]);
+  const captionImageEditing = useMemo(
+    () => captionImages.find((image) => image.fileName === captionImageEditFileName) ?? null,
+    [captionImageEditFileName, captionImages]
+  );
 
   const stateLabel = useMemo(() => {
     if (!status) return "未確認";
@@ -639,6 +648,7 @@ function App() {
     setCaptionImages([]);
     setSelectedCaptionTagId(null);
     resetCaptionTagEditor();
+    closeCaptionImageTagEditor();
   }
 
   function resetCaptionTagEditor(): void {
@@ -706,6 +716,89 @@ function App() {
     );
   }
 
+  function addSelectedTagToAllCaptionImages(): void {
+    if (!selectedCaptionTagId) return;
+    setCaptionImages((current) =>
+      current.map((image) =>
+        image.tagIds.includes(selectedCaptionTagId) ? image : { ...image, tagIds: [...image.tagIds, selectedCaptionTagId] }
+      )
+    );
+  }
+
+  function removeSelectedTagFromAllCaptionImages(): void {
+    if (!selectedCaptionTagId) return;
+    setCaptionImages((current) =>
+      current.map((image) => ({ ...image, tagIds: image.tagIds.filter((tagId) => tagId !== selectedCaptionTagId) }))
+    );
+  }
+
+  function openCaptionImageTagEditor(fileName: string): void {
+    setCaptionImageEditFileName(fileName);
+    resetCaptionImageTagFields();
+  }
+
+  function closeCaptionImageTagEditor(): void {
+    setCaptionImageEditFileName(null);
+    resetCaptionImageTagFields();
+  }
+
+  function resetCaptionImageTagFields(): void {
+    setCaptionImageTagEditingId(null);
+    setCaptionImageTagJapanese("");
+    setCaptionImageTagEnglish("");
+  }
+
+  function editCaptionImageCustomTag(tag: LoraCaptionCustomTag): void {
+    setCaptionImageTagEditingId(tag.id);
+    setCaptionImageTagJapanese(tag.japaneseName);
+    setCaptionImageTagEnglish(tag.englishName);
+  }
+
+  function upsertCaptionImageCustomTag(): void {
+    if (!captionImageEditFileName) return;
+    const japaneseName = captionImageTagJapanese.trim();
+    if (!japaneseName) return;
+    const now = new Date().toISOString();
+    setCaptionImages((current) =>
+      current.map((image) => {
+        if (image.fileName !== captionImageEditFileName) return image;
+        if (captionImageTagEditingId) {
+          return {
+            ...image,
+            customTags: image.customTags.map((tag) =>
+              tag.id === captionImageTagEditingId
+                ? { ...tag, japaneseName, englishName: captionImageTagEnglish.trim(), updatedAt: now }
+                : tag
+            )
+          };
+        }
+        return {
+          ...image,
+          customTags: [
+            ...image.customTags,
+            {
+              id: crypto.randomUUID(),
+              japaneseName,
+              englishName: captionImageTagEnglish.trim(),
+              createdAt: now,
+              updatedAt: now
+            }
+          ]
+        };
+      })
+    );
+    resetCaptionImageTagFields();
+  }
+
+  function deleteCaptionImageCustomTag(fileName: string, tagId: string): void {
+    setCaptionImages((current) =>
+      current.map((image) =>
+        image.fileName === fileName ? { ...image, customTags: image.customTags.filter((tag) => tag.id !== tagId) } : image
+      )
+    );
+    if (captionImageTagEditingId === tagId) resetCaptionImageTagFields();
+  }
+
   async function saveCaptionEditor(): Promise<void> {
     if (!captionWorkspace) return;
     await runAction(
@@ -716,7 +809,7 @@ function App() {
           ollamaUrl,
           model: ollamaModel,
           tags: captionTags,
-          images: captionImages.map((image) => ({ fileName: image.fileName, tagIds: image.tagIds }))
+          images: captionImages.map((image) => ({ fileName: image.fileName, tagIds: image.tagIds, customTags: image.customTags }))
         }),
       (workspace) => {
         setCaptionWorkspace(workspace);
@@ -1769,6 +1862,14 @@ function App() {
                 <div className="caption-summary">
                   <span>画像 {captionImages.length}件</span>
                   <span>選択中: {selectedCaptionTagId ? captionTagById.get(selectedCaptionTagId)?.japaneseName ?? "不明" : "なし"}</span>
+                  <button disabled={!selectedCaptionTagId || !captionImages.length} onClick={addSelectedTagToAllCaptionImages}>
+                    <Plus size={15} />
+                    全部に付与
+                  </button>
+                  <button disabled={!selectedCaptionTagId || !captionImages.length} onClick={removeSelectedTagFromAllCaptionImages}>
+                    <X size={15} />
+                    全部から解除
+                  </button>
                 </div>
                 <div className="caption-image-grid">
                   {captionImages.length ? (
@@ -1779,11 +1880,15 @@ function App() {
                           <button className="caption-add-button" disabled={!selectedCaptionTagId} onClick={() => addSelectedTagToCaptionImage(image.fileName)} title="選択中タグを追加">
                             <Plus size={18} />
                           </button>
+                          <button className="caption-edit-button" onClick={() => openCaptionImageTagEditor(image.fileName)} title="個別タグを編集">
+                            <Pencil size={17} />
+                          </button>
                         </div>
                         <strong>{image.fileName}</strong>
                         <div className="caption-chip-list">
-                          {image.tagIds.length ? (
-                            image.tagIds.map((tagId) => {
+                          {image.tagIds.length || image.customTags.length ? (
+                            <>
+                            {image.tagIds.map((tagId) => {
                               const tag = captionTagById.get(tagId);
                               return tag ? (
                                 <button className="caption-chip" key={tagId} onClick={() => removeTagFromCaptionImage(image.fileName, tagId)}>
@@ -1791,7 +1896,14 @@ function App() {
                                   <X size={13} />
                                 </button>
                               ) : null;
-                            })
+                            })}
+                            {image.customTags.map((tag) => (
+                              <button className="caption-chip custom" key={tag.id} onClick={() => openCaptionImageTagEditor(image.fileName)}>
+                                {tag.japaneseName}
+                                <Pencil size={13} />
+                              </button>
+                            ))}
+                            </>
                           ) : (
                             <span>タグ未設定</span>
                           )}
@@ -1810,6 +1922,68 @@ function App() {
                 <Save size={17} />
                 キャプション保存
               </button>
+            </div>
+          </section>
+        </div>
+      ) : null}
+      {captionImageEditing ? (
+        <div className="modal-backdrop image-tag-backdrop">
+          <section className="modal-panel caption-image-tag-modal">
+            <div className="modal-header">
+              <PanelTitle icon={<Pencil size={18} />} title={`個別タグ: ${captionImageEditing.fileName}`} />
+              <button className="icon-button" onClick={closeCaptionImageTagEditor} title="閉じる">
+                <X size={17} />
+              </button>
+            </div>
+            <div className="caption-image-tag-layout">
+              <div className="caption-image-tag-preview">
+                <img src={captionImageEditing.imageDataUrl} alt={captionImageEditing.fileName} />
+              </div>
+              <div className="caption-image-tag-form">
+                <div className="field">
+                  <label>日本語の個別描写</label>
+                  <textarea
+                    placeholder="例: 夕方の柔らかい逆光、机に突っ伏して眠っている"
+                    value={captionImageTagJapanese}
+                    onChange={(event) => setCaptionImageTagJapanese(event.target.value)}
+                  />
+                </div>
+                <div className="field">
+                  <label>英語タグ</label>
+                  <textarea
+                    placeholder="空なら保存時に翻訳"
+                    value={captionImageTagEnglish}
+                    onChange={(event) => setCaptionImageTagEnglish(event.target.value)}
+                  />
+                </div>
+                <div className="button-row">
+                  <button className="primary" disabled={!captionImageTagJapanese.trim()} onClick={upsertCaptionImageCustomTag}>
+                    <Plus size={16} />
+                    {captionImageTagEditingId ? "個別タグ更新" : "個別タグ追加"}
+                  </button>
+                  <button onClick={resetCaptionImageTagFields}>クリア</button>
+                </div>
+                <div className="caption-custom-list">
+                  {captionImageEditing.customTags.length ? (
+                    captionImageEditing.customTags.map((tag) => (
+                      <article className="caption-custom-row" key={tag.id}>
+                        <button onClick={() => editCaptionImageCustomTag(tag)}>
+                          <strong>{tag.japaneseName}</strong>
+                          <span>{tag.englishName || "保存時に英訳"}</span>
+                        </button>
+                        <button className="icon-button danger" onClick={() => deleteCaptionImageCustomTag(captionImageEditing.fileName, tag.id)} title="削除">
+                          <Trash2 size={15} />
+                        </button>
+                      </article>
+                    ))
+                  ) : (
+                    <p className="empty">この画像専用の描写はまだありません。</p>
+                  )}
+                </div>
+              </div>
+            </div>
+            <div className="modal-actions">
+              <button onClick={closeCaptionImageTagEditor}>閉じる</button>
             </div>
           </section>
         </div>

@@ -815,6 +815,7 @@ label {
   display: flex;
   flex-wrap: wrap;
   gap: 8px;
+  align-items: center;
 }
 
 .caption-summary span {
@@ -825,6 +826,12 @@ label {
   color: #b9c8e8;
   font-size: 12px;
   font-weight: 800;
+}
+
+.caption-summary button {
+  min-height: 32px;
+  padding: 0 10px;
+  font-size: 12px;
 }
 
 .caption-image-grid {
@@ -875,6 +882,18 @@ label {
   background: rgba(38, 141, 255, 0.92);
 }
 
+.caption-edit-button {
+  position: absolute;
+  left: 8px;
+  bottom: 8px;
+  width: 38px;
+  min-width: 38px;
+  height: 38px;
+  padding: 0;
+  border-radius: 999px;
+  background: rgba(13, 25, 48, 0.94);
+}
+
 .caption-chip-list {
   min-height: 32px;
   display: flex;
@@ -895,6 +914,78 @@ label {
   border-color: #2d5794;
   color: #dbe7ff;
   gap: 4px;
+  font-size: 12px;
+}
+
+.caption-chip.custom {
+  border-color: #71623a;
+  background: #2a2313;
+  color: #ffe2a3;
+}
+
+.image-tag-backdrop {
+  z-index: 30;
+}
+
+.caption-image-tag-modal {
+  width: min(96vw, 1040px);
+  max-height: calc(100vh - 56px);
+}
+
+.caption-image-tag-layout {
+  display: grid;
+  grid-template-columns: minmax(240px, 360px) minmax(0, 1fr);
+  gap: 14px;
+}
+
+.caption-image-tag-preview {
+  aspect-ratio: 1 / 1;
+  border: 1px solid #1c2d53;
+  border-radius: 8px;
+  background: #030712;
+  overflow: hidden;
+}
+
+.caption-image-tag-preview img {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  display: block;
+}
+
+.caption-image-tag-form textarea {
+  min-height: 96px;
+}
+
+.caption-custom-list {
+  display: grid;
+  gap: 8px;
+  margin-top: 12px;
+  max-height: 280px;
+  overflow: auto;
+}
+
+.caption-custom-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 38px;
+  gap: 8px;
+}
+
+.caption-custom-row > button:first-child {
+  min-width: 0;
+  display: grid;
+  gap: 3px;
+  text-align: left;
+  justify-content: stretch;
+}
+
+.caption-custom-row strong,
+.caption-custom-row span {
+  overflow-wrap: anywhere;
+}
+
+.caption-custom-row span {
+  color: #91a3c9;
   font-size: 12px;
 }
 

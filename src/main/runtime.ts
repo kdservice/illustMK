@@ -270,11 +270,14 @@ export type LoraCaptionTag = {
   updatedAt: string;
 };
 
+export type LoraCaptionCustomTag = LoraCaptionTag;
+
 export type LoraCaptionImage = {
   fileName: string;
   imagePath: string;
   imageDataUrl: string;
   tagIds: string[];
+  customTags: LoraCaptionCustomTag[];
 };
 
 export type LoraCaptionWorkspace = {
@@ -294,6 +297,7 @@ export type SaveLoraCaptionWorkspaceRequest = {
   images: Array<{
     fileName: string;
     tagIds: string[];
+    customTags?: LoraCaptionCustomTag[];
   }>;
 };
 
@@ -1456,6 +1460,7 @@ export async function getLoraCaptionWorkspace(projectId: string): Promise<LoraCa
   const imageDir = loraTrainingImageDir(project);
   const imageFiles = (await listFiles(imageDir)).filter(isImageFileName);
   const tags = await importExistingCaptionTags(project, imageFiles);
+  const customTagsByFile = await getLoraCaptionImageTags(project);
   const images = await Promise.all(
     imageFiles.map(async (fileName) => {
       const tagIds = await readCaptionTagIds(project, fileName, tags);
@@ -1464,7 +1469,8 @@ export async function getLoraCaptionWorkspace(projectId: string): Promise<LoraCa
         fileName,
         imagePath,
         imageDataUrl: await imageDataUrl(imagePath),
-        tagIds
+        tagIds,
+        customTags: customTagsByFile[fileName] ?? []
       };
     })
   );
@@ -1496,6 +1502,23 @@ export async function saveLoraCaptionWorkspace(request: SaveLoraCaptionWorkspace
   );
   await saveLoraCaptionTags(project, tags);
 
+  const customTagsByFile: Record<string, LoraCaptionCustomTag[]> = {};
+  for (const image of request.images) {
+    const fileName = basename(image.fileName);
+    if (!(await exists(join(imageDir, fileName))) || !isImageFileName(fileName)) continue;
+    const customTags = (image.customTags ?? [])
+      .map((tag) => ({
+        id: tag.id || randomUUID(),
+        japaneseName: tag.japaneseName.trim(),
+        englishName: tag.englishName.trim(),
+        createdAt: tag.createdAt || now,
+        updatedAt: now
+      }))
+      .filter((tag) => tag.japaneseName);
+    customTagsByFile[fileName] = await translateMissingCaptionTags(request.ollamaUrl, request.model, customTags);
+  }
+  await saveLoraCaptionImageTags(project, customTagsByFile);
+
   const tagById = new Map(tags.map((tag) => [tag.id, tag]));
   for (const image of request.images) {
     const fileName = basename(image.fileName);
@@ -1503,8 +1526,9 @@ export async function saveLoraCaptionWorkspace(request: SaveLoraCaptionWorkspace
     const englishTags = image.tagIds
       .map((tagId) => tagById.get(tagId)?.englishName.trim())
       .filter((tag): tag is string => Boolean(tag));
+    const customEnglishTags = (customTagsByFile[fileName] ?? []).map((tag) => tag.englishName.trim()).filter(Boolean);
     const captionPath = join(imageDir, replaceImageExtension(fileName, ".txt"));
-    await writeFile(captionPath, englishTags.join(", "), "utf8");
+    await writeFile(captionPath, [...englishTags, ...customEnglishTags].join(", "), "utf8");
   }
 
   const projects = await getLoraTrainingProjects();
@@ -1698,6 +1722,10 @@ function loraCaptionTagsPath(project: LoraTrainingProject): string {
   return join(loraProjectConfigDir(project), "caption-tags.json");
 }
 
+function loraCaptionImageTagsPath(project: LoraTrainingProject): string {
+  return join(loraProjectConfigDir(project), "caption-image-tags.json");
+}
+
 function loraTrainingImageDir(project: LoraTrainingProject): string {
   const repeats = Math.max(1, Math.round(project.repeats || 1));
   return join(project.datasetPath, `${repeats}_${safeFileName(project.name)}`);
@@ -1724,6 +1752,37 @@ async function getLoraCaptionTags(project: LoraTrainingProject): Promise<LoraCap
 async function saveLoraCaptionTags(project: LoraTrainingProject, tags: LoraCaptionTag[]): Promise<void> {
   await ensureLoraCaptionTagsFile(project);
   await writeFile(loraCaptionTagsPath(project), JSON.stringify(tags, null, 2), "utf8");
+}
+
+async function getLoraCaptionImageTags(project: LoraTrainingProject): Promise<Record<string, LoraCaptionCustomTag[]>> {
+  const path = loraCaptionImageTagsPath(project);
+  await mkdir(resolve(path, ".."), { recursive: true });
+  if (!(await exists(path))) {
+    await writeFile(path, "{}", "utf8");
+    return {};
+  }
+  try {
+    const parsed = JSON.parse(await readFile(path, "utf8")) as Record<string, unknown>;
+    const result: Record<string, LoraCaptionCustomTag[]> = {};
+    for (const [fileName, tags] of Object.entries(parsed)) {
+      if (!Array.isArray(tags)) continue;
+      result[basename(fileName)] = tags.map(normalizeLoraCaptionTag).filter((tag): tag is LoraCaptionTag => Boolean(tag));
+    }
+    return result;
+  } catch {
+    return {};
+  }
+}
+
+async function saveLoraCaptionImageTags(project: LoraTrainingProject, tagsByFile: Record<string, LoraCaptionCustomTag[]>): Promise<void> {
+  const path = loraCaptionImageTagsPath(project);
+  await mkdir(resolve(path, ".."), { recursive: true });
+  const cleaned = Object.fromEntries(
+    Object.entries(tagsByFile)
+      .map(([fileName, tags]) => [basename(fileName), tags.filter((tag) => tag.japaneseName.trim())])
+      .filter(([, tags]) => Array.isArray(tags) && tags.length)
+  );
+  await writeFile(path, JSON.stringify(cleaned, null, 2), "utf8");
 }
 
 function normalizeLoraCaptionTag(value: unknown): LoraCaptionTag | null {
