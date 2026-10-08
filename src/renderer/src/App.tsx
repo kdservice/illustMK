@@ -22,6 +22,7 @@ import type {
   IllustrationTag,
   LlmChatMessage,
   OllamaStatus,
+  PromptEnhanceMode,
   RuntimePaths,
   RuntimeStatus,
   TestGenerationRequest,
@@ -95,6 +96,7 @@ function App() {
   const [tagJapaneseDescription, setTagJapaneseDescription] = useState("");
   const [tagEnglishDescription, setTagEnglishDescription] = useState("");
   const [japanesePrompt, setJapanesePrompt] = useState("");
+  const [promptEnhanceMode, setPromptEnhanceMode] = useState<PromptEnhanceMode>("balanced-detail");
   const [promptNotes, setPromptNotes] = useState("");
   const [selectedCheckpoint, setSelectedCheckpoint] = useState("");
   const [prompt, setPrompt] = useState("masterpiece, best quality, 1girl, anime style, soft light");
@@ -478,7 +480,8 @@ function App() {
           model: ollamaModel,
           japanesePrompt,
           currentPrompt: prompt,
-          currentNegativePrompt: negativePrompt
+          currentNegativePrompt: negativePrompt,
+          mode: promptEnhanceMode
         }),
       (result) => {
         setPrompt(result.positivePrompt);
@@ -993,6 +996,8 @@ function App() {
               negativePrompt={negativePrompt}
               setNegativePrompt={setNegativePrompt}
               promptNotes={promptNotes}
+              promptEnhanceMode={promptEnhanceMode}
+              setPromptEnhanceMode={setPromptEnhanceMode}
               canEnhancePrompt={canEnhancePrompt}
               disabledReason={enhancePromptDisabledReason}
               onEnhance={() => void enhanceJapanesePrompt()}
@@ -1156,6 +1161,8 @@ function PromptTransformPanel({
   negativePrompt,
   setNegativePrompt,
   promptNotes,
+  promptEnhanceMode,
+  setPromptEnhanceMode,
   canEnhancePrompt,
   disabledReason,
   onEnhance
@@ -1167,6 +1174,8 @@ function PromptTransformPanel({
   negativePrompt: string;
   setNegativePrompt: (value: string) => void;
   promptNotes: string;
+  promptEnhanceMode: PromptEnhanceMode;
+  setPromptEnhanceMode: (value: PromptEnhanceMode) => void;
   canEnhancePrompt: boolean;
   disabledReason: string;
   onEnhance: () => void;
@@ -1180,6 +1189,15 @@ function PromptTransformPanel({
           value={japanesePrompt}
           onChange={(event) => setJapanesePrompt(event.target.value)}
         />
+      </div>
+      <div className="field">
+        <label>変換モード</label>
+        <select value={promptEnhanceMode} onChange={(event) => setPromptEnhanceMode(event.target.value as PromptEnhanceMode)}>
+          <option value="balanced-detail">おすすめ: 本文 + 脚注/定義を反映</option>
+          <option value="footnote-strict">脚注重視: 定義文を強制採用</option>
+          <option value="main-subject">本文重視: 主文を優先</option>
+          <option value="tag-dense">タグ密度重視: 細かいタグへ分解</option>
+        </select>
       </div>
       <button className="primary" disabled={!canEnhancePrompt} title={disabledReason} onClick={onEnhance}>
         <Bot size={17} />

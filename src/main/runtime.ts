@@ -134,12 +134,15 @@ export type OllamaStatus = {
   message: string | null;
 };
 
+export type PromptEnhanceMode = "balanced-detail" | "footnote-strict" | "main-subject" | "tag-dense";
+
 export type PromptEnhanceRequest = {
   ollamaUrl: string;
   model: string;
   japanesePrompt: string;
   currentPrompt: string;
   currentNegativePrompt: string;
+  mode?: PromptEnhanceMode;
 };
 
 export type PromptEnhanceResult = {
@@ -955,11 +958,16 @@ export async function enhancePromptWithOllama(request: PromptEnhanceRequest): Pr
 
   const instruction = [
     "You are an expert prompt engineer for anime image generation models such as SDXL, Illustrious, Pony, and Animagine.",
-    "Convert the user's Japanese request into concise English image-generation prompts.",
+    "Convert the user's Japanese request into English image-generation prompts.",
     "Return strict JSON only with keys: positivePrompt, negativePrompt, notes.",
     "positivePrompt should be comma-separated English tags and short phrases.",
     "negativePrompt should be comma-separated English tags.",
     "Keep existing useful prompt fragments if provided, but remove contradictions.",
+    "The Japanese request may contain definitions, footnotes, detail sections, or explanatory text after the main sentence.",
+    "Treat definitions and footnotes as mandatory visual requirements, not commentary.",
+    "If a term is defined, expand the term using its definition instead of only translating the label.",
+    "Preserve concrete visual details about clothing, shape, color, material, pose, expression, setting, lighting, and composition.",
+    promptEnhanceModeInstruction(request.mode ?? "balanced-detail"),
     "Do not include markdown."
   ].join("\n");
   const userText = [
@@ -983,6 +991,39 @@ export async function enhancePromptWithOllama(request: PromptEnhanceRequest): Pr
   }
   const json = (await response.json()) as { response?: string };
   return parsePromptEnhanceResponse(json.response ?? "");
+}
+
+function promptEnhanceModeInstruction(mode: PromptEnhanceMode): string {
+  if (mode === "footnote-strict") {
+    return [
+      "Mode: footnote-strict.",
+      "Prioritize definitions, footnotes, and detail sections as strongly as the main sentence.",
+      "Do not omit any concrete visual detail from explanatory sections.",
+      "If the request says things like 'とは', '定義', '詳細', '脚注', 'つまり', or '以下', treat the following text as required prompt material.",
+      "The notes field must briefly mention which definition or footnote details were incorporated."
+    ].join("\n");
+  }
+  if (mode === "main-subject") {
+    return [
+      "Mode: main-subject.",
+      "Prioritize the main subject sentence and use definitions only when they clarify visible appearance.",
+      "Keep the prompt compact, but do not discard concrete visible details."
+    ].join("\n");
+  }
+  if (mode === "tag-dense") {
+    return [
+      "Mode: tag-dense.",
+      "Produce a dense comma-separated prompt suitable for anime checkpoint models.",
+      "Break definitions into many concrete visual tags and short phrases.",
+      "Prefer explicit clothing parts, accessories, materials, colors, and silhouette terms over broad labels."
+    ].join("\n");
+  }
+  return [
+    "Mode: balanced-detail.",
+    "Recommended default: preserve the main subject while also expanding definitions and footnotes into concrete visual prompt details.",
+    "Do not over-compress defined terms such as uniforms, hairstyles, outfits, props, or backgrounds into a single generic tag.",
+    "If details are omitted, explain why in notes."
+  ].join("\n");
 }
 
 export async function getLlmChatHistory(): Promise<LlmChatMessage[]> {
