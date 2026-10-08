@@ -236,12 +236,18 @@ label {
 
 .environment-layout {
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 14px;
   margin-top: 14px;
 }
 
-.setup-panel {
+.environment-stack {
+  display: grid;
+  gap: 14px;
+  align-content: start;
+}
+
+.setup-stack {
   order: 1;
 }
 

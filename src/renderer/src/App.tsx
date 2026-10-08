@@ -699,88 +699,90 @@ function App() {
 
       {mainTab === "environment" ? (
         <section className="environment-layout">
-          <section className="panel setup-panel">
-            <PanelTitle icon={<Server size={18} />} title="ComfyUI" />
-            <div className="runtime-tabs">
-              <button className={runtimeTab === "macos" ? "runtime-tab active" : "runtime-tab"} onClick={() => setRuntimeTab("macos")}>
-                macOS <span>{status?.activeRuntime === "macos" ? "ACTIVE" : ""}</span>
-              </button>
-              <button className={runtimeTab === "docker" ? "runtime-tab active" : "runtime-tab"} onClick={() => setRuntimeTab("docker")}>
-                Docker <span>LEGACY</span>
-              </button>
-            </div>
-            <div className="field">
-              <label>ComfyUI API</label>
-              <div className="inline">
-                <input value={comfyUrl} onChange={(event) => setComfyUrl(event.target.value)} />
-                <button className="icon-button" onClick={() => void refreshStatus()} title="再確認">
-                  <RefreshCw size={17} />
+          <div className="environment-stack setup-stack">
+            <section className="panel setup-panel">
+              <PanelTitle icon={<Server size={18} />} title="ComfyUI" />
+              <div className="runtime-tabs">
+                <button className={runtimeTab === "macos" ? "runtime-tab active" : "runtime-tab"} onClick={() => setRuntimeTab("macos")}>
+                  macOS <span>{status?.activeRuntime === "macos" ? "ACTIVE" : ""}</span>
+                </button>
+                <button className={runtimeTab === "docker" ? "runtime-tab active" : "runtime-tab"} onClick={() => setRuntimeTab("docker")}>
+                  Docker <span>LEGACY</span>
                 </button>
               </div>
-            </div>
+              <div className="field">
+                <label>ComfyUI API</label>
+                <div className="inline">
+                  <input value={comfyUrl} onChange={(event) => setComfyUrl(event.target.value)} />
+                  <button className="icon-button" onClick={() => void refreshStatus()} title="再確認">
+                    <RefreshCw size={17} />
+                  </button>
+                </div>
+              </div>
 
-            {runtimeTab === "macos" ? (
+              {runtimeTab === "macos" ? (
+                <div className="button-grid">
+                  <button onClick={() => void runStreamOperation("native-init", "macOSランタイムを初期化中")}>
+                    <FolderOpen size={17} />
+                    初期化
+                  </button>
+                  <button onClick={() => void runStreamOperation("native-install", "macOS ComfyUIをインストール中")}>
+                    <Download size={17} />
+                    インストール
+                  </button>
+                  <button onClick={() => void runStreamOperation("native-start", "macOS ComfyUIを開始中")}>
+                    <Play size={17} />
+                    開始
+                  </button>
+                  <button onClick={() => void runStreamOperation("native-stop", "macOS ComfyUIを停止中")}>
+                    <Square size={17} />
+                    停止
+                  </button>
+                  <button onClick={() => void runStreamOperation("native-logs", "macOS ComfyUIログを取得中")}>
+                    <TerminalSquare size={17} />
+                    ログ
+                  </button>
+                </div>
+              ) : (
+                <div className="button-grid">
+                  <button onClick={() => void runStreamOperation("logs", "Docker ComfyUIログを取得中")}>
+                    <TerminalSquare size={17} />
+                    Dockerログ
+                  </button>
+                  <button onClick={() => void runStreamOperation("docker-cleanup", "Docker資産を後始末中")}>
+                    <Trash2 size={17} />
+                    後始末
+                  </button>
+                </div>
+              )}
+
+              <div className="paths">
+                <p>アプリ: /Users/kds/Projects/illustMK</p>
+                <p>ランタイム: {paths?.root ?? "/Volumes/ARC-8050T2/illustMK"}</p>
+                <p>macOS ComfyUI: {paths?.nativeComfy ?? "未初期化"}</p>
+              </div>
+            </section>
+
+            <section className="panel lora-env-panel">
+              <PanelTitle icon={<Boxes size={18} />} title="LoRA" />
               <div className="button-grid">
-                <button onClick={() => void runStreamOperation("native-init", "macOSランタイムを初期化中")}>
-                  <FolderOpen size={17} />
-                  初期化
-                </button>
-                <button onClick={() => void runStreamOperation("native-install", "macOS ComfyUIをインストール中")}>
+                <button onClick={() => void runStreamOperation("lora-install", "LoRA学習環境をインストール中")}>
                   <Download size={17} />
                   インストール
                 </button>
-                <button onClick={() => void runStreamOperation("native-start", "macOS ComfyUIを開始中")}>
-                  <Play size={17} />
-                  開始
-                </button>
-                <button onClick={() => void runStreamOperation("native-stop", "macOS ComfyUIを停止中")}>
-                  <Square size={17} />
-                  停止
-                </button>
-                <button onClick={() => void runStreamOperation("native-logs", "macOS ComfyUIログを取得中")}>
-                  <TerminalSquare size={17} />
-                  ログ
+                <button onClick={() => void loadLoraProjects()}>
+                  <RefreshCw size={17} />
+                  再読込
                 </button>
               </div>
-            ) : (
-              <div className="button-grid">
-                <button onClick={() => void runStreamOperation("logs", "Docker ComfyUIログを取得中")}>
-                  <TerminalSquare size={17} />
-                  Dockerログ
-                </button>
-                <button onClick={() => void runStreamOperation("docker-cleanup", "Docker資産を後始末中")}>
-                  <Trash2 size={17} />
-                  後始末
-                </button>
+              <div className="paths">
+                <p>sd-scripts: {paths?.loraScripts ?? "/Volumes/ARC-8050T2/illustMK/lora-runtime/sd-scripts"}</p>
+                <p>venv: {paths?.loraVenv ?? "/Volumes/ARC-8050T2/illustMK/lora-runtime/venv"}</p>
+                <p>projects: {paths?.loraProjects ?? "/Volumes/ARC-8050T2/illustMK/lora-projects"}</p>
+                <p>outputs: {paths?.loras ?? "/Volumes/ARC-8050T2/illustMK/models/loras"}</p>
               </div>
-            )}
-
-            <div className="paths">
-              <p>アプリ: /Users/kds/Projects/illustMK</p>
-              <p>ランタイム: {paths?.root ?? "/Volumes/ARC-8050T2/illustMK"}</p>
-              <p>macOS ComfyUI: {paths?.nativeComfy ?? "未初期化"}</p>
-            </div>
-          </section>
-
-          <section className="panel lora-env-panel">
-            <PanelTitle icon={<Boxes size={18} />} title="LoRA" />
-            <div className="button-grid">
-              <button onClick={() => void runStreamOperation("lora-install", "LoRA学習環境をインストール中")}>
-                <Download size={17} />
-                インストール
-              </button>
-              <button onClick={() => void loadLoraProjects()}>
-                <RefreshCw size={17} />
-                再読込
-              </button>
-            </div>
-            <div className="paths">
-              <p>sd-scripts: {paths?.loraScripts ?? "/Volumes/ARC-8050T2/illustMK/lora-runtime/sd-scripts"}</p>
-              <p>venv: {paths?.loraVenv ?? "/Volumes/ARC-8050T2/illustMK/lora-runtime/venv"}</p>
-              <p>projects: {paths?.loraProjects ?? "/Volumes/ARC-8050T2/illustMK/lora-projects"}</p>
-              <p>outputs: {paths?.loras ?? "/Volumes/ARC-8050T2/illustMK/models/loras"}</p>
-            </div>
-          </section>
+            </section>
+          </div>
 
           <section className="panel llm-panel">
             <PanelTitle icon={<Bot size={18} />} title="LLM / Ollama" />
