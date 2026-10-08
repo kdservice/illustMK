@@ -27,6 +27,7 @@ import {
   installOllama,
   installNativeRuntime,
   pullOllamaModel,
+  pauseLoraTrainingProject,
   runTestGeneration,
   searchCivitaiModels,
   searchHuggingFaceLlmModels,
@@ -224,6 +225,9 @@ function registerIpc(): void {
       if (request.operation === "lora-train") {
         return await trainLoraTrainingProject(request.projectId ?? "", (log) => sendLog(log.level, log.line));
       }
+      if (request.operation === "lora-resume") {
+        return await trainLoraTrainingProject(request.projectId ?? "", (log) => sendLog(log.level, log.line), { resume: true });
+      }
       if (request.operation === "native-start") {
         return await startNativeRuntime((log) => sendLog(log.level, log.line));
       }
@@ -280,6 +284,7 @@ function registerIpc(): void {
   ipcMain.handle("lora-projects:list", () => getLoraTrainingProjects());
   ipcMain.handle("lora-projects:save", (_event, request: SaveLoraTrainingProjectRequest) => saveLoraTrainingProject(request));
   ipcMain.handle("lora-projects:start", (_event, id: string) => startLoraTrainingProject(id));
+  ipcMain.handle("lora-projects:pause", (_event, id: string) => pauseLoraTrainingProject(id));
   ipcMain.handle("lora-projects:stop", (_event, id: string) => stopLoraTrainingProject(id));
   ipcMain.handle("lora-projects:clear", () => clearLoraTrainingProjects());
   ipcMain.handle("lora-captions:get", (_event, projectId: string) => getLoraCaptionWorkspace(projectId));

@@ -8,6 +8,7 @@ import {
   Download,
   FolderOpen,
   ImageIcon,
+  Pause,
   Pencil,
   Play,
   Plus,
@@ -126,6 +127,7 @@ function App() {
   const [promptHistoryOpen, setPromptHistoryOpen] = useState(false);
   const [imagePreviewOpen, setImagePreviewOpen] = useState(false);
   const [loraProjects, setLoraProjects] = useState<LoraTrainingProject[]>([]);
+  const [selectedLoraProjectId, setSelectedLoraProjectId] = useState<string | null>(null);
   const [loraName, setLoraName] = useState("");
   const [loraTriggerWord, setLoraTriggerWord] = useState("");
   const [loraSourceLora, setLoraSourceLora] = useState("");
@@ -165,6 +167,10 @@ function App() {
   const selectedTags = useMemo(
     () => illustrationTags.filter((tag) => selectedTagIds.includes(tag.id)),
     [illustrationTags, selectedTagIds]
+  );
+  const selectedLoraProject = useMemo(
+    () => loraProjects.find((project) => project.id === selectedLoraProjectId) ?? loraProjects[0] ?? null,
+    [loraProjects, selectedLoraProjectId]
   );
   const effectivePrompt = prompt;
   const canGenerate = Boolean(status?.comfyReachable && selectedCheckpointInfo?.simpleWorkflowReady && !action.busy);
@@ -239,6 +245,16 @@ function App() {
       setSelectedCheckpoint(status.checkpoints.find((checkpoint) => checkpoint.simpleWorkflowReady)?.name ?? status.checkpoints[0].name);
     }
   }, [selectedCheckpoint, status?.checkpoints]);
+
+  useEffect(() => {
+    if (!loraProjects.length) {
+      setSelectedLoraProjectId(null);
+      return;
+    }
+    if (!selectedLoraProjectId || !loraProjects.some((project) => project.id === selectedLoraProjectId)) {
+      setSelectedLoraProjectId(loraProjects[0].id);
+    }
+  }, [loraProjects, selectedLoraProjectId]);
 
   async function runAction<T>(message: string, task: () => Promise<T>, after?: (value: T) => void): Promise<void> {
     const id = crypto.randomUUID();
@@ -623,6 +639,7 @@ function App() {
         }),
       (projects) => {
         setLoraProjects(projects);
+        setSelectedLoraProjectId(projects[0]?.id ?? null);
       }
     );
   }
@@ -642,6 +659,28 @@ function App() {
       )
     );
     await runStreamOperation("lora-train", "LoRA学習を開始中", { projectId: id });
+  }
+
+  async function resumeLoraProject(id: string): Promise<void> {
+    setLoraProjects((projects) =>
+      projects.map((project) =>
+        project.id === id
+          ? { ...project, status: "running", message: "保存済みstateからLoRA学習を再開中です。" }
+          : project
+      )
+    );
+    await runStreamOperation("lora-resume", "LoRA学習を再開中", { projectId: id });
+  }
+
+  async function pauseLoraProject(id: string): Promise<void> {
+    appendLog("info", "LoRA学習を一時停止中");
+    try {
+      const projects = await window.illustMK.loraProjects.pause(id);
+      setLoraProjects(projects);
+      appendLog("info", "LoRA学習を一時停止しました。");
+    } catch (error) {
+      appendLog("stderr", error instanceof Error ? error.message : String(error));
+    }
   }
 
   async function stopLoraProject(id: string): Promise<void> {
@@ -1418,17 +1457,20 @@ function App() {
         <section className="lora-layout">
           <section className="panel lora-project-panel">
             <div className="lora-create-header">
-              <PanelTitle icon={<Boxes size={18} />} title="LoRA新規作成" />
+              <PanelTitle icon={<Boxes size={18} />} title="LoRAプロジェクト" />
               <button className="primary" disabled={action.busy || !loraName.trim() || !selectedCheckpoint} onClick={() => void saveLoraProject()}>
                 <CheckCircle2 size={17} />
-                LoRAを新規作成
+                プロジェクト保存
               </button>
             </div>
             <div className="lora-flow">
-              <span>1. 作成</span>
+              <span>1. プロジェクト</span>
               <span>2. Dataset投入</span>
               <span>3. 学習前チェック</span>
-              <span>4. 学習開始</span>
+              <span>4. 学習操作</span>
+            </div>
+            <div className="lora-settings-block">
+              <PanelTitle icon={<Pencil size={18} />} title="基本情報" />
             </div>
             <div className="two-columns">
               <div className="field">
@@ -1439,6 +1481,9 @@ function App() {
                 <label>Trigger Word</label>
                 <input placeholder="mkchar" value={loraTriggerWord} onChange={(event) => setLoraTriggerWord(event.target.value)} />
               </div>
+            </div>
+            <div className="lora-settings-block">
+              <PanelTitle icon={<TerminalSquare size={18} />} title="学習設定" />
             </div>
             <div className="field">
               <label>Base Checkpoint</label>
@@ -1514,10 +1559,73 @@ function App() {
                 履歴消去
               </button>
             </div>
+            <div className="lora-control-panel">
+              <div className="field">
+                <label>操作対象LoRA</label>
+                <select
+                  value={selectedLoraProject?.id ?? ""}
+                  onChange={(event) => setSelectedLoraProjectId(event.target.value || null)}
+                >
+                  {loraProjects.length ? (
+                    loraProjects.map((project) => (
+                      <option key={project.id} value={project.id}>
+                        {project.name} / {project.status}
+                      </option>
+                    ))
+                  ) : (
+                    <option value="">未作成</option>
+                  )}
+                </select>
+              </div>
+              <div className="lora-control-summary">
+                <strong>{selectedLoraProject?.name ?? "LoRA未選択"}</strong>
+                <span>{selectedLoraProject ? `status: ${selectedLoraProject.status}` : "status: -"}</span>
+                <small>{selectedLoraProject?.message ?? "プロジェクトを選択してください。"}</small>
+              </div>
+              <div className="button-row">
+                <button disabled={!selectedLoraProject} onClick={() => selectedLoraProject && void window.illustMK.app.openPath(selectedLoraProject.datasetPath)}>
+                  <FolderOpen size={15} />
+                  Datasetを開く
+                </button>
+                <button disabled={!selectedLoraProject} onClick={() => selectedLoraProject && void openCaptionEditor(selectedLoraProject.id)}>
+                  <ImageIcon size={15} />
+                  キャプション編集
+                </button>
+                <button disabled={action.busy || !selectedLoraProject} onClick={() => selectedLoraProject && void startLoraProject(selectedLoraProject.id)}>
+                  <Play size={15} />
+                  学習前チェック
+                </button>
+                <button className="primary" disabled={action.busy || !selectedLoraProject || selectedLoraProject.status === "running"} onClick={() => selectedLoraProject && void trainLoraProject(selectedLoraProject.id)}>
+                  <WandSparkles size={15} />
+                  学習開始
+                </button>
+                <button disabled={action.busy || !selectedLoraProject || selectedLoraProject.status === "running"} onClick={() => selectedLoraProject && void resumeLoraProject(selectedLoraProject.id)}>
+                  <RefreshCw size={15} />
+                  再開
+                </button>
+                <button disabled={!selectedLoraProject || selectedLoraProject.status !== "running"} onClick={() => selectedLoraProject && void pauseLoraProject(selectedLoraProject.id)}>
+                  <Pause size={15} />
+                  一時停止
+                </button>
+                <button className="danger" disabled={!selectedLoraProject || selectedLoraProject.status !== "running"} onClick={() => selectedLoraProject && void stopLoraProject(selectedLoraProject.id)}>
+                  <Square size={15} />
+                  停止
+                </button>
+              </div>
+            </div>
             <div className="lora-project-list">
               {loraProjects.length ? (
                 loraProjects.map((project) => (
-                  <article className="lora-project-card" key={project.id}>
+                  <article
+                    className={project.id === selectedLoraProject?.id ? "lora-project-card selected" : "lora-project-card"}
+                    key={project.id}
+                    role="button"
+                    tabIndex={0}
+                    onClick={() => setSelectedLoraProjectId(project.id)}
+                    onKeyDown={(event) => {
+                      if (event.key === "Enter" || event.key === " ") setSelectedLoraProjectId(project.id);
+                    }}
+                  >
                     <header>
                       <strong>{project.name}</strong>
                       <span>{project.status}</span>
@@ -1529,28 +1637,6 @@ function App() {
                     </div>
                     <p>{project.message}</p>
                     <small>{project.datasetPath}</small>
-                    <div className="button-row">
-                      <button onClick={() => void window.illustMK.app.openPath(project.datasetPath)}>
-                        <FolderOpen size={15} />
-                        Datasetを開く
-                      </button>
-                      <button onClick={() => void openCaptionEditor(project.id)}>
-                        <ImageIcon size={15} />
-                        キャプション編集
-                      </button>
-                      <button disabled={action.busy} onClick={() => void startLoraProject(project.id)}>
-                        <Play size={15} />
-                        学習前チェック
-                      </button>
-                      <button className="primary" disabled={action.busy} onClick={() => void trainLoraProject(project.id)}>
-                        <WandSparkles size={15} />
-                        学習開始
-                      </button>
-                      <button className="danger" disabled={project.status !== "running"} onClick={() => void stopLoraProject(project.id)}>
-                        <Square size={15} />
-                        学習停止
-                      </button>
-                    </div>
                   </article>
                 ))
               ) : (

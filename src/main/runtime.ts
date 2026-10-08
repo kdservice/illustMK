@@ -10,7 +10,7 @@ import { promisify } from "node:util";
 
 const execFileAsync = promisify(execFile);
 const activeNativeCommands = new Map<string, ChildProcessWithoutNullStreams>();
-const stoppedLoraTrainingProjectIds = new Set<string>();
+const stoppedLoraTrainingProjectIds = new Map<string, "paused" | "stopped">();
 
 export type RuntimePaths = {
   root: string;
@@ -260,7 +260,7 @@ export type LoraTrainingProject = {
   learningRate: string;
   createdAt: string;
   updatedAt: string;
-  status: "draft" | "ready" | "running" | "complete" | "blocked" | "failed" | "stopped";
+  status: "draft" | "ready" | "running" | "paused" | "complete" | "blocked" | "failed" | "stopped";
   message: string;
 };
 
@@ -1583,7 +1583,7 @@ export async function saveLoraCaptionWorkspace(request: SaveLoraCaptionWorkspace
   return getLoraCaptionWorkspace(project.id);
 }
 
-export async function trainLoraTrainingProject(id: string, onLog: RuntimeLogSink): Promise<string> {
+export async function trainLoraTrainingProject(id: string, onLog: RuntimeLogSink, options: { resume?: boolean } = {}): Promise<string> {
   const paths = await ensureRuntimeFiles();
   if (!(await exists(paths.loraPython)) || !(await exists(join(paths.loraScripts, "sdxl_train_network.py")))) {
     throw new Error("LoRA学習環境が未インストールです。環境タブのLoRAパネルで「インストール」を実行してください。");
@@ -1611,6 +1611,13 @@ export async function trainLoraTrainingProject(id: string, onLog: RuntimeLogSink
   const mpsStatus = await getLoraMpsStatus(paths.loraPython);
   onLog({ level: mpsStatus.available ? "info" : "stderr", line: mpsStatus.message });
   const outputBaseName = project.outputName.replace(/\.safetensors$/i, "");
+  const resumeStatePath = options.resume ? await findLatestLoraTrainingState(paths.loras, outputBaseName) : null;
+  if (options.resume && !resumeStatePath) {
+    throw new Error("再開できるLoRA学習stateが見つかりません。先に途中保存が作成されている必要があります。");
+  }
+  if (resumeStatePath) {
+    onLog({ level: "info", line: `LoRA学習stateから再開します: ${resumeStatePath}` });
+  }
   const commandArgs = [
     "sdxl_train_network.py",
     "--pretrained_model_name_or_path",
@@ -1642,6 +1649,12 @@ export async function trainLoraTrainingProject(id: string, onLog: RuntimeLogSink
     "--cache_latents_to_disk",
     "--cache_text_encoder_outputs_to_disk",
     "--network_train_unet_only",
+    "--save_every_n_epochs",
+    "1",
+    "--save_every_n_steps",
+    "100",
+    "--save_state",
+    "--save_state_on_train_end",
     "--max_data_loader_n_workers",
     "0",
     "--save_precision",
@@ -1649,6 +1662,9 @@ export async function trainLoraTrainingProject(id: string, onLog: RuntimeLogSink
     "--mixed_precision",
     "bf16"
   ];
+  if (resumeStatePath) {
+    commandArgs.push("--resume", resumeStatePath);
+  }
   if (project.sourceLora.trim()) {
     commandArgs.push("--network_weights", join(paths.loras, project.sourceLora));
   }
@@ -1686,12 +1702,13 @@ export async function trainLoraTrainingProject(id: string, onLog: RuntimeLogSink
     }
   } catch (error) {
     const failedProjects = await getLoraTrainingProjects();
-    const wasStopped = stoppedLoraTrainingProjectIds.delete(id);
+    const stoppedStatus = stoppedLoraTrainingProjectIds.get(id);
+    stoppedLoraTrainingProjectIds.delete(id);
     const failedProject: LoraTrainingProject = {
       ...runningProject,
-      status: wasStopped ? "stopped" : "failed",
+      status: stoppedStatus ?? "failed",
       updatedAt: new Date().toISOString(),
-      message: wasStopped ? "LoRA学習を停止しました。" : error instanceof Error ? error.message : String(error)
+      message: stoppedStatus === "paused" ? "LoRA学習を一時停止しました。" : stoppedStatus === "stopped" ? "LoRA学習を停止しました。" : error instanceof Error ? error.message : String(error)
     };
     await saveLoraTrainingProjects(failedProjects.map((item) => (item.id === id ? failedProject : item)));
     throw error;
@@ -1709,18 +1726,26 @@ export async function trainLoraTrainingProject(id: string, onLog: RuntimeLogSink
 }
 
 export async function stopLoraTrainingProject(id: string): Promise<LoraTrainingProject[]> {
+  return stopLoraTrainingProjectAs(id, "stopped");
+}
+
+export async function pauseLoraTrainingProject(id: string): Promise<LoraTrainingProject[]> {
+  return stopLoraTrainingProjectAs(id, "paused");
+}
+
+async function stopLoraTrainingProjectAs(id: string, status: "paused" | "stopped"): Promise<LoraTrainingProject[]> {
   const paths = await ensureRuntimeFiles();
   const projects = await getLoraTrainingProjects();
   const project = projects.find((item) => item.id === id);
   if (!project) throw new Error("LoRAプロジェクトが見つかりません。");
-  stoppedLoraTrainingProjectIds.add(id);
+  stoppedLoraTrainingProjectIds.set(id, status);
   stopActiveNativeCommand(loraTrainingProcessKey(id));
   await killMatchingLoraTrainingProcesses(project.outputName.replace(/\.safetensors$/i, ""));
   const stoppedProject: LoraTrainingProject = {
     ...project,
-    status: "stopped",
+    status,
     updatedAt: new Date().toISOString(),
-    message: `LoRA学習を停止しました。ログ: ${paths.loraLog}`
+    message: status === "paused" ? `LoRA学習を一時停止しました。再開には保存済みstateを使います。ログ: ${paths.loraLog}` : `LoRA学習を停止しました。ログ: ${paths.loraLog}`
   };
   const nextProjects = projects.map((item) => (item.id === id ? stoppedProject : item));
   await saveLoraTrainingProjects(nextProjects);
@@ -2161,6 +2186,26 @@ async function resolveLoraTrainDataDir(datasetPath: string): Promise<string> {
   return (await summarizeLoraDataset(datasetPath)).trainDataDir;
 }
 
+async function findLatestLoraTrainingState(loraOutputPath: string, outputBaseName: string): Promise<string | null> {
+  const candidates: Array<{ path: string; mtimeMs: number }> = [];
+  const scan = async (dir: string, depth: number): Promise<void> => {
+    if (depth > 2) return;
+    const childDirs = await listDirectories(dir);
+    for (const childDir of childDirs) {
+      const childPath = join(dir, childDir);
+      const lowerName = childDir.toLowerCase();
+      if (lowerName.includes(outputBaseName.toLowerCase()) && lowerName.includes("state")) {
+        const entryStat = await stat(childPath);
+        candidates.push({ path: childPath, mtimeMs: entryStat.mtimeMs });
+      }
+      await scan(childPath, depth + 1);
+    }
+  };
+  await scan(loraOutputPath, 0);
+  candidates.sort((a, b) => b.mtimeMs - a.mtimeMs);
+  return candidates[0]?.path ?? null;
+}
+
 async function summarizeLoraDataset(datasetPath: string): Promise<{ imageCount: number; captionCount: number; trainDataDir: string }> {
   const directFiles = await listFiles(datasetPath);
   const directImageCount = directFiles.filter(isImageFileName).length;
@@ -2213,6 +2258,7 @@ function isLoraTrainingProject(value: unknown): value is LoraTrainingProject {
     (project.status === "draft" ||
       project.status === "ready" ||
       project.status === "running" ||
+      project.status === "paused" ||
       project.status === "complete" ||
       project.status === "blocked" ||
       project.status === "failed" ||

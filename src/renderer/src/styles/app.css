@@ -342,6 +342,35 @@ label {
   gap: 10px;
 }
 
+.lora-settings-block {
+  margin-top: 8px;
+  padding-top: 10px;
+  border-top: 1px solid #142444;
+}
+
+.lora-control-panel {
+  border: 1px solid #1c2d53;
+  border-radius: 8px;
+  background: #071020;
+  padding: 12px;
+  display: grid;
+  gap: 10px;
+}
+
+.lora-control-summary {
+  display: grid;
+  gap: 4px;
+  color: #91a3c9;
+}
+
+.lora-control-summary strong {
+  color: #f2f6ff;
+}
+
+.lora-control-summary small {
+  overflow-wrap: anywhere;
+}
+
 .lora-project-card,
 .lora-apply-card {
   border: 1px solid #1c2d53;
@@ -350,6 +379,15 @@ label {
   padding: 12px;
   display: grid;
   gap: 8px;
+}
+
+.lora-project-card {
+  cursor: pointer;
+}
+
+.lora-project-card.selected {
+  border-color: #44bcff;
+  background: #0c1b35;
 }
 
 .lora-project-card header {
