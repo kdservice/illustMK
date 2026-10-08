@@ -367,6 +367,29 @@ const dockerDesktopPaths = ["/Applications/Docker.app", "/Applications/Utilities
 const ollamaAppPaths = ["/Applications/Ollama.app", "/Applications/Utilities/Ollama.app", join(homedir(), "Applications", "Ollama.app")];
 const userOllamaHome = join(homedir(), ".ollama");
 const dockerDesktopBinPaths = dockerDesktopPaths.map((path) => join(path, "Contents", "Resources", "bin"));
+const defaultLoraCaptionTags: Array<{ japaneseName: string; englishName: string }> = [
+  { japaneseName: "顔のアップ", englishName: "close-up" },
+  { japaneseName: "胸から上", englishName: "portrait" },
+  { japaneseName: "胸から上", englishName: "bust shot" },
+  { japaneseName: "太ももから上", englishName: "cowboy shot" },
+  { japaneseName: "全身", englishName: "full body" },
+  { japaneseName: "正面", englishName: "front view" },
+  { japaneseName: "横姿", englishName: "side view" },
+  { japaneseName: "後ろ姿", englishName: "back view" },
+  { japaneseName: "横顔", englishName: "profile" },
+  { japaneseName: "俯瞰・見下ろし", englishName: "from above" },
+  { japaneseName: "俯瞰・見下ろし", englishName: "top-down shot" },
+  { japaneseName: "煽り・見上げ", englishName: "from below" },
+  { japaneseName: "煽り・見上げ", englishName: "bottom-up shot" },
+  { japaneseName: "斜め横から", englishName: "from side" },
+  { japaneseName: "ナナメ前・3/4構図", englishName: "three-quarter view" },
+  { japaneseName: "カメラ目線", englishName: "looking at viewer" },
+  { japaneseName: "視線を外している", englishName: "looking away" },
+  { japaneseName: "動きのあるアングル", englishName: "dynamic angle" },
+  { japaneseName: "mychar", englishName: "mychar" },
+  { japaneseName: "1girl", englishName: "1girl" },
+  { japaneseName: "solo", englishName: "solo" }
+];
 const dockerCommandPath = [
   ...dockerDesktopBinPaths,
   "/opt/homebrew/bin",
@@ -1735,7 +1758,7 @@ async function ensureLoraCaptionTagsFile(project: LoraTrainingProject): Promise<
   const path = loraCaptionTagsPath(project);
   await mkdir(resolve(path, ".."), { recursive: true });
   if (!(await exists(path))) {
-    await writeFile(path, "[]", "utf8");
+    await writeFile(path, JSON.stringify(createDefaultLoraCaptionTags(), null, 2), "utf8");
   }
 }
 
@@ -1743,9 +1766,12 @@ async function getLoraCaptionTags(project: LoraTrainingProject): Promise<LoraCap
   await ensureLoraCaptionTagsFile(project);
   try {
     const parsed = JSON.parse(await readFile(loraCaptionTagsPath(project), "utf8")) as unknown[];
-    return Array.isArray(parsed) ? parsed.map(normalizeLoraCaptionTag).filter((tag): tag is LoraCaptionTag => Boolean(tag)) : [];
+    const tags = Array.isArray(parsed) ? parsed.map(normalizeLoraCaptionTag).filter((tag): tag is LoraCaptionTag => Boolean(tag)) : [];
+    return await mergeDefaultLoraCaptionTags(project, tags);
   } catch {
-    return [];
+    const tags = createDefaultLoraCaptionTags();
+    await saveLoraCaptionTags(project, tags);
+    return tags;
   }
 }
 
@@ -1797,6 +1823,26 @@ function normalizeLoraCaptionTag(value: unknown): LoraCaptionTag | null {
     createdAt: typeof tag.createdAt === "string" ? tag.createdAt : now,
     updatedAt: typeof tag.updatedAt === "string" ? tag.updatedAt : now
   };
+}
+
+function createDefaultLoraCaptionTags(): LoraCaptionTag[] {
+  const now = new Date().toISOString();
+  return defaultLoraCaptionTags.map((tag) => ({
+    id: `default-${safeFileName(tag.englishName).toLowerCase()}`,
+    japaneseName: tag.japaneseName,
+    englishName: tag.englishName,
+    createdAt: now,
+    updatedAt: now
+  }));
+}
+
+async function mergeDefaultLoraCaptionTags(project: LoraTrainingProject, tags: LoraCaptionTag[]): Promise<LoraCaptionTag[]> {
+  const existingEnglish = new Set(tags.map((tag) => tag.englishName.trim().toLowerCase()).filter(Boolean));
+  const missing = createDefaultLoraCaptionTags().filter((tag) => !existingEnglish.has(tag.englishName.trim().toLowerCase()));
+  if (!missing.length) return tags;
+  const nextTags = [...tags, ...missing];
+  await saveLoraCaptionTags(project, nextTags);
+  return nextTags;
 }
 
 async function normalizeLoraDatasetStructure(project: LoraTrainingProject): Promise<void> {
