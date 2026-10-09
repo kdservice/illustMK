@@ -93,6 +93,7 @@ type CheckpointExternalSelection = {
   clip: string;
 };
 type CheckpointRequiredComponents = Record<string, CivitaiRequiredComponent[]>;
+type CheckpointBaseModels = Record<string, string>;
 const recommendedLlmModels = [
   { name: "qwen2.5:3b-instruct", source: "Ollama", size: "軽量", note: "まず試す用。日本語もそこそこ。" },
   { name: "qwen2.5:7b-instruct", source: "Ollama", size: "標準", note: "日本語prompt整形の本命寄り。" },
@@ -133,6 +134,7 @@ function App() {
   const [selectedClip, setSelectedClip] = useState("");
   const [checkpointExternalSelections, setCheckpointExternalSelections] = useState<Record<string, CheckpointExternalSelection>>({});
   const [checkpointRequiredComponents, setCheckpointRequiredComponents] = useState<CheckpointRequiredComponents>({});
+  const [checkpointBaseModels, setCheckpointBaseModels] = useState<CheckpointBaseModels>({});
   const [catalogQuery, setCatalogQuery] = useState("");
   const [catalogModels, setCatalogModels] = useState<CivitaiModelCard[]>([]);
   const [catalogPeriod, setCatalogPeriod] = useState<"AllTime" | "Year" | "Month" | "Week" | "Day">("Month");
@@ -349,6 +351,12 @@ function App() {
     } catch {
       setCheckpointRequiredComponents({});
     }
+    try {
+      const rawBaseModels = localStorage.getItem("illustmk.checkpointBaseModels");
+      if (rawBaseModels) setCheckpointBaseModels(JSON.parse(rawBaseModels) as CheckpointBaseModels);
+    } catch {
+      setCheckpointBaseModels({});
+    }
   }, []);
 
   useEffect(() => {
@@ -488,6 +496,13 @@ function App() {
       source: "civitai"
     }, () => {
       setSelectedCheckpoint(model.fileName);
+      if (model.baseModel) {
+        setCheckpointBaseModels((current) => {
+          const next = { ...current, [model.fileName]: model.baseModel };
+          localStorage.setItem("illustmk.checkpointBaseModels", JSON.stringify(next));
+          return next;
+        });
+      }
       if (model.requiredComponents.length) {
         setCheckpointRequiredComponents((current) => {
           const next = { ...current, [model.fileName]: model.requiredComponents };
@@ -1316,6 +1331,7 @@ function App() {
           runtimeTab={runtimeTab}
           ollamaModel={ollamaModel}
           selectedCheckpoint={selectedCheckpointInfo}
+          checkpointBaseModel={selectedCheckpoint ? checkpointBaseModels[selectedCheckpoint] : ""}
         />
       </section>
 
@@ -2984,13 +3000,15 @@ function StatusGrid({
   ollamaStatus,
   runtimeTab,
   ollamaModel,
-  selectedCheckpoint
+  selectedCheckpoint,
+  checkpointBaseModel
 }: {
   status: RuntimeStatus | null;
   ollamaStatus?: OllamaStatus | null;
   runtimeTab: "macos" | "docker";
   ollamaModel: string;
   selectedCheckpoint: RuntimeStatus["checkpoints"][number] | null;
+  checkpointBaseModel: string;
 }) {
   const runtimeItems: Array<{ label: string; value: string; tone: StatusTone }> =
     runtimeTab === "docker"
@@ -3004,9 +3022,10 @@ function StatusGrid({
   const ollamaValue = ollamaStatus?.reachable && ollamaStatus.dataLinked ? "接続OK" : ollamaStatus?.reachable ? "保存先NG" : ollamaStatus?.installed ? "未起動" : "未検出";
   const ollamaTone: StatusTone = ollamaStatus?.reachable && ollamaStatus.dataLinked ? "ok" : ollamaStatus?.installed ? "warn" : "error";
   const checkpointTone: StatusTone = selectedCheckpoint?.simpleWorkflowReady ? "ok" : selectedCheckpoint ? "warn" : "error";
+  const baseModelLabel = checkpointBaseModel || inferCheckpointBaseModel(selectedCheckpoint?.name ?? "");
   const items = [
     ...runtimeItems,
-    { label: "選択モデル", value: selectedCheckpoint?.name ?? "未選択", tone: checkpointTone, tag: selectedCheckpoint?.compatibilityLabel ?? "" },
+    { label: "選択モデル", value: selectedCheckpoint?.name ?? "未選択", tone: checkpointTone, tag: baseModelLabel },
     { label: "Ollama", value: ollamaValue, tone: ollamaTone },
     { label: "LLM", value: ollamaModel || "未選択", tone: ollamaModel ? "ok" : "warn" }
   ];
@@ -3022,6 +3041,21 @@ function StatusGrid({
       ))}
     </div>
   );
+}
+
+function inferCheckpointBaseModel(fileName: string): string {
+  const name = fileName.toLowerCase();
+  if (!name) return "";
+  if (name.includes("illustrious") || name.includes("illustriousxl")) return "Illustrious";
+  if (name.includes("anima")) return "Anima";
+  if (name.includes("animagine")) return "Animagine";
+  if (name.includes("pony")) return "Pony";
+  if (name.includes("krea")) return "Krea";
+  if (name.includes("flux")) return "Flux";
+  if (name.includes("qwen")) return "Qwen Image";
+  if (name.includes("sdxl") || name.includes("xl_") || name.includes("_xl")) return "SDXL";
+  if (name.includes("sd15") || name.includes("sd1.5") || name.includes("sd_15")) return "SD 1.5";
+  return "Base不明";
 }
 
 createRoot(document.getElementById("root") as HTMLElement).render(<App />);
