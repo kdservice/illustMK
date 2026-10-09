@@ -6,6 +6,7 @@ import {
   CheckCircle2,
   CircleAlert,
   Download,
+  ExternalLink,
   FolderOpen,
   ImageIcon,
   Pause,
@@ -132,10 +133,10 @@ function App() {
   const [selectedClip, setSelectedClip] = useState("");
   const [checkpointExternalSelections, setCheckpointExternalSelections] = useState<Record<string, CheckpointExternalSelection>>({});
   const [checkpointRequiredComponents, setCheckpointRequiredComponents] = useState<CheckpointRequiredComponents>({});
-  const [modelAddMode, setModelAddMode] = useState<"recommend" | "search" | "url">("recommend");
   const [catalogQuery, setCatalogQuery] = useState("");
   const [catalogModels, setCatalogModels] = useState<CivitaiModelCard[]>([]);
-  const [catalogPeriod, setCatalogPeriod] = useState<"Month" | "AllTime">("Month");
+  const [catalogPeriod, setCatalogPeriod] = useState<"AllTime" | "Year" | "Month" | "Week" | "Day">("Month");
+  const [catalogSort, setCatalogSort] = useState<"Most Downloaded" | "Highest Rated" | "Newest">("Most Downloaded");
   const [baseFilters, setBaseFilters] = useState<string[]>(defaultBaseFilters);
   const [civitaiApiKey, setCivitaiApiKey] = useState("");
   const [huggingFaceApiKey, setHuggingFaceApiKey] = useState("");
@@ -208,9 +209,11 @@ function App() {
   const [logs, setLogs] = useState<LogLine[]>([]);
   const [autoFollowLogs, setAutoFollowLogs] = useState(true);
   const [downloadProgress, setDownloadProgress] = useState<number | null>(null);
+  const [settingsLoaded, setSettingsLoaded] = useState(false);
   const [mainTab, setMainTab] = useState<"environment" | "llm" | "lora" | "generate">("environment");
   const [runtimeTab, setRuntimeTab] = useState<"macos" | "docker">("macos");
-  const [generateTab, setGenerateTab] = useState<"prompt" | "lora">("prompt");
+  const [modelAddMode, setModelAddMode] = useState<"catalog" | "url">("catalog");
+  const [generateTab, setGenerateTab] = useState<"prompt" | "lora" | "options">("prompt");
   const logViewRef = useRef<HTMLDivElement | null>(null);
   const currentOperationId = useRef<string | null>(null);
 
@@ -318,6 +321,14 @@ function App() {
     if (!logView) return;
     logView.scrollTop = logView.scrollHeight;
   }, [autoFollowLogs, logs]);
+
+  useEffect(() => {
+    if (!settingsLoaded) return;
+    const timer = window.setTimeout(() => {
+      void saveSettings();
+    }, 600);
+    return () => window.clearTimeout(timer);
+  }, [ollamaUrl, settingsLoaded]);
 
   useEffect(() => {
     if (status?.checkpoints.length && !selectedCheckpoint) {
@@ -448,13 +459,14 @@ function App() {
     }
   }
 
-  async function loadCivitaiModels(mode: "recommend" | "search"): Promise<void> {
+  async function loadCivitaiModels(query?: string): Promise<void> {
+    const trimmedQuery = query?.trim();
     await runAction(
-      mode === "search" ? "Civitaiを検索中" : "Civitai人気Top10を取得中",
+      trimmedQuery ? "Civitaiを検索中" : "Civitai人気Top10を取得中",
       () =>
         window.illustMK.runtime.searchCivitai({
-          query: mode === "search" ? catalogQuery : undefined,
-          sort: "Most Downloaded",
+          query: trimmedQuery || undefined,
+          sort: catalogSort,
           period: catalogPeriod,
           limit: 10,
           nsfw: false,
@@ -703,6 +715,7 @@ function App() {
     setOllamaModel(settings.ollamaModel);
     setLlmPullName(settings.ollamaModel);
     setOllamaStatus(await window.illustMK.ollama.status(settings.ollamaUrl));
+    setSettingsLoaded(true);
   }
 
   async function saveSettings(): Promise<void> {
@@ -1481,6 +1494,20 @@ function App() {
           <section className="panel llm-panel">
             <PanelTitle icon={<Bot size={18} />} title="LLM / Ollama" />
             <div className="field">
+              <label>LLM API URL</label>
+              <div className="inline">
+                <input
+                  placeholder="http://127.0.0.1:11434"
+                  value={ollamaUrl}
+                  onChange={(event) => setOllamaUrl(event.target.value)}
+                  onBlur={() => void refreshOllamaStatus()}
+                />
+                <button className="icon-button" onClick={() => void refreshOllamaStatus()} title="接続確認">
+                  <RefreshCw size={17} />
+                </button>
+              </div>
+            </div>
+            <div className="field">
               <label>Hugging Face API Key</label>
               <div className="inline">
                 <input
@@ -1631,41 +1658,51 @@ function App() {
               </div>
             </div>
             <div className="model-mode-tabs">
-              <button className={modelAddMode === "recommend" ? "runtime-tab active" : "runtime-tab"} onClick={() => setModelAddMode("recommend")}>
-                おすすめTop10
-              </button>
-              <button className={modelAddMode === "search" ? "runtime-tab active" : "runtime-tab"} onClick={() => setModelAddMode("search")}>
-                Civitai検索
+              <button className={modelAddMode === "catalog" ? "runtime-tab active" : "runtime-tab"} onClick={() => setModelAddMode("catalog")}>
+                Civitaiカタログ
               </button>
               <button className={modelAddMode === "url" ? "runtime-tab active" : "runtime-tab"} onClick={() => setModelAddMode("url")}>
                 URL直接
               </button>
             </div>
 
-            {modelAddMode !== "url" ? (
+            {modelAddMode === "catalog" ? (
               <>
-                <div className="two-columns">
+                <div className="catalog-control-grid">
                   <div className="field">
                     <label>期間</label>
-                    <select value={catalogPeriod} onChange={(event) => setCatalogPeriod(event.target.value as "Month" | "AllTime")}>
+                    <select value={catalogPeriod} onChange={(event) => setCatalogPeriod(event.target.value as "AllTime" | "Year" | "Month" | "Week" | "Day")}>
+                      <option value="Day">今日</option>
+                      <option value="Week">直近1週間</option>
                       <option value="Month">直近1ヶ月</option>
+                      <option value="Year">直近1年</option>
                       <option value="AllTime">累計</option>
                     </select>
                   </div>
-                  {modelAddMode === "search" ? (
-                    <div className="field">
-                      <label>検索語</label>
-                      <input placeholder="anime, illustrious..." value={catalogQuery} onChange={(event) => setCatalogQuery(event.target.value)} />
-                    </div>
-                  ) : (
-                    <div className="field">
-                      <label>条件</label>
-                      <input value="Checkpoint / safetensors / NSFW除外" readOnly />
-                    </div>
-                  )}
+                  <div className="field">
+                    <label>条件</label>
+                    <select value={catalogSort} onChange={(event) => setCatalogSort(event.target.value as "Most Downloaded" | "Highest Rated" | "Newest")}>
+                      <option value="Most Downloaded">人気順</option>
+                      <option value="Highest Rated">評価順</option>
+                      <option value="Newest">新着順</option>
+                    </select>
+                  </div>
+                  <button className="primary catalog-action" disabled={action.busy} onClick={() => void loadCivitaiModels()}>
+                    <Download size={17} />
+                    人気Top10を表示
+                  </button>
+                </div>
+                <div className="field">
+                  <label>検索キーワード</label>
+                  <div className="inline">
+                    <input placeholder="anime, illustrious..." value={catalogQuery} onChange={(event) => setCatalogQuery(event.target.value)} />
+                    <button className="icon-button" disabled={action.busy} onClick={() => void loadCivitaiModels(catalogQuery)} title="検索">
+                      <RefreshCw size={17} />
+                    </button>
+                  </div>
                 </div>
                 <div className="filter-row">
-                  <label>Base Model Filter</label>
+                  <label>BASE MODEL FILTER</label>
                   <div className="filter-buttons">
                     {allBaseFilters.map((filter) => (
                       <button
@@ -1682,10 +1719,6 @@ function App() {
                     </button>
                   </div>
                 </div>
-                <button className="primary" disabled={action.busy} onClick={() => void loadCivitaiModels(modelAddMode)}>
-                  <Download size={17} />
-                  {modelAddMode === "search" ? "検索" : "人気Top10を表示"}
-                </button>
                 <div className="catalog-list">
                   {catalogModels.map((model) => (
                     <article className="catalog-card" key={`${model.id}-${model.versionId}`}>
@@ -1694,10 +1727,16 @@ function App() {
                         <h3>{model.name}</h3>
                         <p>{model.creator} / {model.baseModel || "base不明"}</p>
                         <p>{Math.round(model.sizeKB / 1024)} MB / DL {model.downloadCount.toLocaleString()}</p>
-                        <button disabled={action.busy} onClick={() => void downloadCivitaiModel(model)}>
-                          <Download size={15} />
-                          Download
-                        </button>
+                        <div className="catalog-card-actions">
+                          <button disabled={action.busy} onClick={() => void downloadCivitaiModel(model)}>
+                            <Download size={15} />
+                            Download
+                          </button>
+                          <button disabled={!model.pageUrl} onClick={() => void window.illustMK.app.openExternal(model.pageUrl)} title="Civitaiページを開く">
+                            <ExternalLink size={15} />
+                            Web
+                          </button>
+                        </div>
                       </div>
                     </article>
                   ))}
@@ -2079,189 +2118,114 @@ function App() {
               <button className={generateTab === "lora" ? "runtime-tab active" : "runtime-tab"} onClick={() => setGenerateTab("lora")}>
                 LoRA
               </button>
+              <button className={generateTab === "options" ? "runtime-tab active" : "runtime-tab"} onClick={() => setGenerateTab("options")}>
+                生成オプション
+              </button>
             </div>
             {generateTab === "prompt" ? (
-              <PromptTransformPanel
-                japanesePrompt={japanesePrompt}
-                setJapanesePrompt={setJapanesePrompt}
-                prompt={prompt}
-                setPrompt={setPrompt}
-                negativePrompt={negativePrompt}
-                setNegativePrompt={setNegativePrompt}
-                promptNotes={promptNotes}
-                promptEnhanceMode={promptEnhanceMode}
-                setPromptEnhanceMode={setPromptEnhanceMode}
-                canEnhancePrompt={canEnhancePrompt}
-                disabledReason={enhancePromptDisabledReason}
-                onEnhance={() => void enhanceJapanesePrompt()}
-                illustrationTags={illustrationTags}
-                selectedTagIds={selectedTagIds}
-                onToggleTag={toggleIllustrationTag}
-                onAddTag={openNewTagDialog}
-                onEditTag={openEditTagDialog}
-                onDeleteTag={(id) => void deleteIllustrationTag(id)}
-              />
-            ) : (
+              <>
+                <PromptTransformPanel
+                  japanesePrompt={japanesePrompt}
+                  setJapanesePrompt={setJapanesePrompt}
+                  prompt={prompt}
+                  setPrompt={setPrompt}
+                  negativePrompt={negativePrompt}
+                  setNegativePrompt={setNegativePrompt}
+                  promptNotes={promptNotes}
+                  promptEnhanceMode={promptEnhanceMode}
+                  setPromptEnhanceMode={setPromptEnhanceMode}
+                  canEnhancePrompt={canEnhancePrompt}
+                  disabledReason={enhancePromptDisabledReason}
+                  onEnhance={() => void enhanceJapanesePrompt()}
+                  illustrationTags={illustrationTags}
+                  selectedTagIds={selectedTagIds}
+                  onToggleTag={toggleIllustrationTag}
+                  onAddTag={openNewTagDialog}
+                  onEditTag={openEditTagDialog}
+                  onDeleteTag={(id) => void deleteIllustrationTag(id)}
+                />
+                <div className="button-row">
+                  <button onClick={() => setPromptHistoryOpen(true)}>
+                    <RefreshCw size={17} />
+                    履歴
+                  </button>
+                  <button
+                    className="generate"
+                    disabled={!canGenerate}
+                    onClick={() =>
+                      void runAction(
+                        "ComfyUIでテスト生成中",
+                        async () => {
+                          appendLog("info", `ComfyUI Positive Prompt: ${testRequest.prompt}`);
+                          appendLog("info", `ComfyUI Negative Prompt: ${testRequest.negativePrompt}`);
+                          appendLog("info", `ComfyUI LoRA: ${selectedLoras.length ? selectedLoras.map((lora) => `${lora.name} model=${lora.modelStrength} clip=${lora.clipStrength}`).join(", ") : "なし"}`);
+                          appendLog("info", `ComfyUI Size/Seed: ${testRequest.width}x${testRequest.height} / ${testRequest.seed}`);
+                          const result = await window.illustMK.runtime.testGenerate(testRequest);
+                          const history = await window.illustMK.promptHistory.save({
+                            ...testRequest,
+                            japanesePrompt,
+                            imagePath: result.imagePath,
+                            imageDataUrl: result.imageDataUrl
+                          });
+                          return { result, history };
+                        },
+                        ({ result, history }) => {
+                          setGenerationResult(result);
+                          setPromptHistory(history);
+                          if (result.imageDataUrl || result.imagePath) {
+                            setLastImage(result.imageDataUrl ?? result.imagePath ?? null);
+                          }
+                        }
+                      )
+                    }
+                  >
+                    <WandSparkles size={18} />
+                    GENERATE TEST
+                  </button>
+                </div>
+              </>
+            ) : generateTab === "lora" ? (
               <GenerationLoraPanel
                 loras={status?.loras ?? []}
                 selectedLoras={selectedLoras}
                 onToggleLora={toggleGenerationLora}
                 onUpdateLora={updateGenerationLora}
               />
+            ) : (
+              <div className="generation-controls">
+                <div className="field">
+                  <label>画像サイズ</label>
+                  <select value={imageSizePreset} onChange={(event) => updateImageSizePreset(event.target.value)}>
+                    <option value="768x1024">768 x 1024</option>
+                    <option value="1024x1024">1024 x 1024</option>
+                    <option value="1024x1536">1024 x 1536</option>
+                    <option value="1536x1024">1536 x 1024</option>
+                    <option value="custom">Custom</option>
+                  </select>
+                </div>
+                <div className="two-columns">
+                  <div className="field">
+                    <label>Width</label>
+                    <input type="number" min="256" step="64" value={generationWidth} onChange={(event) => setGenerationWidth(Number(event.target.value))} />
+                  </div>
+                  <div className="field">
+                    <label>Height</label>
+                    <input type="number" min="256" step="64" value={generationHeight} onChange={(event) => setGenerationHeight(Number(event.target.value))} />
+                  </div>
+                </div>
+                <div className="field">
+                  <label>Seed</label>
+                  <select value={seedMode} onChange={(event) => setSeedMode(event.target.value as "random" | "fixed")}>
+                    <option value="random">Random (-1)</option>
+                    <option value="fixed">Fixed</option>
+                  </select>
+                </div>
+                <div className="field">
+                  <label>Seed Value</label>
+                  <input type="number" disabled={seedMode === "random"} value={seedValue} onChange={(event) => setSeedValue(Number(event.target.value))} />
+                </div>
+              </div>
             )}
-            <div className="field">
-              <label>Checkpoint</label>
-              <select value={selectedCheckpoint} onChange={(event) => setSelectedCheckpoint(event.target.value)}>
-                {status?.checkpoints.length ? (
-                  status.checkpoints.map((file) => (
-                    <option key={file.name} value={file.name}>
-                      {file.name} ({file.sizeLabel} / {file.compatibilityLabel})
-                    </option>
-                  ))
-                ) : (
-                  <option value="">未追加</option>
-                )}
-              </select>
-            </div>
-            <div className="two-columns">
-              <div className="field">
-                <label>外部VAE</label>
-                <select
-                  value={selectedVae}
-                  onChange={(event) => {
-                    const value = event.target.value;
-                    setSelectedVae(value);
-                    saveCheckpointExternalSelection(selectedCheckpoint, { vae: value, clip: selectedClip });
-                  }}
-                >
-                  <option value="">未選択</option>
-                  {status?.vae.map((file) => (
-                    <option key={file.name} value={file.name}>
-                      {file.name}
-                    </option>
-                  ))}
-                </select>
-              </div>
-              <div className="field">
-                <label>外部CLIP</label>
-                <select
-                  value={selectedClip}
-                  onChange={(event) => {
-                    const value = event.target.value;
-                    setSelectedClip(value);
-                    saveCheckpointExternalSelection(selectedCheckpoint, { vae: selectedVae, clip: value });
-                  }}
-                >
-                  <option value="">未選択</option>
-                  {status?.clip.map((file) => (
-                    <option key={file.name} value={file.name}>
-                      {file.name}
-                    </option>
-                  ))}
-                </select>
-              </div>
-            </div>
-            <div className="generation-controls">
-              <div className="field">
-                <label>画像サイズ</label>
-                <select value={imageSizePreset} onChange={(event) => updateImageSizePreset(event.target.value)}>
-                  <option value="768x1024">768 x 1024</option>
-                  <option value="1024x1024">1024 x 1024</option>
-                  <option value="1024x1536">1024 x 1536</option>
-                  <option value="1536x1024">1536 x 1024</option>
-                  <option value="custom">Custom</option>
-                </select>
-              </div>
-              <div className="two-columns">
-                <div className="field">
-                  <label>Width</label>
-                  <input type="number" min="256" step="64" value={generationWidth} onChange={(event) => setGenerationWidth(Number(event.target.value))} />
-                </div>
-                <div className="field">
-                  <label>Height</label>
-                  <input type="number" min="256" step="64" value={generationHeight} onChange={(event) => setGenerationHeight(Number(event.target.value))} />
-                </div>
-              </div>
-              <div className="field">
-                <label>Seed</label>
-                <select value={seedMode} onChange={(event) => setSeedMode(event.target.value as "random" | "fixed")}>
-                  <option value="random">Random (-1)</option>
-                  <option value="fixed">Fixed</option>
-                </select>
-              </div>
-              <div className="field">
-                <label>Seed Value</label>
-                <input type="number" disabled={seedMode === "random"} value={seedValue} onChange={(event) => setSeedValue(Number(event.target.value))} />
-              </div>
-            </div>
-            <div className="prompt-inspector">
-              <div className="tag-builder-header">
-                <div>
-                  <h2>ComfyUIへ渡す最終Positive Prompt</h2>
-                </div>
-                <button onClick={() => setPromptHistoryOpen(true)}>
-                  <RefreshCw size={17} />
-                  履歴
-                </button>
-              </div>
-              <textarea value={prompt} onChange={(event) => setPrompt(event.target.value)} />
-            </div>
-
-            <div className="button-row">
-              <button
-                className="generate"
-                disabled={!canGenerate}
-                onClick={() =>
-                  void runAction(
-                    "ComfyUIでテスト生成中",
-                    async () => {
-                      appendLog("info", `ComfyUI Positive Prompt: ${testRequest.prompt}`);
-                      appendLog("info", `ComfyUI Negative Prompt: ${testRequest.negativePrompt}`);
-                      appendLog("info", `ComfyUI LoRA: ${selectedLoras.length ? selectedLoras.map((lora) => `${lora.name} model=${lora.modelStrength} clip=${lora.clipStrength}`).join(", ") : "なし"}`);
-                      appendLog("info", `ComfyUI Size/Seed: ${testRequest.width}x${testRequest.height} / ${testRequest.seed}`);
-                      const result = await window.illustMK.runtime.testGenerate(testRequest);
-                      const history = await window.illustMK.promptHistory.save({
-                        ...testRequest,
-                        japanesePrompt,
-                        imagePath: result.imagePath,
-                        imageDataUrl: result.imageDataUrl
-                      });
-                      return { result, history };
-                    },
-                    ({ result, history }) => {
-                      setGenerationResult(result);
-                      setPromptHistory(history);
-                      if (result.imageDataUrl || result.imagePath) {
-                        setLastImage(result.imageDataUrl ?? result.imagePath ?? null);
-                      }
-                    }
-                  )
-                }
-              >
-                <WandSparkles size={18} />
-                GENERATE TEST
-              </button>
-              <button className="generate secondary-generate" disabled={!canGenerate || !selectedLoras.length} onClick={() => void runLoraOnOffCompare()}>
-                <ImageIcon size={18} />
-                LoRA ON/OFF比較
-              </button>
-            </div>
-            {loraCompareResult ? (
-              <div className="lora-compare-grid">
-                <article>
-                  <h3>LoRA OFF / seed {loraCompareResult.seed}</h3>
-                  {loraCompareResult.withoutLora.imageDataUrl || loraCompareResult.withoutLora.imagePath ? (
-                    <img src={imageUrl(loraCompareResult.withoutLora.imageDataUrl ?? loraCompareResult.withoutLora.imagePath ?? "")} alt="LoRA OFF" />
-                  ) : null}
-                </article>
-                <article>
-                  <h3>LoRA ON / seed {loraCompareResult.seed}</h3>
-                  {loraCompareResult.withLora.imageDataUrl || loraCompareResult.withLora.imagePath ? (
-                    <img src={imageUrl(loraCompareResult.withLora.imageDataUrl ?? loraCompareResult.withLora.imagePath ?? "")} alt="LoRA ON" />
-                  ) : null}
-                </article>
-              </div>
-            ) : null}
             {selectedCheckpointInfo && !selectedCheckpointGenerationReady ? (
               <p className="result-message">
                 このCheckpointは追加ファイルが必要です。{selectedCheckpointCompatibilityLabel}

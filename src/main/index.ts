@@ -332,4 +332,5 @@ function registerIpc(): void {
     shell.showItemInFolder(path);
     return "";
   });
+  ipcMain.handle("app:open-external", (_event, url: string) => shell.openExternal(url));
 }

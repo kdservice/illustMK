@@ -723,6 +723,14 @@ label {
   gap: 12px;
 }
 
+.generate-panel .prompt-transform textarea {
+  min-height: 160px;
+}
+
+.generate-panel .prompt-transform .field:first-child textarea {
+  min-height: 180px;
+}
+
 .tag-builder {
   border: 1px solid #1c2d53;
   border-radius: 8px;
@@ -1373,6 +1381,18 @@ label {
   overflow: auto;
 }
 
+.catalog-control-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) auto;
+  gap: 8px;
+  align-items: end;
+}
+
+.catalog-action {
+  min-height: 38px;
+  white-space: nowrap;
+}
+
 .filter-row {
   display: grid;
   gap: 8px;
@@ -1449,9 +1469,16 @@ label {
   margin-top: 4px;
 }
 
-.catalog-card button {
-  min-height: 32px;
+.catalog-card-actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
   margin-top: 8px;
+}
+
+.catalog-card-actions button {
+  min-height: 32px;
+  margin-top: 0;
 }
 
 .lora-catalog-modal {

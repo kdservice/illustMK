@@ -115,7 +115,8 @@ const api = {
     clear: (): Promise<PromptHistoryEntry[]> => ipcRenderer.invoke("prompt-history:clear")
   },
   app: {
-    openPath: (path: string): Promise<string> => ipcRenderer.invoke("app:open-path", path)
+    openPath: (path: string): Promise<string> => ipcRenderer.invoke("app:open-path", path),
+    openExternal: (url: string): Promise<void> => ipcRenderer.invoke("app:open-external", url)
   }
 };
 
