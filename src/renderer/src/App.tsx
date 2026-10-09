@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, type UIEvent } from "react";
 import { createRoot } from "react-dom/client";
 import {
   Boxes,
@@ -205,6 +205,9 @@ function App() {
   const [loraCatalogQuery, setLoraCatalogQuery] = useState("");
   const [loraCatalogModels, setLoraCatalogModels] = useState<CivitaiModelCard[]>([]);
   const [loraCatalogPeriod, setLoraCatalogPeriod] = useState<"Month" | "AllTime">("Month");
+  const [loraCatalogPage, setLoraCatalogPage] = useState(1);
+  const [loraCatalogHasMore, setLoraCatalogHasMore] = useState(false);
+  const [loraCatalogLoadingMore, setLoraCatalogLoadingMore] = useState(false);
   const [loraTrainingPreset, setLoraTrainingPreset] = useState<LoraTrainingPreset>("fast");
   const [loraResolution, setLoraResolution] = useState(1024);
   const [loraRepeats, setLoraRepeats] = useState(10);
@@ -535,23 +538,40 @@ function App() {
     });
   }
 
-  async function searchLoraCatalog(): Promise<void> {
+  async function searchLoraCatalog(page = 1): Promise<void> {
+    const append = page > 1;
+    if (append) setLoraCatalogLoadingMore(true);
     await runAction(
-      "Civitai LoRAを検索中",
+      append ? "Civitai LoRAを追加取得中" : "Civitai LoRAを検索中",
       () =>
         window.illustMK.runtime.searchCivitai({
           query: loraCatalogQuery.trim() || undefined,
           sort: "Most Downloaded",
           period: loraCatalogPeriod,
           limit: 20,
+          page,
           nsfw: false,
           type: "LORA"
         }),
       (models) => {
-        setLoraCatalogModels(models);
+        setLoraCatalogPage(page);
+        setLoraCatalogHasMore(models.length >= 20);
+        setLoraCatalogModels((current) => {
+          if (!append) return models;
+          const seen = new Set(current.map((model) => `${model.id}-${model.versionId}`));
+          return [...current, ...models.filter((model) => !seen.has(`${model.id}-${model.versionId}`))];
+        });
         appendLog("info", `${models.length}件のLoRAを取得しました。`);
       }
     );
+    setLoraCatalogLoadingMore(false);
+  }
+
+  function handleLoraCatalogScroll(event: UIEvent<HTMLDivElement>): void {
+    const target = event.currentTarget;
+    const nearBottom = target.scrollHeight - target.scrollTop - target.clientHeight < 320;
+    if (!nearBottom || action.busy || loraCatalogLoadingMore || !loraCatalogHasMore) return;
+    void searchLoraCatalog(loraCatalogPage + 1);
   }
 
   async function downloadCivitaiLora(model: CivitaiModelCard): Promise<void> {
@@ -2846,11 +2866,11 @@ function App() {
                 </select>
               </div>
             </div>
-            <button className="primary" disabled={action.busy} onClick={() => void searchLoraCatalog()}>
+            <button className="primary" disabled={action.busy} onClick={() => void searchLoraCatalog(1)}>
               <RefreshCw size={17} />
               検索
             </button>
-            <div className="catalog-list lora-catalog-list">
+            <div className="catalog-list lora-catalog-list" onScroll={handleLoraCatalogScroll}>
               {loraCatalogModels.length ? (
                 loraCatalogModels.map((model) => (
                   <article className="catalog-card lora-catalog-card" key={`${model.id}-${model.versionId}`}>
@@ -2869,6 +2889,8 @@ function App() {
               ) : (
                 <p className="empty">検索語を入れて検索してください。</p>
               )}
+              {loraCatalogLoadingMore ? <p className="empty">more...</p> : null}
+              {loraCatalogModels.length > 0 && !loraCatalogHasMore ? <p className="empty">これ以上ありません。</p> : null}
             </div>
           </section>
         </div>

@@ -1635,11 +1635,23 @@ label {
 }
 
 .lora-catalog-modal {
-  width: min(1180px, 100%);
+  width: min(1680px, calc(100vw - 24px));
+  max-height: calc(100vh - 24px);
 }
 
 .lora-catalog-list {
   grid-template-columns: repeat(2, minmax(0, 1fr));
+  max-height: calc(100vh - 250px);
+}
+
+.lora-catalog-card {
+  grid-template-columns: 240px minmax(0, 1fr);
+}
+
+.lora-catalog-card img,
+.lora-catalog-card .catalog-no-image {
+  width: 240px;
+  height: 320px;
 }
 
 .catalog-search {

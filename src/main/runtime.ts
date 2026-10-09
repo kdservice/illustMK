@@ -979,16 +979,19 @@ export async function searchCivitaiModels(options: {
   sort?: "Most Downloaded" | "Highest Rated" | "Newest";
   period?: "AllTime" | "Year" | "Month" | "Week" | "Day";
   limit?: number;
+  page?: number;
   nsfw?: boolean;
   baseModels?: string[];
   type?: "Checkpoint" | "LORA";
 }): Promise<CivitaiModelCard[]> {
+  const requestLimit = options.type === "LORA" ? options.limit ?? 20 : Math.max(options.limit ?? 10, 50);
   const params = new URLSearchParams({
-    limit: String(Math.max(options.limit ?? 10, 50)),
+    limit: String(requestLimit),
     types: options.type ?? "Checkpoint",
     sort: options.sort ?? "Most Downloaded",
     period: options.period ?? "Month",
     nsfw: String(options.nsfw ?? false),
+    page: String(options.page ?? 1),
     primaryFileOnly: "true"
   });
   if (options.query?.trim()) {

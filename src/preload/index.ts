@@ -66,6 +66,7 @@ const api = {
       sort?: "Most Downloaded" | "Highest Rated" | "Newest";
       period?: "AllTime" | "Year" | "Month" | "Week" | "Day";
       limit?: number;
+      page?: number;
       nsfw?: boolean;
       baseModels?: string[];
       type?: "Checkpoint" | "LORA";
