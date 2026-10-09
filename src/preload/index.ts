@@ -3,6 +3,7 @@ import type {
   AppSettings,
   CivitaiModelCard,
   DeleteModelRequest,
+  DownloadCivitaiLoraProjectRequest,
   DownloadRequest,
   DownloadResult,
   HuggingFaceLlmModelCard,
@@ -65,6 +66,7 @@ const api = {
       limit?: number;
       nsfw?: boolean;
       baseModels?: string[];
+      type?: "Checkpoint" | "LORA";
     }): Promise<CivitaiModelCard[]> => ipcRenderer.invoke("runtime:search-civitai", options),
     searchHuggingFaceLlm: (options: { query: string; limit?: number }): Promise<HuggingFaceLlmModelCard[]> =>
       ipcRenderer.invoke("runtime:search-huggingface-llm", options),
@@ -99,6 +101,8 @@ const api = {
     stop: (id: string): Promise<LoraTrainingProject[]> => ipcRenderer.invoke("lora-projects:stop", id),
     delete: (id: string): Promise<LoraTrainingProject[]> => ipcRenderer.invoke("lora-projects:delete", id),
     importFile: (): Promise<LoraTrainingProject[]> => ipcRenderer.invoke("lora-projects:import"),
+    downloadCivitai: (request: DownloadCivitaiLoraProjectRequest): Promise<LoraTrainingProject[]> =>
+      ipcRenderer.invoke("lora-projects:download-civitai", request),
     clear: (): Promise<LoraTrainingProject[]> => ipcRenderer.invoke("lora-projects:clear")
   },
   loraCaptions: {

@@ -106,6 +106,11 @@ export type DownloadResult = {
   message: string;
 };
 
+export type DownloadCivitaiLoraProjectRequest = {
+  model: CivitaiModelCard;
+  operationId?: string;
+};
+
 export type CivitaiModelCard = {
   id: number;
   name: string;
@@ -927,10 +932,11 @@ export async function searchCivitaiModels(options: {
   limit?: number;
   nsfw?: boolean;
   baseModels?: string[];
+  type?: "Checkpoint" | "LORA";
 }): Promise<CivitaiModelCard[]> {
   const params = new URLSearchParams({
     limit: String(Math.max(options.limit ?? 10, 50)),
-    types: "Checkpoint",
+    types: options.type ?? "Checkpoint",
     sort: options.sort ?? "Most Downloaded",
     period: options.period ?? "Month",
     nsfw: String(options.nsfw ?? false),
@@ -954,7 +960,7 @@ export async function searchCivitaiModels(options: {
   const json = (await response.json()) as { items?: unknown[] };
   return (json.items ?? [])
     .flatMap(normalizeCivitaiModel)
-    .filter((model) => isAllowedBaseModel(model, options.baseModels ?? defaultBaseModelFilters))
+    .filter((model) => options.type === "LORA" || isAllowedBaseModel(model, options.baseModels ?? defaultBaseModelFilters))
     .slice(0, options.limit ?? 10);
 }
 
@@ -1552,6 +1558,83 @@ export async function importLoraFile(sourcePath: string): Promise<LoraTrainingPr
     if (!(await exists(to))) await cp(from, to);
   }
   return getLoraTrainingProjects();
+}
+
+export async function downloadCivitaiLoraProject(
+  request: DownloadCivitaiLoraProjectRequest,
+  onLog?: RuntimeLogSink
+): Promise<LoraTrainingProject[]> {
+  const model = request.model;
+  const fileName = normalizeSafetensorsName(model.fileName || `${safeFileName(model.name)}.safetensors`);
+  await downloadModel(
+    {
+      url: model.downloadUrl,
+      targetType: "loras",
+      fileName,
+      sha256: model.sha256,
+      source: "civitai",
+      operationId: request.operationId
+    },
+    onLog
+  );
+
+  const paths = await ensureRuntimeFiles();
+  const now = new Date().toISOString();
+  const projects = await getLoraTrainingProjects();
+  const existing = projects.find((project) => project.outputName === fileName || project.sourceLora === fileName);
+  if (existing) {
+    const nextProjects: LoraTrainingProject[] = projects.map((project) =>
+      project.id === existing.id
+        ? {
+            ...project,
+            sourceLora: fileName,
+            outputName: fileName,
+            updatedAt: now,
+            status: "complete" as const,
+            message: "Civitaiから取得済みのLoRAです。生成タブで選択できます。"
+          }
+        : project
+    );
+    await saveLoraTrainingProjects(nextProjects);
+    return nextProjects;
+  }
+
+  const nameBase = safeFileName(model.name || fileName.replace(/\.safetensors$/i, ""));
+  let projectName = nameBase;
+  let projectRoot = join(paths.loraProjects, projectName);
+  let suffix = 2;
+  while (await exists(projectRoot)) {
+    projectName = `${nameBase}_${suffix}`;
+    projectRoot = join(paths.loraProjects, projectName);
+    suffix += 1;
+  }
+  const datasetPath = join(projectRoot, "dataset");
+  const project: LoraTrainingProject = {
+    id: randomUUID(),
+    name: projectName,
+    triggerWord: "",
+    sourceLora: fileName,
+    baseCheckpoint: model.baseModel || "unknown",
+    datasetPath,
+    outputName: fileName,
+    resolution: defaultLoraRunParams.resolution,
+    repeats: defaultLoraRunParams.repeats,
+    epochs: defaultLoraRunParams.epochs,
+    networkDim: defaultLoraRunParams.networkDim,
+    learningRate: defaultLoraRunParams.learningRate,
+    createdAt: now,
+    updatedAt: now,
+    status: "complete",
+    message: `Civitaiから追加しました: ${model.creator} / ${model.versionName || model.name}`
+  };
+  await mkdir(datasetPath, { recursive: true });
+  await mkdir(loraTrainingImageDir(project), { recursive: true });
+  await mkdir(join(projectRoot, "config"), { recursive: true });
+  await ensureLoraCaptionTagsFile(project);
+  await writeFile(join(projectRoot, "config", "lora-training.json"), JSON.stringify(project, null, 2), "utf8");
+  const nextProjects = [project, ...projects];
+  await saveLoraTrainingProjects(nextProjects);
+  return nextProjects;
 }
 
 export async function startLoraTrainingProject(id: string): Promise<LoraTrainingProject[]> {

@@ -134,6 +134,7 @@ function App() {
   const [negativePrompt, setNegativePrompt] = useState("low quality, worst quality, blurry, bad anatomy");
   const [lastImage, setLastImage] = useState<string | null>(null);
   const [generationResult, setGenerationResult] = useState<TestGenerationResult | null>(null);
+  const [loraCompareResult, setLoraCompareResult] = useState<{ seed: number; withoutLora: TestGenerationResult; withLora: TestGenerationResult } | null>(null);
   const [imageSizePreset, setImageSizePreset] = useState("768x1024");
   const [generationWidth, setGenerationWidth] = useState(768);
   const [generationHeight, setGenerationHeight] = useState(1024);
@@ -150,6 +151,10 @@ function App() {
   const [loraName, setLoraName] = useState("");
   const [loraTriggerWord, setLoraTriggerWord] = useState("");
   const [loraAdditionalTraining, setLoraAdditionalTraining] = useState(false);
+  const [loraCatalogOpen, setLoraCatalogOpen] = useState(false);
+  const [loraCatalogQuery, setLoraCatalogQuery] = useState("");
+  const [loraCatalogModels, setLoraCatalogModels] = useState<CivitaiModelCard[]>([]);
+  const [loraCatalogPeriod, setLoraCatalogPeriod] = useState<"Month" | "AllTime">("Month");
   const [loraTrainingPreset, setLoraTrainingPreset] = useState<LoraTrainingPreset>("fast");
   const [loraResolution, setLoraResolution] = useState(1024);
   const [loraRepeats, setLoraRepeats] = useState(10);
@@ -397,6 +402,50 @@ function App() {
     }, () => {
       setSelectedCheckpoint(model.fileName);
     });
+  }
+
+  async function searchLoraCatalog(): Promise<void> {
+    await runAction(
+      "Civitai LoRAを検索中",
+      () =>
+        window.illustMK.runtime.searchCivitai({
+          query: loraCatalogQuery.trim() || undefined,
+          sort: "Most Downloaded",
+          period: loraCatalogPeriod,
+          limit: 20,
+          nsfw: false,
+          type: "LORA"
+        }),
+      (models) => {
+        setLoraCatalogModels(models);
+        appendLog("info", `${models.length}件のLoRAを取得しました。`);
+      }
+    );
+  }
+
+  async function downloadCivitaiLora(model: CivitaiModelCard): Promise<void> {
+    const id = crypto.randomUUID();
+    currentOperationId.current = id;
+    appendLog("info", `${model.name} をLoRA Projectへ追加中`, id);
+    setAction({ busy: true, message: "Civitai LoRAを追加中", error: null });
+    setDownloadProgress(0);
+    try {
+      const projects = await window.illustMK.loraProjects.downloadCivitai({ model, operationId: id });
+      setLoraProjects(projects);
+      setSelectedLoraProjectId(projects[0]?.id ?? null);
+      setDownloadProgress(100);
+      appendLog("info", "LoRA Projectへ追加しました。", id);
+      setAction({ busy: false, message: "完了しました", error: null });
+      await refreshStatus();
+    } catch (error) {
+      const errorText = error instanceof Error ? error.message : String(error);
+      setDownloadProgress(null);
+      appendLog("stderr", errorText, id);
+      setAction({ busy: false, message: "失敗しました", error: errorText });
+      await refreshStatus();
+    } finally {
+      currentOperationId.current = null;
+    }
   }
 
   async function runDownloadAction(message: string, request: DownloadRequest, after?: () => void): Promise<void> {
@@ -1019,6 +1068,30 @@ function App() {
     comfyUrl
   };
 
+  async function runLoraOnOffCompare(): Promise<void> {
+    const compareSeed = seedMode === "fixed" && seedValue >= 0 ? seedValue : Math.floor(Math.random() * Number.MAX_SAFE_INTEGER);
+    setSeedMode("fixed");
+    setSeedValue(compareSeed);
+    await runAction(
+      "同SeedでLoRA ON/OFF比較中",
+      async () => {
+        appendLog("info", `LoRA比較 Seed: ${compareSeed}`);
+        appendLog("info", `LoRA比較 Positive Prompt: ${effectivePrompt}`);
+        const baseRequest = { ...testRequest, seed: compareSeed };
+        const withoutLora = await window.illustMK.runtime.testGenerate({ ...baseRequest, loras: [] });
+        const withLora = await window.illustMK.runtime.testGenerate({ ...baseRequest, loras: selectedLoras });
+        return { seed: compareSeed, withoutLora, withLora };
+      },
+      (result) => {
+        setLoraCompareResult(result);
+        setGenerationResult(result.withLora);
+        if (result.withLora.imageDataUrl || result.withLora.imagePath) {
+          setLastImage(result.withLora.imageDataUrl ?? result.withLora.imagePath ?? null);
+        }
+      }
+    );
+  }
+
   return (
     <main className="app-shell">
       <header className="topbar">
@@ -1571,6 +1644,10 @@ function App() {
                 <Plus size={17} />
                 インポート
               </button>
+              <button disabled={action.busy} onClick={() => setLoraCatalogOpen(true)}>
+                <Download size={17} />
+                カタログ
+              </button>
               <button disabled={action.busy} onClick={() => void loadLoraProjects()}>
                 <RefreshCw size={17} />
                 更新
@@ -1786,42 +1863,64 @@ function App() {
                   履歴
                 </button>
               </div>
-              <textarea value={effectivePrompt} readOnly />
+              <textarea value={prompt} onChange={(event) => setPrompt(event.target.value)} />
             </div>
 
-            <button
-              className="generate"
-              disabled={!canGenerate}
-              onClick={() =>
-                void runAction(
-                  "ComfyUIでテスト生成中",
-                  async () => {
-                    appendLog("info", `ComfyUI Positive Prompt: ${testRequest.prompt}`);
-                    appendLog("info", `ComfyUI Negative Prompt: ${testRequest.negativePrompt}`);
-                    appendLog("info", `ComfyUI LoRA: ${selectedLoras.length ? selectedLoras.map((lora) => `${lora.name} model=${lora.modelStrength} clip=${lora.clipStrength}`).join(", ") : "なし"}`);
-                    appendLog("info", `ComfyUI Size/Seed: ${testRequest.width}x${testRequest.height} / ${testRequest.seed}`);
-                    const result = await window.illustMK.runtime.testGenerate(testRequest);
-                    const history = await window.illustMK.promptHistory.save({
-                      ...testRequest,
-                      japanesePrompt,
-                      imagePath: result.imagePath,
-                      imageDataUrl: result.imageDataUrl
-                    });
-                    return { result, history };
-                  },
-                  ({ result, history }) => {
-                    setGenerationResult(result);
-                    setPromptHistory(history);
-                    if (result.imageDataUrl || result.imagePath) {
-                      setLastImage(result.imageDataUrl ?? result.imagePath ?? null);
+            <div className="button-row">
+              <button
+                className="generate"
+                disabled={!canGenerate}
+                onClick={() =>
+                  void runAction(
+                    "ComfyUIでテスト生成中",
+                    async () => {
+                      appendLog("info", `ComfyUI Positive Prompt: ${testRequest.prompt}`);
+                      appendLog("info", `ComfyUI Negative Prompt: ${testRequest.negativePrompt}`);
+                      appendLog("info", `ComfyUI LoRA: ${selectedLoras.length ? selectedLoras.map((lora) => `${lora.name} model=${lora.modelStrength} clip=${lora.clipStrength}`).join(", ") : "なし"}`);
+                      appendLog("info", `ComfyUI Size/Seed: ${testRequest.width}x${testRequest.height} / ${testRequest.seed}`);
+                      const result = await window.illustMK.runtime.testGenerate(testRequest);
+                      const history = await window.illustMK.promptHistory.save({
+                        ...testRequest,
+                        japanesePrompt,
+                        imagePath: result.imagePath,
+                        imageDataUrl: result.imageDataUrl
+                      });
+                      return { result, history };
+                    },
+                    ({ result, history }) => {
+                      setGenerationResult(result);
+                      setPromptHistory(history);
+                      if (result.imageDataUrl || result.imagePath) {
+                        setLastImage(result.imageDataUrl ?? result.imagePath ?? null);
+                      }
                     }
-                  }
-                )
-              }
-            >
-              <WandSparkles size={18} />
-              GENERATE TEST
-            </button>
+                  )
+                }
+              >
+                <WandSparkles size={18} />
+                GENERATE TEST
+              </button>
+              <button className="generate secondary-generate" disabled={!canGenerate || !selectedLoras.length} onClick={() => void runLoraOnOffCompare()}>
+                <ImageIcon size={18} />
+                LoRA ON/OFF比較
+              </button>
+            </div>
+            {loraCompareResult ? (
+              <div className="lora-compare-grid">
+                <article>
+                  <h3>LoRA OFF / seed {loraCompareResult.seed}</h3>
+                  {loraCompareResult.withoutLora.imageDataUrl || loraCompareResult.withoutLora.imagePath ? (
+                    <img src={imageUrl(loraCompareResult.withoutLora.imageDataUrl ?? loraCompareResult.withoutLora.imagePath ?? "")} alt="LoRA OFF" />
+                  ) : null}
+                </article>
+                <article>
+                  <h3>LoRA ON / seed {loraCompareResult.seed}</h3>
+                  {loraCompareResult.withLora.imageDataUrl || loraCompareResult.withLora.imagePath ? (
+                    <img src={imageUrl(loraCompareResult.withLora.imageDataUrl ?? loraCompareResult.withLora.imagePath ?? "")} alt="LoRA ON" />
+                  ) : null}
+                </article>
+              </div>
+            ) : null}
             {selectedCheckpointInfo && !selectedCheckpointInfo.simpleWorkflowReady ? (
               <p className="result-message">
                 このCheckpointは外部CLIP/VAEが必要です。今のテスト生成では、簡易生成OKのCheckpointを選んでください。
@@ -2202,6 +2301,55 @@ function App() {
                 <CheckCircle2 size={17} />
                 {loraProjectDialogMode === "edit" ? "保存" : "作成"}
               </button>
+            </div>
+          </section>
+        </div>
+      ) : null}
+      {loraCatalogOpen ? (
+        <div className="modal-backdrop">
+          <section className="modal-panel lora-catalog-modal">
+            <div className="modal-header">
+              <PanelTitle icon={<Download size={18} />} title="Civitai LoRAカタログ" />
+              <button className="icon-button" onClick={() => setLoraCatalogOpen(false)} title="閉じる">
+                <X size={17} />
+              </button>
+            </div>
+            <div className="two-columns">
+              <div className="field">
+                <label>検索語</label>
+                <input placeholder="character, style, outfit..." value={loraCatalogQuery} onChange={(event) => setLoraCatalogQuery(event.target.value)} />
+              </div>
+              <div className="field">
+                <label>期間</label>
+                <select value={loraCatalogPeriod} onChange={(event) => setLoraCatalogPeriod(event.target.value as "Month" | "AllTime")}>
+                  <option value="Month">直近1ヶ月</option>
+                  <option value="AllTime">累計</option>
+                </select>
+              </div>
+            </div>
+            <button className="primary" disabled={action.busy} onClick={() => void searchLoraCatalog()}>
+              <RefreshCw size={17} />
+              検索
+            </button>
+            <div className="catalog-list lora-catalog-list">
+              {loraCatalogModels.length ? (
+                loraCatalogModels.map((model) => (
+                  <article className="catalog-card lora-catalog-card" key={`${model.id}-${model.versionId}`}>
+                    {model.imageUrl ? <img src={model.imageUrl} alt="" /> : <div className="catalog-no-image">No Image</div>}
+                    <div>
+                      <h3>{model.name}</h3>
+                      <p>{model.creator} / {model.baseModel || "base不明"} / {model.versionName || "version不明"}</p>
+                      <p>{Math.round(model.sizeKB / 1024)} MB / DL {model.downloadCount.toLocaleString()}</p>
+                      <button disabled={action.busy} onClick={() => void downloadCivitaiLora(model)}>
+                        <Download size={15} />
+                        Projectへ追加
+                      </button>
+                    </div>
+                  </article>
+                ))
+              ) : (
+                <p className="empty">検索語を入れて検索してください。</p>
+              )}
             </div>
           </section>
         </div>

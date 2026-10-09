@@ -10,6 +10,7 @@ import {
   deleteIllustrationTag,
   deleteOllamaModelStorage,
   deleteOllamaModel,
+  downloadCivitaiLoraProject,
   downloadModel,
   enhancePromptWithOllama,
   ensureRuntimeFiles,
@@ -62,6 +63,7 @@ import {
   stopRuntimeWithLogs,
   type AppSettings,
   type DeleteModelRequest,
+  type DownloadCivitaiLoraProjectRequest,
   type DownloadRequest,
   type LoraTrainingRunParams,
   type LlmChatRequest,
@@ -267,6 +269,15 @@ function registerIpc(): void {
     downloadModel(request, (log) => {
       event.sender.send("runtime:operation-log", {
         id: request.operationId ?? "download",
+        level: log.level,
+        line: log.line
+      });
+    })
+  );
+  ipcMain.handle("lora-projects:download-civitai", (event, request: DownloadCivitaiLoraProjectRequest) =>
+    downloadCivitaiLoraProject(request, (log) => {
+      event.sender.send("runtime:operation-log", {
+        id: request.operationId ?? "lora-civitai-download",
         level: log.level,
         line: log.line
       });

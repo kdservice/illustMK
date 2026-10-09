@@ -1121,6 +1121,39 @@ label {
   font-size: 12px;
 }
 
+.secondary-generate {
+  background: linear-gradient(135deg, #10234a, #173864);
+}
+
+.lora-compare-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.lora-compare-grid article {
+  border: 1px solid #1c2d53;
+  border-radius: 8px;
+  background: #081125;
+  padding: 10px;
+  display: grid;
+  gap: 8px;
+}
+
+.lora-compare-grid h3 {
+  margin: 0;
+  color: #dbe7ff;
+  font-size: 13px;
+}
+
+.lora-compare-grid img {
+  width: 100%;
+  max-height: 420px;
+  object-fit: contain;
+  border-radius: 6px;
+  background: #030712;
+}
+
 .prompt-history-list {
   display: grid;
   gap: 10px;
@@ -1343,6 +1376,14 @@ label {
 .catalog-card button {
   min-height: 32px;
   margin-top: 8px;
+}
+
+.lora-catalog-modal {
+  width: min(1180px, 100%);
+}
+
+.lora-catalog-list {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
 }
 
 .catalog-search {
