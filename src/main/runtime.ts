@@ -2,7 +2,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { closeSync, createReadStream, createWriteStream, openSync } from "node:fs";
 import { access, cp, lstat, mkdir, readFile, readlink, readdir, rename, rm, stat, symlink, unlink, writeFile } from "node:fs/promises";
 import { basename, dirname, join, relative, resolve } from "node:path";
-import { homedir } from "node:os";
+import { cpus, homedir } from "node:os";
 import { Transform } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import { execFile, spawn, type ChildProcess, type ChildProcessWithoutNullStreams, type ExecFileOptions } from "node:child_process";
@@ -11,6 +11,7 @@ import { promisify } from "node:util";
 const execFileAsync = promisify(execFile);
 const activeNativeCommands = new Map<string, ChildProcessWithoutNullStreams>();
 const stoppedLoraTrainingProjectIds = new Map<string, "paused" | "stopped">();
+let previousCpuSnapshot: { idle: number; total: number } | null = null;
 const defaultLoraRunParams: LoraTrainingRunParams = {
   resolution: 1024,
   repeats: 5,
@@ -76,6 +77,13 @@ export type RuntimeStatus = {
   vae: ModelFileInfo[];
   clip: ModelFileInfo[];
   outputs: string[];
+  systemUsage: SystemUsage;
+};
+
+export type SystemUsage = {
+  cpuPercent: number | null;
+  gpuPercent: number | null;
+  gpuMessage?: string;
 };
 
 export type ModelFileInfo = {
@@ -592,7 +600,8 @@ export async function getStatus(comfyUrl = `http://127.0.0.1:${comfyPort}`): Pro
     vae,
     clip,
     outputs,
-    containerState
+    containerState,
+    systemUsage
   ] =
     await Promise.all([
       findDockerDesktop(),
@@ -609,7 +618,8 @@ export async function getStatus(comfyUrl = `http://127.0.0.1:${comfyPort}`): Pro
       listModelFiles(paths.vae),
       listModelFiles(paths.clip),
       listFiles(paths.outputs),
-      getContainerState()
+      getContainerState(),
+      getSystemUsage()
     ]);
 
   return {
@@ -636,8 +646,51 @@ export async function getStatus(comfyUrl = `http://127.0.0.1:${comfyPort}`): Pro
     loras,
     vae,
     clip,
-    outputs
+    outputs,
+    systemUsage
   };
+}
+
+async function getSystemUsage(): Promise<SystemUsage> {
+  const cpuPercent = getCpuUsagePercent();
+  const gpu = await getGpuUsagePercent();
+  return {
+    cpuPercent,
+    gpuPercent: gpu.percent,
+    gpuMessage: gpu.message
+  };
+}
+
+function getCpuUsagePercent(): number | null {
+  const snapshot = cpus().reduce(
+    (acc, cpu) => {
+      const idle = cpu.times.idle;
+      const total = Object.values(cpu.times).reduce((sum, value) => sum + value, 0);
+      return { idle: acc.idle + idle, total: acc.total + total };
+    },
+    { idle: 0, total: 0 }
+  );
+  if (!previousCpuSnapshot) {
+    previousCpuSnapshot = snapshot;
+    return null;
+  }
+  const idleDelta = snapshot.idle - previousCpuSnapshot.idle;
+  const totalDelta = snapshot.total - previousCpuSnapshot.total;
+  previousCpuSnapshot = snapshot;
+  if (totalDelta <= 0) return null;
+  return Math.max(0, Math.min(100, Math.round((1 - idleDelta / totalDelta) * 1000) / 10));
+}
+
+async function getGpuUsagePercent(): Promise<{ percent: number | null; message?: string }> {
+  try {
+    const { stdout } = await execFileAsync("/usr/sbin/ioreg", ["-r", "-d", "1", "-c", "IOAccelerator"], { timeout: 1200 });
+    const matches = [...stdout.matchAll(/"Device Utilization %"\s*=\s*(\d+)/g)].map((match) => Number(match[1]));
+    const valid = matches.filter((value) => Number.isFinite(value));
+    if (!valid.length) return { percent: null, message: "GPU使用率を取得できません" };
+    return { percent: Math.max(0, Math.min(100, Math.round(Math.max(...valid) * 10) / 10)) };
+  } catch {
+    return { percent: null, message: "GPU使用率を取得できません" };
+  }
 }
 
 export async function initNativeRuntime(onLog: RuntimeLogSink): Promise<string> {

@@ -837,6 +837,32 @@ label {
   background: #2a0c14;
 }
 
+.status-grid .status-card.usage {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  column-gap: 8px;
+  align-items: center;
+}
+
+.status-grid .status-card.usage span,
+.status-grid .status-card.usage strong {
+  min-width: 0;
+}
+
+.status-grid .status-card.usage svg {
+  grid-column: 1 / -1;
+  width: 100%;
+  height: 22px;
+  margin-top: 2px;
+}
+
+.status-grid .status-card.usage polyline {
+  fill: none;
+  stroke: #7fe4ff;
+  stroke-width: 2;
+  vector-effect: non-scaling-stroke;
+}
+
 .status-grid span {
   display: block;
   color: #8293b8;

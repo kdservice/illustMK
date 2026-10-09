@@ -109,6 +109,10 @@ type AppliedLoraTrigger = {
   title: string;
   triggerWord: string;
 };
+type UsageSample = {
+  cpu: number | null;
+  gpu: number | null;
+};
 const recommendedLlmModels = [
   { name: "qwen2.5:3b-instruct", source: "Ollama", size: "軽量", note: "まず試す用。日本語もそこそこ。" },
   { name: "qwen2.5:7b-instruct", source: "Ollama", size: "標準", note: "日本語prompt整形の本命寄り。" },
@@ -251,6 +255,7 @@ function App() {
   const [captionImageTagEnglish, setCaptionImageTagEnglish] = useState("");
   const [captionPreviewImage, setCaptionPreviewImage] = useState<LoraCaptionWorkspace["images"][number] | null>(null);
   const [action, setAction] = useState<ActionState>({ busy: false, message: "待機中", error: null });
+  const [usageHistory, setUsageHistory] = useState<UsageSample[]>([]);
   const [logs, setLogs] = useState<LogLine[]>([]);
   const [autoFollowLogs, setAutoFollowLogs] = useState(true);
   const [downloadProgress, setDownloadProgress] = useState<number | null>(null);
@@ -400,6 +405,13 @@ function App() {
     void loadPromptHistory();
     void loadLoraProjects();
   }, []);
+
+  useEffect(() => {
+    const timer = window.setInterval(() => {
+      void refreshStatus();
+    }, 2000);
+    return () => window.clearInterval(timer);
+  }, [comfyUrl]);
 
   useEffect(() => {
     return window.illustMK.runtime.onOperationLog((event) => {
@@ -854,6 +866,9 @@ function App() {
     ]);
     setPaths(nextPaths);
     setStatus(nextStatus);
+    setUsageHistory((current) =>
+      [...current, { cpu: nextStatus.systemUsage.cpuPercent, gpu: nextStatus.systemUsage.gpuPercent }].slice(-36)
+    );
   }
 
   async function refreshOllamaStatus(): Promise<void> {
@@ -1680,6 +1695,7 @@ function App() {
           ollamaModel={ollamaModel}
           selectedCheckpoint={selectedCheckpointInfo}
           checkpointBaseModel={selectedCheckpoint ? checkpointBaseModels[selectedCheckpoint] : ""}
+          usageHistory={usageHistory}
         />
       </section>
 
@@ -2644,13 +2660,21 @@ function App() {
                       void runAction(
                         "ComfyUIでテスト生成中",
                         async () => {
+                          const startedAt = performance.now();
                           appendLog("info", `ComfyUI Positive Prompt: ${testRequest.prompt}`);
                           appendLog("info", `ComfyUI Negative Prompt: ${testRequest.negativePrompt}`);
                           appendLog("info", `ComfyUI LoRA: ${selectedLoras.length ? selectedLoras.map((lora) => `${lora.name} model=${lora.modelStrength} clip=${lora.clipStrength}`).join(", ") : "なし"}`);
                           appendLog("info", `ComfyUI Size/Seed: ${testRequest.width}x${testRequest.height} / ${testRequest.seed}`);
                           const result = await window.illustMK.runtime.testGenerate(testRequest);
+                          const durationText = formatGenerationDuration(performance.now() - startedAt);
+                          const resultWithDuration = {
+                            ...result,
+                            message: result.message ? `${result.message} (生成時間 ${durationText})` : `(生成時間 ${durationText})`
+                          };
                           const history = await window.illustMK.promptHistory.save({
                             ...testRequest,
+                            prompt,
+                            negativePrompt,
                             japanesePrompt,
                             llmModel: ollamaModel,
                             llmUrl: ollamaUrl,
@@ -2663,7 +2687,7 @@ function App() {
                             imagePath: result.imagePath,
                             imageDataUrl: result.imageDataUrl
                           });
-                          return { result, history };
+                          return { result: resultWithDuration, history };
                         },
                         ({ result, history }) => {
                           setGenerationResult(result);
@@ -3842,7 +3866,8 @@ function StatusGrid({
   runtimeTab,
   ollamaModel,
   selectedCheckpoint,
-  checkpointBaseModel
+  checkpointBaseModel,
+  usageHistory
 }: {
   status: RuntimeStatus | null;
   ollamaStatus?: OllamaStatus | null;
@@ -3850,6 +3875,7 @@ function StatusGrid({
   ollamaModel: string;
   selectedCheckpoint: RuntimeStatus["checkpoints"][number] | null;
   checkpointBaseModel: string;
+  usageHistory: UsageSample[];
 }) {
   const runtimeItems: Array<{ label: string; value: string; tone: StatusTone }> =
     runtimeTab === "docker"
@@ -3880,6 +3906,45 @@ function StatusGrid({
           {tag ? <em>{tag}</em> : null}
         </div>
       ))}
+      <UsageStatusCard label="CPU" value={status?.systemUsage.cpuPercent ?? null} samples={usageHistory.map((sample) => sample.cpu)} />
+      <UsageStatusCard
+        label="GPU"
+        value={status?.systemUsage.gpuPercent ?? null}
+        samples={usageHistory.map((sample) => sample.gpu)}
+        unavailableText={status?.systemUsage.gpuMessage ?? "取得不可"}
+      />
+    </div>
+  );
+}
+
+function UsageStatusCard({
+  label,
+  value,
+  samples,
+  unavailableText = "取得中"
+}: {
+  label: string;
+  value: number | null;
+  samples: Array<number | null>;
+  unavailableText?: string;
+}) {
+  const points = samples.length
+    ? samples
+        .map((sample, index) => {
+          const x = samples.length <= 1 ? 100 : (index / (samples.length - 1)) * 100;
+          const normalized = sample ?? 0;
+          const y = 34 - (Math.max(0, Math.min(100, normalized)) / 100) * 30;
+          return `${x},${y}`;
+        })
+        .join(" ")
+    : "";
+  return (
+    <div className={`status-card usage ${value === null ? "warn" : "ok"}`}>
+      <span>{label}</span>
+      <strong>{value === null ? unavailableText : `${value.toFixed(1)}%`}</strong>
+      <svg viewBox="0 0 100 36" preserveAspectRatio="none" aria-hidden="true">
+        <polyline points={points} />
+      </svg>
     </div>
   );
 }
@@ -3906,6 +3971,13 @@ function getLoraTriggerWords(project?: LoraTrainingProject | null): string[] {
 
 function normalizedTriggerWords(words: string[], fallback = ""): string[] {
   return Array.from(new Set([...words, fallback].map((word) => word.trim()).filter(Boolean)));
+}
+
+function formatGenerationDuration(milliseconds: number): string {
+  const totalSeconds = Math.max(0, Math.round(milliseconds / 1000));
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+  return minutes ? `${minutes}分${seconds}秒` : `${seconds}秒`;
 }
 
 function normalizeOptionPromptTags(value: unknown): OptionPromptTag[] {
