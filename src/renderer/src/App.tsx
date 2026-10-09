@@ -2642,13 +2642,14 @@ function App() {
                 </div>
                 <div className="field">
                   <label>カテゴリ</label>
-                  <select value={tagCategory} onChange={(event) => setTagCategory(event.target.value)}>
+                  <input list="illustration-tag-categories" value={tagCategory} onChange={(event) => setTagCategory(event.target.value)} />
+                  <datalist id="illustration-tag-categories">
                     {uniqueCategories([...illustrationTagEditCategories(illustrationTags), tagCategory]).map((category) => (
                       <option value={category} key={category}>
                         {category}
                       </option>
                     ))}
-                  </select>
+                  </datalist>
                 </div>
               </div>
               <div className="field">
