@@ -597,39 +597,52 @@ label {
 }
 
 .status-grid {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  display: flex;
+  flex-wrap: nowrap;
   gap: 8px;
   margin-bottom: 14px;
+  overflow: hidden;
 }
 
 .global-status-panel {
   margin-top: 14px;
-  padding: 12px;
+  padding: 8px 10px;
 }
 
 .global-status-panel .status-grid {
-  grid-template-columns: repeat(9, minmax(0, 1fr));
   margin-bottom: 0;
 }
 
-.status-grid.compact div {
-  min-height: 48px;
-}
-
 .status-grid div {
-  min-height: 58px;
+  min-height: 38px;
   border: 1px solid #1c2d53;
   border-radius: 8px;
-  padding: 10px;
+  padding: 6px 10px;
   background: #081125;
+  flex: 1 1 0;
+  min-width: 0;
+}
+
+.status-grid .status-card.ok {
+  border-color: #2aa867;
+  background: #092016;
+}
+
+.status-grid .status-card.warn {
+  border-color: #d8a63a;
+  background: #251d08;
+}
+
+.status-grid .status-card.error {
+  border-color: #d94e64;
+  background: #2a0c14;
 }
 
 .status-grid span {
   display: block;
   color: #8293b8;
-  font-size: 12px;
-  margin-bottom: 5px;
+  font-size: 10px;
+  margin-bottom: 2px;
 }
 
 .status-grid strong {
@@ -637,7 +650,7 @@ label {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  font-size: 14px;
+  font-size: 12px;
 }
 
 .field {

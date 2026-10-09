@@ -30,6 +30,7 @@ export type RuntimePaths = {
   checkpoints: string;
   loras: string;
   vae: string;
+  clip: string;
   outputs: string;
   workflows: string;
   loraProjects: string;
@@ -72,6 +73,8 @@ export type RuntimeStatus = {
   containerState: string;
   checkpoints: ModelFileInfo[];
   loras: ModelFileInfo[];
+  vae: ModelFileInfo[];
+  clip: ModelFileInfo[];
   outputs: string[];
 };
 
@@ -87,7 +90,7 @@ export type ModelFileInfo = {
 
 export type DownloadRequest = {
   url: string;
-  targetType: "checkpoints" | "loras" | "vae";
+  targetType: "checkpoints" | "loras" | "vae" | "clip";
   fileName?: string;
   sha256?: string;
   source?: "civitai" | "direct";
@@ -95,7 +98,7 @@ export type DownloadRequest = {
 };
 
 export type DeleteModelRequest = {
-  targetType: "checkpoints" | "loras" | "vae";
+  targetType: "checkpoints" | "loras" | "vae" | "clip";
   fileName: string;
 };
 
@@ -249,6 +252,8 @@ export type TestGenerationRequest = {
   cfg: number;
   seed: number;
   comfyUrl: string;
+  vae?: string;
+  clip?: string;
 };
 
 export type GenerationLora = {
@@ -436,6 +441,7 @@ export function getRuntimePaths(): RuntimePaths {
     checkpoints: join(root, "models", "checkpoints"),
     loras: join(root, "models", "loras"),
     vae: join(root, "models", "vae"),
+    clip: join(root, "models", "clip"),
     outputs: join(root, "outputs"),
     workflows: join(root, "workflows"),
     loraProjects: join(root, "lora-projects"),
@@ -463,6 +469,7 @@ export async function ensureRuntimeFiles(): Promise<RuntimePaths> {
     mkdir(paths.checkpoints, { recursive: true }),
     mkdir(paths.loras, { recursive: true }),
     mkdir(paths.vae, { recursive: true }),
+    mkdir(paths.clip, { recursive: true }),
     mkdir(paths.outputs, { recursive: true }),
     mkdir(paths.workflows, { recursive: true }),
     mkdir(paths.loraProjects, { recursive: true }),
@@ -523,6 +530,8 @@ export async function getStatus(comfyUrl = `http://127.0.0.1:${comfyPort}`): Pro
     comfyReachable,
     checkpoints,
     loras,
+    vae,
+    clip,
     outputs,
     containerState
   ] =
@@ -538,6 +547,8 @@ export async function getStatus(comfyUrl = `http://127.0.0.1:${comfyPort}`): Pro
       checkComfy(comfyUrl),
       listModelFiles(paths.checkpoints),
       listModelFiles(paths.loras),
+      listModelFiles(paths.vae),
+      listModelFiles(paths.clip),
       listFiles(paths.outputs),
       getContainerState()
     ]);
@@ -564,6 +575,8 @@ export async function getStatus(comfyUrl = `http://127.0.0.1:${comfyPort}`): Pro
     containerState,
     checkpoints,
     loras,
+    vae,
+    clip,
     outputs
   };
 }
@@ -2585,21 +2598,47 @@ function downloadErrorMessage(status: number, url: URL): string {
 export async function runTestGeneration(request: TestGenerationRequest): Promise<TestGenerationResult> {
   const paths = getRuntimePaths();
   const modelInfo = await inspectModelFile(join(paths.checkpoints, request.checkpoint));
-  if (!modelInfo.simpleWorkflowReady) {
+  const externalVae = request.vae?.trim();
+  const externalClip = request.clip?.trim();
+  const externalVaeReady = Boolean(externalVae && (await exists(join(paths.vae, externalVae))));
+  const externalClipReady = Boolean(externalClip && (await exists(join(paths.clip, externalClip))));
+  if ((!modelInfo.hasClip && !externalClipReady) || (!modelInfo.hasVae && !externalVaeReady)) {
     return {
       ok: false,
       message: [
         "このCheckpointは現在の簡易テスト生成では使えません。",
         `Checkpoint: ${request.checkpoint}`,
         `判定: ${modelInfo.compatibilityLabel}`,
-        "理由: promptを読むCLIP/text encoder、または画像復元用VAEがCheckpoint内にありません。",
-        "今後のPhaseでは外部CLIP/VAEを選択するworkflowに対応させます。今はCLIP/VAE入りのSDXL/Pony/Illustrious系Checkpointを選んでください。"
+        !modelInfo.hasClip && !externalClipReady
+          ? "理由: promptを読むCLIP/text encoderがCheckpoint内にありません。"
+          : "理由: 画像復元用VAEがCheckpoint内になく、外部VAEも選択されていません。",
+        "今のテスト生成は、Checkpoint内蔵CLIP/VAE、または外部CLIP/VAE選択に対応しています。"
       ].join("\n")
     };
   }
   const workflow = testWorkflowTemplate();
   workflow["4"].inputs.ckpt_name = request.checkpoint;
-  applyLorasToWorkflow(workflow, request.loras ?? []);
+  let clipSource: [string, number] = ["4", 1];
+  if (!modelInfo.hasClip && externalClipReady && externalClip) {
+    workflow["11"] = {
+      class_type: "CLIPLoader",
+      inputs: {
+        clip_name: externalClip,
+        type: "stable_diffusion"
+      }
+    };
+    clipSource = ["11", 0];
+  }
+  if (!modelInfo.hasVae && externalVaeReady && externalVae) {
+    workflow["10"] = {
+      class_type: "VAELoader",
+      inputs: {
+        vae_name: externalVae
+      }
+    };
+    workflow["8"].inputs.vae = ["10", 0];
+  }
+  applyLorasToWorkflow(workflow, request.loras ?? [], clipSource);
   workflow["6"].inputs.text = request.prompt;
   workflow["7"].inputs.text = request.negativePrompt;
   workflow["5"].inputs.width = request.width;
@@ -2661,11 +2700,12 @@ export async function runTestGeneration(request: TestGenerationRequest): Promise
 
 function applyLorasToWorkflow(
   workflow: Record<string, { class_type: string; inputs: Record<string, unknown> }>,
-  loras: GenerationLora[]
+  loras: GenerationLora[],
+  initialClipSource: [string, number] = ["4", 1]
 ): void {
   const activeLoras = loras.filter((lora) => lora.name.trim() && (lora.modelStrength !== 0 || lora.clipStrength !== 0));
   let modelSource: [string, number] = ["4", 0];
-  let clipSource: [string, number] = ["4", 1];
+  let clipSource: [string, number] = initialClipSource;
   activeLoras.forEach((lora, index) => {
     const nodeId = String(20 + index);
     workflow[nodeId] = {
@@ -2819,6 +2859,8 @@ function dockerRunArgs(paths: RuntimePaths): string[] {
     `${paths.loras}:/opt/ComfyUI/models/loras:ro`,
     "-v",
     `${paths.vae}:/opt/ComfyUI/models/vae:ro`,
+    "-v",
+    `${paths.clip}:/opt/ComfyUI/models/clip:ro`,
     "-v",
     `${paths.outputs}:/data/outputs:rw`,
     "--security-opt",
@@ -3265,6 +3307,7 @@ async function writeNativeExtraModelPaths(paths: RuntimePaths): Promise<void> {
   checkpoints: models/checkpoints
   loras: models/loras
   vae: models/vae
+  clip: models/clip
 `;
   await writeFile(join(paths.nativeComfy, "extra_model_paths.yaml"), yaml, "utf8");
 }
@@ -3525,7 +3568,7 @@ async function withHuggingFaceModelFileSizes(card: HuggingFaceLlmModelCard): Pro
   }
 }
 
-const defaultBaseModelFilters = ["SDXL", "Pony", "Illustrious", "Animagine"];
+const defaultBaseModelFilters = ["SDXL", "Pony", "Illustrious", "Animagine", "Anima"];
 
 function isAllowedBaseModel(model: CivitaiModelCard, filters: string[]): boolean {
   if (!filters.length) return true;
@@ -3580,6 +3623,7 @@ function composeText(paths: RuntimePaths): string {
       - "${paths.checkpoints}:/opt/ComfyUI/models/checkpoints:ro"
       - "${paths.loras}:/opt/ComfyUI/models/loras:ro"
       - "${paths.vae}:/opt/ComfyUI/models/vae:ro"
+      - "${paths.clip}:/opt/ComfyUI/models/clip:ro"
       - "${paths.outputs}:/data/outputs:rw"
     security_opt:
       - no-new-privileges:true

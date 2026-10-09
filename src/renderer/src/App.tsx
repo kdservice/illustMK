@@ -57,13 +57,13 @@ type LogLine = {
 };
 
 const defaultComfyUrl = "http://127.0.0.1:8188";
-const defaultBaseFilters = ["SDXL", "Pony", "Illustrious", "Animagine"];
+const defaultBaseFilters = ["SDXL", "Pony", "Illustrious", "Animagine", "Anima"];
 const allBaseFilters = [
   { name: "SDXL", status: "対応" },
   { name: "Pony", status: "対応" },
   { name: "Illustrious", status: "対応" },
   { name: "Animagine", status: "対応" },
-  { name: "Anima", status: "現在は非対応" },
+  { name: "Anima", status: "対応候補" },
   { name: "Krea", status: "現在は非対応" },
   { name: "Flux", status: "現在は非対応" },
   { name: "Qwen Image", status: "現在は非対応" }
@@ -102,6 +102,10 @@ function App() {
   const [downloadUrl, setDownloadUrl] = useState("");
   const [downloadFileName, setDownloadFileName] = useState("");
   const [downloadSha, setDownloadSha] = useState("");
+  const [vaeUrl, setVaeUrl] = useState("https://huggingface.co/madebyollin/sdxl-vae-fp16-fix/resolve/main/sdxl.vae.safetensors");
+  const [clipUrl, setClipUrl] = useState("");
+  const [selectedVae, setSelectedVae] = useState("");
+  const [selectedClip, setSelectedClip] = useState("");
   const [modelAddMode, setModelAddMode] = useState<"recommend" | "search" | "url">("recommend");
   const [catalogQuery, setCatalogQuery] = useState("");
   const [catalogModels, setCatalogModels] = useState<CivitaiModelCard[]>([]);
@@ -212,7 +216,16 @@ function App() {
     selectedLoraProject && status?.loras.some((file) => file.name === selectedLoraProject.outputName)
   );
   const effectivePrompt = prompt;
-  const canGenerate = Boolean(status?.comfyReachable && selectedCheckpointInfo?.simpleWorkflowReady && !action.busy);
+  const selectedCheckpointGenerationReady = Boolean(
+    selectedCheckpointInfo && (selectedCheckpointInfo.hasClip || selectedClip) && (selectedCheckpointInfo.hasVae || selectedVae)
+  );
+  const selectedCheckpointCompatibilityLabel = selectedCheckpointInfo
+    ? [
+        selectedCheckpointInfo.hasClip ? "CLIP内蔵" : selectedClip ? `外部CLIP: ${selectedClip}` : "外部CLIPが必要",
+        selectedCheckpointInfo.hasVae ? "VAE内蔵" : selectedVae ? `外部VAE: ${selectedVae}` : "外部VAEが必要"
+      ].join(" / ")
+    : "未選択";
+  const canGenerate = Boolean(status?.comfyReachable && selectedCheckpointGenerationReady && !action.busy);
   const canDownloadLlm = Boolean(ollamaStatus?.reachable && ollamaStatus.dataLinked && ollamaModel.trim() && !action.busy);
   const canSendLlmPrompt = Boolean(ollamaStatus?.reachable && ollamaStatus.dataLinked && ollamaModel.trim() && llmPrompt.trim() && !action.busy);
   const llmPromptDisabledReason = useMemo(() => {
@@ -284,6 +297,18 @@ function App() {
       setSelectedCheckpoint(status.checkpoints.find((checkpoint) => checkpoint.simpleWorkflowReady)?.name ?? status.checkpoints[0].name);
     }
   }, [selectedCheckpoint, status?.checkpoints]);
+
+  useEffect(() => {
+    if (status?.vae.length && !selectedVae) {
+      setSelectedVae(status.vae.find((file) => file.hasVae)?.name ?? status.vae[0].name);
+    }
+  }, [selectedVae, status?.vae]);
+
+  useEffect(() => {
+    if (status?.clip.length && !selectedClip) {
+      setSelectedClip(status.clip.find((file) => file.hasClip)?.name ?? status.clip[0].name);
+    }
+  }, [selectedClip, status?.clip]);
 
   useEffect(() => {
     if (!loraProjects.length) {
@@ -479,6 +504,52 @@ function App() {
         }
       }
     );
+  }
+
+  async function installVae(): Promise<void> {
+    const fileName = vaeUrl.split("/").pop()?.split("?")[0] || "external.vae.safetensors";
+    await runDownloadAction("VAEをインストール中", {
+      url: vaeUrl.trim(),
+      targetType: "vae",
+      fileName,
+      source: vaeUrl.includes("civitai.com") ? "civitai" : "direct"
+    }, () => {
+      setSelectedVae(fileName);
+    });
+  }
+
+  async function deleteSelectedVae(): Promise<void> {
+    if (!selectedVae) return;
+    if (!window.confirm(`${selectedVae} を削除します。元に戻せません。`)) return;
+    await runAction(`${selectedVae} を削除中`, () =>
+      window.illustMK.runtime.deleteModel({ targetType: "vae", fileName: selectedVae }), () => {
+        setSelectedVae("");
+      }
+    );
+    await refreshStatus();
+  }
+
+  async function installClip(): Promise<void> {
+    const fileName = clipUrl.split("/").pop()?.split("?")[0] || "external_clip.safetensors";
+    await runDownloadAction("CLIP/text encoderをインストール中", {
+      url: clipUrl.trim(),
+      targetType: "clip",
+      fileName,
+      source: clipUrl.includes("civitai.com") ? "civitai" : "direct"
+    }, () => {
+      setSelectedClip(fileName);
+    });
+  }
+
+  async function deleteSelectedClip(): Promise<void> {
+    if (!selectedClip) return;
+    if (!window.confirm(`${selectedClip} を削除します。元に戻せません。`)) return;
+    await runAction(`${selectedClip} を削除中`, () =>
+      window.illustMK.runtime.deleteModel({ targetType: "clip", fileName: selectedClip }), () => {
+        setSelectedClip("");
+      }
+    );
+    await refreshStatus();
   }
 
   function appendLog(level: LogLine["level"], line: string, id = currentOperationId.current ?? "manual"): void {
@@ -1065,7 +1136,9 @@ function App() {
     steps: 20,
     cfg: 7,
     seed: seedMode === "random" ? -1 : seedValue,
-    comfyUrl
+    comfyUrl,
+    vae: selectedVae || undefined,
+    clip: selectedClip || undefined
   };
 
   async function runLoraOnOffCompare(): Promise<void> {
@@ -1114,7 +1187,7 @@ function App() {
       </header>
 
       <section className="panel global-status-panel">
-        <StatusGrid status={status} ollamaStatus={ollamaStatus} />
+        <StatusGrid status={status} ollamaStatus={ollamaStatus} runtimeTab={runtimeTab} />
       </section>
 
       <nav className="main-tabs">
@@ -1122,7 +1195,7 @@ function App() {
           環境
         </button>
         <button className={mainTab === "llm" ? "tab active" : "tab"} onClick={() => setMainTab("llm")}>
-          LLM
+          チャット
         </button>
         <button className={mainTab === "lora" ? "tab active" : "tab"} onClick={() => setMainTab("lora")}>
           LoRA
@@ -1217,24 +1290,66 @@ function App() {
                 <p>outputs: {paths?.loras ?? "/Volumes/ARC-8050T2/illustMK/models/loras"}</p>
               </div>
             </section>
+
+            <section className="panel model-runtime-panel">
+              <PanelTitle icon={<Download size={18} />} title="外部CLIP / VAE" />
+              <div className="field">
+                <label>VAE URL</label>
+                <div className="inline">
+                  <input value={vaeUrl} onChange={(event) => setVaeUrl(event.target.value)} />
+                  <button className="icon-button" disabled={action.busy || !vaeUrl.trim()} onClick={() => void installVae()} title="VAEインストール">
+                    <Download size={17} />
+                  </button>
+                </div>
+              </div>
+              <div className="field">
+                <label>CLIP / text encoder URL</label>
+                <div className="inline">
+                  <input placeholder="必要なCLIP/text encoderのURL" value={clipUrl} onChange={(event) => setClipUrl(event.target.value)} />
+                  <button className="icon-button" disabled={action.busy || !clipUrl.trim()} onClick={() => void installClip()} title="CLIPインストール">
+                    <Download size={17} />
+                  </button>
+                </div>
+              </div>
+              <div className="two-columns">
+                <div className="field">
+                  <label>選択VAE</label>
+                  <select value={selectedVae} onChange={(event) => setSelectedVae(event.target.value)}>
+                    <option value="">未選択</option>
+                    {status?.vae.map((file) => (
+                      <option key={file.name} value={file.name}>
+                        {file.name}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+                <div className="field">
+                  <label>選択CLIP</label>
+                  <select value={selectedClip} onChange={(event) => setSelectedClip(event.target.value)}>
+                    <option value="">未選択</option>
+                    {status?.clip.map((file) => (
+                      <option key={file.name} value={file.name}>
+                        {file.name}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              </div>
+              <div className="button-row">
+                <button className="danger" disabled={action.busy || !selectedVae} onClick={() => void deleteSelectedVae()}>
+                  <Trash2 size={15} />
+                  VAE削除
+                </button>
+                <button className="danger" disabled={action.busy || !selectedClip} onClick={() => void deleteSelectedClip()}>
+                  <Trash2 size={15} />
+                  CLIP削除
+                </button>
+              </div>
+            </section>
           </div>
 
           <section className="panel llm-panel">
             <PanelTitle icon={<Bot size={18} />} title="LLM / Ollama" />
-            <div className="status-grid compact">
-              <div>
-                <span>Ollama.app</span>
-                <strong>{ollamaStatus?.installed ? "検出" : "未検出"}</strong>
-              </div>
-              <div>
-                <span>API</span>
-                <strong>{ollamaStatus?.reachable ? "接続OK" : "未接続"}</strong>
-              </div>
-              <div>
-                <span>DataPath</span>
-                <strong>{ollamaStatus?.dataLinked ? "OK" : "未切替"}</strong>
-              </div>
-            </div>
             <div className="field">
               <label>Ollama API</label>
               <div className="inline">
@@ -1820,6 +1935,30 @@ function App() {
                 )}
               </select>
             </div>
+            <div className="two-columns">
+              <div className="field">
+                <label>外部VAE</label>
+                <select value={selectedVae} onChange={(event) => setSelectedVae(event.target.value)}>
+                  <option value="">未選択</option>
+                  {status?.vae.map((file) => (
+                    <option key={file.name} value={file.name}>
+                      {file.name}
+                    </option>
+                  ))}
+                </select>
+              </div>
+              <div className="field">
+                <label>外部CLIP</label>
+                <select value={selectedClip} onChange={(event) => setSelectedClip(event.target.value)}>
+                  <option value="">未選択</option>
+                  {status?.clip.map((file) => (
+                    <option key={file.name} value={file.name}>
+                      {file.name}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            </div>
             <div className="generation-controls">
               <div className="field">
                 <label>画像サイズ</label>
@@ -1921,9 +2060,9 @@ function App() {
                 </article>
               </div>
             ) : null}
-            {selectedCheckpointInfo && !selectedCheckpointInfo.simpleWorkflowReady ? (
+            {selectedCheckpointInfo && !selectedCheckpointGenerationReady ? (
               <p className="result-message">
-                このCheckpointは外部CLIP/VAEが必要です。今のテスト生成では、簡易生成OKのCheckpointを選んでください。
+                このCheckpointは追加ファイルが必要です。{selectedCheckpointCompatibilityLabel}
               </p>
             ) : null}
             {generationResult?.message && <p className="result-message">{generationResult.message}</p>}
@@ -2632,24 +2771,43 @@ function LogPanel({
   );
 }
 
-function StatusGrid({ status, ollamaStatus }: { status: RuntimeStatus | null; ollamaStatus?: OllamaStatus | null }) {
+type StatusTone = "ok" | "warn" | "error";
+
+function StatusGrid({
+  status,
+  ollamaStatus,
+  runtimeTab
+}: {
+  status: RuntimeStatus | null;
+  ollamaStatus?: OllamaStatus | null;
+  runtimeTab: "macos" | "docker";
+}) {
+  const runtimeItems: Array<{ label: string; value: string; tone: StatusTone }> =
+    runtimeTab === "docker"
+      ? [
+          { label: "Docker", value: status?.dockerDesktopInstalled ? "検出" : "未検出", tone: status?.dockerDesktopInstalled ? "ok" : "error" },
+          { label: "Docker API", value: status?.dockerDaemonReady ? "接続OK" : "未起動", tone: status?.dockerDaemonReady ? "ok" : "warn" },
+          { label: "Compose", value: status?.composeCommand ? "OK" : "未検出", tone: status?.composeCommand ? "ok" : "error" }
+        ]
+      : [
+          { label: "macOS Runtime", value: status?.nativeInstalled ? "OK" : "未インストール", tone: status?.nativeInstalled ? "ok" : "error" },
+          { label: "ComfyUI", value: status?.comfyReachable ? "接続中" : status?.nativeRunning ? "起動中" : "未接続", tone: status?.comfyReachable ? "ok" : status?.nativeRunning ? "warn" : "error" }
+        ];
+
+  const ollamaValue = ollamaStatus?.reachable && ollamaStatus.dataLinked ? "接続OK" : ollamaStatus?.reachable ? "保存先NG" : ollamaStatus?.installed ? "未起動" : "未検出";
+  const ollamaTone: StatusTone = ollamaStatus?.reachable && ollamaStatus.dataLinked ? "ok" : ollamaStatus?.installed ? "warn" : "error";
+  const dataTone: StatusTone = ollamaStatus?.dataLinked ? "ok" : ollamaStatus?.installed ? "warn" : "error";
   const items = [
-    ["Desktop", status?.dockerDesktopInstalled ? "OK" : "未検出"],
-    ["Docker", status?.dockerAvailable ? "OK" : "未検出"],
-    ["Daemon", status?.dockerDaemonReady ? "接続OK" : "未起動"],
-    ["Compose", status?.composeCommand ?? "未検出"],
-    ["Runtime", status?.pathsReady ? "OK" : "未初期化"],
-    ["ComfyUI", status?.comfyReachable ? "接続中" : "未接続"],
-    ["Image Models", `${status?.checkpoints.length ?? 0}`],
-    ["LoRA", `${status?.loras.length ?? 0}`],
-    ["Ollama", ollamaStatus?.reachable && ollamaStatus.dataLinked ? "接続OK" : ollamaStatus?.reachable ? "保存先NG" : ollamaStatus?.installed ? "未起動" : "未検出"],
-    ["LLM Models", `${ollamaStatus?.models.length ?? 0}`]
+    ...runtimeItems,
+    { label: "Runtime Path", value: status?.pathsReady ? "OK" : "未初期化", tone: status?.pathsReady ? "ok" : "error" },
+    { label: "Ollama", value: ollamaValue, tone: ollamaTone },
+    { label: "DataPath", value: ollamaStatus?.dataLinked ? "OK" : "未切替", tone: dataTone }
   ];
 
   return (
     <div className="status-grid">
-      {items.map(([label, value]) => (
-        <div key={label}>
+      {items.map(({ label, value, tone }) => (
+        <div className={`status-card ${tone}`} key={label}>
           <span>{label}</span>
           <strong>{value}</strong>
         </div>
