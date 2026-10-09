@@ -357,6 +357,30 @@ label {
   font-size: 12px;
 }
 
+.base-filter-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.base-filter-row button {
+  width: auto;
+  min-height: 30px;
+  padding: 6px 10px;
+  font-size: 12px;
+}
+
+.base-filter-row button.active {
+  border-color: #44bcff;
+  background: #15335f;
+  color: #ffffff;
+}
+
+.lora-base-filter-row {
+  padding-bottom: 8px;
+  border-bottom: 1px solid #142444;
+}
+
 .lora-train-grid {
   display: grid;
   grid-template-columns: repeat(5, minmax(96px, 1fr));
@@ -1285,6 +1309,47 @@ label {
   background: #030712;
 }
 
+.lora-project-meta .meta-tag,
+.lora-meta-tags .meta-tag {
+  color: #e7ecff;
+  font-weight: 800;
+}
+
+.lora-project-meta .meta-tag.trigger,
+.lora-meta-tags .meta-tag.trigger {
+  border-color: #c084fc;
+  background: #241138;
+}
+
+.lora-project-meta .meta-tag.base,
+.lora-meta-tags .meta-tag.base {
+  border-color: #ff6b7a;
+  background: #351018;
+}
+
+.lora-project-meta .meta-tag.size,
+.lora-meta-tags .meta-tag.size {
+  border-color: #facc15;
+  background: #30270a;
+}
+
+.trigger-word-list {
+  display: grid;
+  gap: 8px;
+}
+
+.trigger-word-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 34px 34px;
+  gap: 6px;
+  align-items: center;
+}
+
+.trigger-word-row .icon-button {
+  width: 34px;
+  height: 34px;
+}
+
 .caption-image-frame img {
   width: 100%;
   height: 100%;
@@ -1577,6 +1642,10 @@ label {
 
 .prompt-history-card .history-japanese {
   color: #7fe4ff;
+}
+
+.prompt-history-card .history-memo {
+  color: #ffd166;
 }
 
 .prompt-history-card button {
@@ -1971,6 +2040,18 @@ label {
   background: #050912;
   display: grid;
   place-items: center;
+}
+
+.image-memo-panel {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px;
+  align-items: end;
+}
+
+.image-memo-panel textarea {
+  min-height: 58px;
+  resize: vertical;
 }
 
 .preview-image-button {

@@ -289,6 +289,7 @@ export type LoraTrainingProject = {
   id: string;
   name: string;
   triggerWord: string;
+  triggerWords?: string[];
   sourceLora: string;
   baseCheckpoint: string;
   projectDir: string;
@@ -350,6 +351,7 @@ export type SaveLoraTrainingProjectRequest = {
   id?: string;
   name: string;
   triggerWord: string;
+  triggerWords?: string[];
   baseCheckpoint: string;
   resolution?: number;
   repeats?: number;
@@ -379,11 +381,22 @@ export type PromptHistoryEntry = {
   prompt: string;
   negativePrompt: string;
   checkpoint: string;
+  vae?: string;
+  clip?: string;
+  llmModel?: string;
+  llmUrl?: string;
+  japanesePromptTagIds?: string[];
+  positivePromptTagIds?: string[];
+  positiveOptionTagIds?: string[];
+  negativeOptionTagIds?: string[];
+  positiveLoraTriggerIds?: string[];
+  loras?: GenerationLora[];
   width: number;
   height: number;
   steps: number;
   cfg: number;
   seed: number;
+  memo?: string;
   imagePath?: string;
   imageDataUrl?: string;
   createdAt: string;
@@ -391,8 +404,21 @@ export type PromptHistoryEntry = {
 
 export type SavePromptHistoryRequest = TestGenerationRequest & {
   japanesePrompt: string;
+  llmModel?: string;
+  llmUrl?: string;
+  japanesePromptTagIds?: string[];
+  positivePromptTagIds?: string[];
+  positiveOptionTagIds?: string[];
+  negativeOptionTagIds?: string[];
+  positiveLoraTriggerIds?: string[];
+  memo?: string;
   imagePath?: string;
   imageDataUrl?: string;
+};
+
+export type UpdatePromptHistoryMemoRequest = {
+  id: string;
+  memo: string;
 };
 
 export type TestGenerationResult = {
@@ -1587,8 +1613,11 @@ export async function clearLoraTrainingProjects(): Promise<LoraTrainingProject[]
 
 function normalizeLoraTrainingProject(project: LoraTrainingProject, paths: RuntimePaths, projectDir?: string): LoraTrainingProject {
   const resolvedProjectDir = projectDir ?? inferLoraProjectDir(project, paths);
+  const triggerWords = uniqueTextList([...(project.triggerWords ?? []), project.triggerWord]);
   return {
     ...project,
+    triggerWord: triggerWords[0] ?? "",
+    triggerWords,
     sourceLora: project.sourceLora ?? "",
     projectDir: resolvedProjectDir,
     datasetPath: project.datasetPath && basename(project.datasetPath) === "dataset" ? project.datasetPath : join(resolvedProjectDir, "dataset"),
@@ -1636,6 +1665,7 @@ export async function saveLoraTrainingProject(request: SaveLoraTrainingProjectRe
   const name = request.name.trim();
   if (!name) throw new Error("LoRA名を入力してください。");
   if (!request.baseCheckpoint.trim()) throw new Error("ベースCheckpointを選択してください。");
+  const triggerWords = uniqueTextList([...(request.triggerWords ?? []), request.triggerWord]);
   const paths = await ensureRuntimeFiles();
   const now = new Date().toISOString();
   const projects = await getLoraTrainingProjects();
@@ -1648,7 +1678,8 @@ export async function saveLoraTrainingProject(request: SaveLoraTrainingProjectRe
   const project: LoraTrainingProject = {
     id,
     name,
-    triggerWord: request.triggerWord.trim(),
+    triggerWord: triggerWords[0] ?? "",
+    triggerWords,
     sourceLora: existing?.sourceLora ?? "",
     baseCheckpoint: request.baseCheckpoint.trim(),
     projectDir: projectRoot,
@@ -2176,11 +2207,22 @@ export async function savePromptHistoryEntry(request: SavePromptHistoryRequest):
     prompt: request.prompt,
     negativePrompt: request.negativePrompt,
     checkpoint: request.checkpoint,
+    vae: request.vae,
+    clip: request.clip,
+    llmModel: request.llmModel,
+    llmUrl: request.llmUrl,
+    japanesePromptTagIds: request.japanesePromptTagIds ?? [],
+    positivePromptTagIds: request.positivePromptTagIds ?? [],
+    positiveOptionTagIds: request.positiveOptionTagIds ?? [],
+    negativeOptionTagIds: request.negativeOptionTagIds ?? [],
+    positiveLoraTriggerIds: request.positiveLoraTriggerIds ?? [],
+    loras: request.loras ?? [],
     width: request.width,
     height: request.height,
     steps: request.steps,
     cfg: request.cfg,
     seed: request.seed,
+    memo: request.memo?.trim() ?? "",
     imagePath: request.imagePath,
     imageDataUrl: request.imageDataUrl,
     createdAt: new Date().toISOString()
@@ -2188,6 +2230,13 @@ export async function savePromptHistoryEntry(request: SavePromptHistoryRequest):
   const history = [entry, ...(await getSavedPromptHistory()).filter((item) => item.japanesePrompt !== request.japanesePrompt || item.prompt !== request.prompt || item.negativePrompt !== request.negativePrompt)].slice(0, 100);
   await savePromptHistory(history);
   return history;
+}
+
+export async function updatePromptHistoryMemo(request: UpdatePromptHistoryMemoRequest): Promise<PromptHistoryEntry[]> {
+  const history = await getSavedPromptHistory();
+  const nextHistory = history.map((entry) => (entry.id === request.id ? { ...entry, memo: request.memo } : entry));
+  await savePromptHistory(nextHistory);
+  return nextHistory;
 }
 
 async function civitaiAuthHeader(): Promise<Record<string, string>> {
@@ -2710,6 +2759,10 @@ function isLoraTrainingProject(value: unknown): value is LoraTrainingProject {
 
 function safeFileName(value: string): string {
   return value.trim().replace(/[^a-zA-Z0-9._-]+/g, "-").replace(/^-+|-+$/g, "") || `lora-${Date.now()}`;
+}
+
+function uniqueTextList(values: Array<string | undefined | null>): string[] {
+  return Array.from(new Set(values.map((value) => value?.trim()).filter((value): value is string => Boolean(value))));
 }
 
 function normalizeSafetensorsName(value: string): string {

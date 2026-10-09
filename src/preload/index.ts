@@ -28,6 +28,7 @@ import type {
   TagTranslationRequest,
   TestGenerationRequest,
   TestGenerationResult,
+  UpdatePromptHistoryMemoRequest,
   UpdateLoraThumbnailRequest
 } from "../main/runtime";
 
@@ -131,6 +132,8 @@ const api = {
   promptHistory: {
     list: (): Promise<PromptHistoryEntry[]> => ipcRenderer.invoke("prompt-history:list"),
     save: (request: SavePromptHistoryRequest): Promise<PromptHistoryEntry[]> => ipcRenderer.invoke("prompt-history:save", request),
+    updateMemo: (request: UpdatePromptHistoryMemoRequest): Promise<PromptHistoryEntry[]> =>
+      ipcRenderer.invoke("prompt-history:update-memo", request),
     clear: (): Promise<PromptHistoryEntry[]> => ipcRenderer.invoke("prompt-history:clear")
   },
   app: {

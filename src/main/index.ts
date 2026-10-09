@@ -58,6 +58,7 @@ import {
   uninstallOllama,
   translateTagDescription,
   trainLoraTrainingProject,
+  updatePromptHistoryMemo,
   updateLoraTrainingProjectThumbnail,
   clearPromptHistory,
   clearLoraTrainingProjects,
@@ -79,6 +80,7 @@ import {
   type TagDescriptionRequest,
   type TagTranslationRequest,
   type TestGenerationRequest,
+  type UpdatePromptHistoryMemoRequest,
   type UpdateLoraThumbnailRequest
 } from "./runtime";
 
@@ -306,6 +308,7 @@ function registerIpc(): void {
   ipcMain.handle("runtime:test-generate", (_event, request: TestGenerationRequest) => runTestGeneration(request));
   ipcMain.handle("prompt-history:list", () => getSavedPromptHistory());
   ipcMain.handle("prompt-history:save", (_event, request: SavePromptHistoryRequest) => savePromptHistoryEntry(request));
+  ipcMain.handle("prompt-history:update-memo", (_event, request: UpdatePromptHistoryMemoRequest) => updatePromptHistoryMemo(request));
   ipcMain.handle("prompt-history:clear", () => clearPromptHistory());
   ipcMain.handle("tags:list", () => getIllustrationTags());
   ipcMain.handle("tags:generate-ja", (_event, request: TagDescriptionRequest) => generateTagJapaneseDescription(request));

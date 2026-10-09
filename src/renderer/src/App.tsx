@@ -105,6 +105,7 @@ type OptionPromptTag = {
 };
 type AppliedLoraTrigger = {
   loraName: string;
+  triggerId: string;
   title: string;
   triggerWord: string;
 };
@@ -198,6 +199,8 @@ function App() {
   const [prompt, setPrompt] = useState("masterpiece, best quality, 1girl, anime style, soft light");
   const [negativePrompt, setNegativePrompt] = useState("low quality, worst quality, blurry, bad anatomy");
   const [lastImage, setLastImage] = useState<string | null>(null);
+  const [lastHistoryId, setLastHistoryId] = useState<string | null>(null);
+  const [imageMemo, setImageMemo] = useState("");
   const [generationResult, setGenerationResult] = useState<TestGenerationResult | null>(null);
   const [loraCompareResult, setLoraCompareResult] = useState<{ seed: number; withoutLora: TestGenerationResult; withLora: TestGenerationResult } | null>(null);
   const [imageSizePreset, setImageSizePreset] = useState("768x1024");
@@ -215,8 +218,11 @@ function App() {
   const [editingLoraProjectId, setEditingLoraProjectId] = useState<string | null>(null);
   const [loraName, setLoraName] = useState("");
   const [loraTriggerWord, setLoraTriggerWord] = useState("");
+  const [loraTriggerWords, setLoraTriggerWords] = useState<string[]>([""]);
   const [loraDetailName, setLoraDetailName] = useState("");
   const [loraDetailTriggerWord, setLoraDetailTriggerWord] = useState("");
+  const [loraDetailTriggerWords, setLoraDetailTriggerWords] = useState<string[]>([""]);
+  const [loraProjectBaseFilters, setLoraProjectBaseFilters] = useState<string[]>([]);
   const [loraAdditionalTraining, setLoraAdditionalTraining] = useState(false);
   const [loraCatalogOpen, setLoraCatalogOpen] = useState(false);
   const [loraCatalogQuery, setLoraCatalogQuery] = useState("");
@@ -268,6 +274,17 @@ function App() {
     () => loraProjects.find((project) => project.id === selectedLoraProjectId) ?? loraProjects[0] ?? null,
     [loraProjects, selectedLoraProjectId]
   );
+  const loraProjectBaseOptions = useMemo(
+    () => uniqueCategories(loraProjects.map((project) => inferCheckpointBaseModel(project.baseCheckpoint))),
+    [loraProjects]
+  );
+  const filteredLoraProjects = useMemo(
+    () =>
+      loraProjectBaseFilters.length
+        ? loraProjects.filter((project) => loraProjectBaseFilters.includes(inferCheckpointBaseModel(project.baseCheckpoint)))
+        : loraProjects,
+    [loraProjectBaseFilters, loraProjects]
+  );
   const activeLoraRunParams: LoraTrainingRunParams = useMemo(
     () =>
       loraTrainingPreset === "custom"
@@ -299,21 +316,20 @@ function App() {
   const selectedLoraTriggers = useMemo<AppliedLoraTrigger[]>(
     () =>
       selectedLoras
-        .map((lora) => {
+        .flatMap((lora) => {
           const project = loraProjects.find((item) => item.outputName === lora.name || item.sourceLora === lora.name);
-          const triggerWord = project?.triggerWord.trim();
-          if (!triggerWord) return null;
-          return {
+          const triggerWords = getLoraTriggerWords(project);
+          return triggerWords.map((triggerWord, index) => ({
             loraName: lora.name,
+            triggerId: `${lora.name}::${index}::${triggerWord}`,
             title: project?.name || lora.name,
             triggerWord
-          };
-        })
-        .filter((item): item is AppliedLoraTrigger => Boolean(item)),
+          }));
+        }),
     [loraProjects, selectedLoras]
   );
   const positiveLoraTriggers = useMemo(
-    () => selectedLoraTriggers.filter((item) => positiveLoraTriggerIds.includes(item.loraName)),
+    () => selectedLoraTriggers.filter((item) => positiveLoraTriggerIds.includes(item.triggerId)),
     [positiveLoraTriggerIds, selectedLoraTriggers]
   );
   const negativeOptionTags = useMemo(
@@ -476,7 +492,8 @@ function App() {
   useEffect(() => {
     setLoraDetailName(selectedLoraProject?.name ?? "");
     setLoraDetailTriggerWord(selectedLoraProject?.triggerWord ?? "");
-  }, [selectedLoraProject?.id, selectedLoraProject?.name, selectedLoraProject?.triggerWord]);
+    setLoraDetailTriggerWords(getLoraTriggerWords(selectedLoraProject).length ? getLoraTriggerWords(selectedLoraProject) : [""]);
+  }, [selectedLoraProject?.id, selectedLoraProject?.name, selectedLoraProject?.triggerWord, selectedLoraProject?.triggerWords]);
 
   async function runAction<T>(message: string, task: () => Promise<T>, after?: (value: T) => void): Promise<void> {
     const id = crypto.randomUUID();
@@ -918,11 +935,24 @@ function App() {
     setPrompt(entry.prompt);
     setNegativePrompt(entry.negativePrompt);
     setSelectedCheckpoint(entry.checkpoint);
+    setSelectedVae(entry.vae ?? "");
+    setSelectedClip(entry.clip ?? "");
+    if (entry.llmUrl) setOllamaUrl(entry.llmUrl);
+    if (entry.llmModel) setOllamaModel(entry.llmModel);
+    setJapanesePromptTagIds(entry.japanesePromptTagIds ?? []);
+    setPositivePromptTagIds(entry.positivePromptTagIds ?? []);
+    setPositiveOptionTagIds(entry.positiveOptionTagIds ?? []);
+    setNegativeOptionTagIds(entry.negativeOptionTagIds ?? []);
+    setPositiveLoraTriggerIds(entry.positiveLoraTriggerIds ?? []);
+    setSelectedLoras(entry.loras ?? []);
     setGenerationWidth(entry.width);
     setGenerationHeight(entry.height);
     setImageSizePreset(`${entry.width}x${entry.height}`);
     setSeedValue(entry.seed);
     setSeedMode(entry.seed >= 0 ? "fixed" : "random");
+    setImageMemo(entry.memo ?? "");
+    setLastHistoryId(entry.id);
+    if (entry.imageDataUrl || entry.imagePath) setLastImage(entry.imageDataUrl ?? entry.imagePath ?? null);
     setPromptHistoryOpen(false);
   }
 
@@ -1114,6 +1144,7 @@ function App() {
     setEditingLoraProjectId(null);
     setLoraName("");
     setLoraTriggerWord("");
+    setLoraTriggerWords([""]);
     setLoraCreateDialogOpen(true);
   }
 
@@ -1123,6 +1154,7 @@ function App() {
     setEditingLoraProjectId(selectedLoraProject.id);
     setLoraName(selectedLoraProject.name);
     setLoraTriggerWord(selectedLoraProject.triggerWord);
+    setLoraTriggerWords(getLoraTriggerWords(selectedLoraProject).length ? getLoraTriggerWords(selectedLoraProject) : [""]);
     setSelectedCheckpoint(selectedLoraProject.baseCheckpoint);
     setLoraCreateDialogOpen(true);
   }
@@ -1135,7 +1167,8 @@ function App() {
         window.illustMK.loraProjects.save({
           id: targetProjectId ?? undefined,
           name: loraName,
-          triggerWord: loraTriggerWord,
+          triggerWord: normalizedTriggerWords(loraTriggerWords, loraTriggerWord)[0] ?? "",
+          triggerWords: normalizedTriggerWords(loraTriggerWords, loraTriggerWord),
           baseCheckpoint: selectedCheckpoint
         }),
       (projects) => {
@@ -1156,7 +1189,8 @@ function App() {
         window.illustMK.loraProjects.save({
           id: targetProjectId,
           name: loraDetailName,
-          triggerWord: loraDetailTriggerWord,
+          triggerWord: normalizedTriggerWords(loraDetailTriggerWords, loraDetailTriggerWord)[0] ?? "",
+          triggerWords: normalizedTriggerWords(loraDetailTriggerWords, loraDetailTriggerWord),
           baseCheckpoint: selectedLoraProject.baseCheckpoint
         }),
       (projects) => {
@@ -1536,6 +1570,35 @@ function App() {
   function imageUrl(path: string): string {
     if (path.startsWith("data:")) return path;
     return `file://${path}`;
+  }
+
+  function updateTriggerWordList(target: "dialog" | "detail", index: number, value: string): void {
+    const setter = target === "dialog" ? setLoraTriggerWords : setLoraDetailTriggerWords;
+    setter((current) => current.map((item, itemIndex) => (itemIndex === index ? value : item)));
+    if (index === 0) {
+      if (target === "dialog") setLoraTriggerWord(value);
+      else setLoraDetailTriggerWord(value);
+    }
+  }
+
+  function addTriggerWordRow(target: "dialog" | "detail"): void {
+    const setter = target === "dialog" ? setLoraTriggerWords : setLoraDetailTriggerWords;
+    setter((current) => [...current, ""]);
+  }
+
+  function removeTriggerWordRow(target: "dialog" | "detail", index: number): void {
+    const setter = target === "dialog" ? setLoraTriggerWords : setLoraDetailTriggerWords;
+    setter((current) => {
+      const next = current.filter((_item, itemIndex) => itemIndex !== index);
+      return next.length ? next : [""];
+    });
+  }
+
+  async function saveCurrentHistoryMemo(): Promise<void> {
+    if (!lastHistoryId) return;
+    await runAction("生成メモを更新中", () => window.illustMK.promptHistory.updateMemo({ id: lastHistoryId, memo: imageMemo }), (history) => {
+      setPromptHistory(history);
+    });
   }
 
   function toggleBaseFilter(filter: string): void {
@@ -2276,9 +2339,27 @@ function App() {
             <div className="lora-create-header">
               <PanelTitle icon={<Boxes size={18} />} title="LoRAプロジェクト" />
             </div>
+            <div className="base-filter-row lora-base-filter-row">
+              {loraProjectBaseOptions.map((filter) => (
+                <button
+                  className={loraProjectBaseFilters.includes(filter) ? "active" : ""}
+                  key={filter}
+                  onClick={() =>
+                    setLoraProjectBaseFilters((current) =>
+                      current.includes(filter) ? current.filter((item) => item !== filter) : [...current, filter]
+                    )
+                  }
+                >
+                  {filter}
+                </button>
+              ))}
+              <button className="tiny-button" disabled={!loraProjectBaseFilters.length} onClick={() => setLoraProjectBaseFilters([])}>
+                リセット
+              </button>
+            </div>
             <div className="lora-project-list">
-              {loraProjects.length ? (
-                loraProjects.map((project) => (
+              {filteredLoraProjects.length ? (
+                filteredLoraProjects.map((project) => (
                   <article
                     className={project.id === selectedLoraProject?.id ? "lora-project-card selected" : "lora-project-card"}
                     key={project.id}
@@ -2301,9 +2382,11 @@ function App() {
                         <span>{project.status}</span>
                       </header>
                       <div className="lora-project-meta">
-                        <span>Trigger: {project.triggerWord || "なし"}</span>
-                        <span>Base: {project.baseCheckpoint}</span>
-                        <span>Output: {project.outputName}</span>
+                        {getLoraTriggerWords(project).map((word) => <span className="meta-tag trigger" key={word}>{word}</span>)}
+                        <span className="meta-tag base">{inferCheckpointBaseModel(project.baseCheckpoint)}</span>
+                        {status?.loras.find((file) => file.name === project.outputName)?.sizeLabel ? (
+                          <span className="meta-tag size">{status.loras.find((file) => file.name === project.outputName)?.sizeLabel}</span>
+                        ) : null}
                       </div>
                       <p>{project.message}</p>
                     </div>
@@ -2370,7 +2453,19 @@ function App() {
                   </div>
                   <div className="field">
                     <label>トリガーワード</label>
-                    <input value={loraDetailTriggerWord} onChange={(event) => setLoraDetailTriggerWord(event.target.value)} />
+                    <div className="trigger-word-list">
+                      {loraDetailTriggerWords.map((word, index) => (
+                        <div className="trigger-word-row" key={index}>
+                          <input value={word} onChange={(event) => updateTriggerWordList("detail", index, event.target.value)} />
+                          <button className="icon-button" type="button" onClick={() => addTriggerWordRow("detail")} title="追加">
+                            <Plus size={15} />
+                          </button>
+                          <button className="icon-button" type="button" disabled={loraDetailTriggerWords.length <= 1} onClick={() => removeTriggerWordRow("detail", index)} title="削除">
+                            <Trash2 size={15} />
+                          </button>
+                        </div>
+                      ))}
+                    </div>
                   </div>
                   <div className="lora-detail-actions">
                     <button className="primary" disabled={action.busy || !loraDetailName.trim()} onClick={() => void saveSelectedLoraDetails()}>
@@ -2484,6 +2579,13 @@ function App() {
                 </div>
               )}
             </div>
+            <div className="image-memo-panel">
+              <textarea value={imageMemo} onChange={(event) => setImageMemo(event.target.value)} placeholder="この画像のメモ" />
+              <button className="tiny-button" disabled={!lastHistoryId || action.busy} onClick={() => void saveCurrentHistoryMemo()}>
+                <Save size={14} />
+                更新
+              </button>
+            </div>
           </section>
 
           <section className="panel generate-panel">
@@ -2532,7 +2634,7 @@ function App() {
                     }
                     setPositivePromptTagIds((current) => current.filter((id) => id !== tag.id));
                   }}
-                  onRemoveLoraTrigger={(trigger) => setPositiveLoraTriggerIds((current) => current.filter((id) => id !== trigger.loraName))}
+                  onRemoveLoraTrigger={(trigger) => setPositiveLoraTriggerIds((current) => current.filter((id) => id !== trigger.triggerId))}
                 />
                 <div className="button-row">
                   <button
@@ -2550,6 +2652,14 @@ function App() {
                           const history = await window.illustMK.promptHistory.save({
                             ...testRequest,
                             japanesePrompt,
+                            llmModel: ollamaModel,
+                            llmUrl: ollamaUrl,
+                            japanesePromptTagIds,
+                            positivePromptTagIds,
+                            positiveOptionTagIds,
+                            negativeOptionTagIds,
+                            positiveLoraTriggerIds,
+                            memo: imageMemo,
                             imagePath: result.imagePath,
                             imageDataUrl: result.imageDataUrl
                           });
@@ -2558,6 +2668,7 @@ function App() {
                         ({ result, history }) => {
                           setGenerationResult(result);
                           setPromptHistory(history);
+                          setLastHistoryId(history[0]?.id ?? null);
                           if (result.imageDataUrl || result.imagePath) {
                             setLastImage(result.imageDataUrl ?? result.imagePath ?? null);
                           }
@@ -2679,9 +2790,9 @@ function App() {
                 <div className="option-tag-list">
                   {selectedLoraTriggers.map((trigger) => (
                     <button
-                      className={positiveLoraTriggerIds.includes(trigger.loraName) ? "lora-trigger-row selected" : "lora-trigger-row"}
-                      key={trigger.loraName}
-                      onClick={() => setPositiveLoraTriggerIds((current) => (current.includes(trigger.loraName) ? current : [...current, trigger.loraName]))}
+                      className={positiveLoraTriggerIds.includes(trigger.triggerId) ? "lora-trigger-row selected" : "lora-trigger-row"}
+                      key={trigger.triggerId}
+                      onClick={() => setPositiveLoraTriggerIds((current) => (current.includes(trigger.triggerId) ? current : [...current, trigger.triggerId]))}
                     >
                       <strong>{trigger.title}</strong>
                       <span>{trigger.triggerWord}</span>
@@ -2871,6 +2982,7 @@ function App() {
                       </header>
                       {entry.japanesePrompt ? <p className="history-japanese">{entry.japanesePrompt}</p> : null}
                       <p>{entry.prompt}</p>
+                      {entry.memo ? <p className="history-memo">{entry.memo}</p> : null}
                       <small>{entry.negativePrompt}</small>
                       <button onClick={() => applyPromptHistory(entry)}>
                         <CheckCircle2 size={17} />
@@ -3123,7 +3235,19 @@ function App() {
             </div>
             <div className="field">
               <label>ターゲット / Trigger Word</label>
-              <input placeholder="mkchar" value={loraTriggerWord} onChange={(event) => setLoraTriggerWord(event.target.value)} />
+              <div className="trigger-word-list">
+                {loraTriggerWords.map((word, index) => (
+                  <div className="trigger-word-row" key={index}>
+                    <input placeholder="mkchar" value={word} onChange={(event) => updateTriggerWordList("dialog", index, event.target.value)} />
+                    <button className="icon-button" type="button" onClick={() => addTriggerWordRow("dialog")} title="追加">
+                      <Plus size={15} />
+                    </button>
+                    <button className="icon-button" type="button" disabled={loraTriggerWords.length <= 1} onClick={() => removeTriggerWordRow("dialog", index)} title="削除">
+                      <Trash2 size={15} />
+                    </button>
+                  </div>
+                ))}
+              </div>
             </div>
             <div className="field">
               <label>Base Checkpoint</label>
@@ -3615,9 +3739,9 @@ function GenerationLoraPanel({
                     </button>
                   </header>
                   <div className="lora-meta-tags">
-                    <span>Base: {project?.baseCheckpoint || "不明"}</span>
-                    <span>Trigger: {project?.triggerWord || "未設定"}</span>
-                    <span>{lora.sizeLabel}</span>
+                    <span className="meta-tag base">{project?.baseCheckpoint ? inferCheckpointBaseModel(project.baseCheckpoint) : "Base不明"}</span>
+                    {getLoraTriggerWords(project).map((word) => <span className="meta-tag trigger" key={word}>{word}</span>)}
+                    <span className="meta-tag size">{lora.sizeLabel}</span>
                   </div>
                   {project?.message ? <p>{project.message}</p> : null}
                   {selected ? (
@@ -3773,6 +3897,15 @@ function inferCheckpointBaseModel(fileName: string): string {
   if (name.includes("sdxl") || name.includes("xl_") || name.includes("_xl")) return "SDXL";
   if (name.includes("sd15") || name.includes("sd1.5") || name.includes("sd_15")) return "SD 1.5";
   return "Base不明";
+}
+
+function getLoraTriggerWords(project?: LoraTrainingProject | null): string[] {
+  if (!project) return [];
+  return normalizedTriggerWords(project.triggerWords ?? [], project.triggerWord);
+}
+
+function normalizedTriggerWords(words: string[], fallback = ""): string[] {
+  return Array.from(new Set([...words, fallback].map((word) => word.trim()).filter(Boolean)));
 }
 
 function normalizeOptionPromptTags(value: unknown): OptionPromptTag[] {
