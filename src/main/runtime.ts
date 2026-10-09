@@ -147,6 +147,11 @@ export type CivitaiRequiredComponent = {
   sha256?: string;
 };
 
+export type CivitaiSearchResult = {
+  models: CivitaiModelCard[];
+  nextCursor: string | null;
+};
+
 export type HuggingFaceLlmModelCard = {
   id: string;
   name: string;
@@ -980,10 +985,26 @@ export async function searchCivitaiModels(options: {
   period?: "AllTime" | "Year" | "Month" | "Week" | "Day";
   limit?: number;
   page?: number;
+  cursor?: string;
   nsfw?: boolean;
   baseModels?: string[];
   type?: "Checkpoint" | "LORA";
 }): Promise<CivitaiModelCard[]> {
+  const result = await searchCivitaiModelPage(options);
+  return result.models;
+}
+
+export async function searchCivitaiModelPage(options: {
+  query?: string;
+  sort?: "Most Downloaded" | "Highest Rated" | "Newest";
+  period?: "AllTime" | "Year" | "Month" | "Week" | "Day";
+  limit?: number;
+  page?: number;
+  cursor?: string;
+  nsfw?: boolean;
+  baseModels?: string[];
+  type?: "Checkpoint" | "LORA";
+}): Promise<CivitaiSearchResult> {
   const requestLimit = options.type === "LORA" ? options.limit ?? 20 : Math.max(options.limit ?? 10, 50);
   const params = new URLSearchParams({
     limit: String(requestLimit),
@@ -991,11 +1012,15 @@ export async function searchCivitaiModels(options: {
     sort: options.sort ?? "Most Downloaded",
     period: options.period ?? "Month",
     nsfw: String(options.nsfw ?? false),
-    page: String(options.page ?? 1),
     primaryFileOnly: "true"
   });
   if (options.query?.trim()) {
     params.set("query", options.query.trim());
+  }
+  if (options.cursor) {
+    params.set("cursor", options.cursor);
+  } else if (!options.query?.trim()) {
+    params.set("page", String(options.page ?? 1));
   }
 
   const response = await fetch(`https://civitai.com/api/v1/models?${params.toString()}`, {
@@ -1009,11 +1034,15 @@ export async function searchCivitaiModels(options: {
     throw new Error(`Civitai API取得に失敗しました: HTTP ${response.status}`);
   }
 
-  const json = (await response.json()) as { items?: unknown[] };
-  return (json.items ?? [])
+  const json = (await response.json()) as { items?: unknown[]; metadata?: { nextCursor?: string | number | null } };
+  const models = (json.items ?? [])
     .flatMap(normalizeCivitaiModel)
     .filter((model) => options.type === "LORA" || isAllowedBaseModel(model, options.baseModels ?? defaultBaseModelFilters))
     .slice(0, options.limit ?? 10);
+  return {
+    models,
+    nextCursor: json.metadata?.nextCursor != null ? String(json.metadata.nextCursor) : null
+  };
 }
 
 export async function searchHuggingFaceLlmModels(options: { query: string; limit?: number }): Promise<HuggingFaceLlmModelCard[]> {

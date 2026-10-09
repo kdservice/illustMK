@@ -2,6 +2,7 @@ import { contextBridge, ipcRenderer } from "electron";
 import type {
   AppSettings,
   CivitaiModelCard,
+  CivitaiSearchResult,
   DeleteModelRequest,
   DownloadCivitaiLoraProjectRequest,
   DownloadRequest,
@@ -67,10 +68,22 @@ const api = {
       period?: "AllTime" | "Year" | "Month" | "Week" | "Day";
       limit?: number;
       page?: number;
+      cursor?: string;
       nsfw?: boolean;
       baseModels?: string[];
       type?: "Checkpoint" | "LORA";
     }): Promise<CivitaiModelCard[]> => ipcRenderer.invoke("runtime:search-civitai", options),
+    searchCivitaiPage: (options: {
+      query?: string;
+      sort?: "Most Downloaded" | "Highest Rated" | "Newest";
+      period?: "AllTime" | "Year" | "Month" | "Week" | "Day";
+      limit?: number;
+      page?: number;
+      cursor?: string;
+      nsfw?: boolean;
+      baseModels?: string[];
+      type?: "Checkpoint" | "LORA";
+    }): Promise<CivitaiSearchResult> => ipcRenderer.invoke("runtime:search-civitai-page", options),
     searchHuggingFaceLlm: (options: { query: string; limit?: number }): Promise<HuggingFaceLlmModelCard[]> =>
       ipcRenderer.invoke("runtime:search-huggingface-llm", options),
     testGenerate: (request: TestGenerationRequest): Promise<TestGenerationResult> =>

@@ -33,6 +33,7 @@ import {
   pullOllamaModel,
   pauseLoraTrainingProject,
   runTestGeneration,
+  searchCivitaiModelPage,
   searchCivitaiModels,
   searchHuggingFaceLlmModels,
   saveAppSettings,
@@ -298,6 +299,7 @@ function registerIpc(): void {
     return importModelAsset({ targetType: request.targetType, sourcePath: result.filePaths[0] });
   });
   ipcMain.handle("runtime:search-civitai", (_event, options) => searchCivitaiModels(options));
+  ipcMain.handle("runtime:search-civitai-page", (_event, options) => searchCivitaiModelPage(options));
   ipcMain.handle("runtime:search-huggingface-llm", (_event, options) => searchHuggingFaceLlmModels(options));
   ipcMain.handle("runtime:test-generate", (_event, request: TestGenerationRequest) => runTestGeneration(request));
   ipcMain.handle("prompt-history:list", () => getSavedPromptHistory());

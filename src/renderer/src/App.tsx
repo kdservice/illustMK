@@ -206,6 +206,7 @@ function App() {
   const [loraCatalogModels, setLoraCatalogModels] = useState<CivitaiModelCard[]>([]);
   const [loraCatalogPeriod, setLoraCatalogPeriod] = useState<"Month" | "AllTime">("Month");
   const [loraCatalogPage, setLoraCatalogPage] = useState(1);
+  const [loraCatalogCursor, setLoraCatalogCursor] = useState<string | null>(null);
   const [loraCatalogHasMore, setLoraCatalogHasMore] = useState(false);
   const [loraCatalogLoadingMore, setLoraCatalogLoadingMore] = useState(false);
   const [loraTrainingPreset, setLoraTrainingPreset] = useState<LoraTrainingPreset>("fast");
@@ -544,18 +545,21 @@ function App() {
     await runAction(
       append ? "Civitai LoRAを追加取得中" : "Civitai LoRAを検索中",
       () =>
-        window.illustMK.runtime.searchCivitai({
+        window.illustMK.runtime.searchCivitaiPage({
           query: loraCatalogQuery.trim() || undefined,
           sort: "Most Downloaded",
           period: loraCatalogPeriod,
           limit: 20,
           page,
+          cursor: append ? loraCatalogCursor ?? undefined : undefined,
           nsfw: false,
           type: "LORA"
         }),
-      (models) => {
+      (result) => {
+        const models = result.models;
         setLoraCatalogPage(page);
-        setLoraCatalogHasMore(models.length >= 20);
+        setLoraCatalogCursor(result.nextCursor);
+        setLoraCatalogHasMore(Boolean(result.nextCursor));
         setLoraCatalogModels((current) => {
           if (!append) return models;
           const seen = new Set(current.map((model) => `${model.id}-${model.versionId}`));
