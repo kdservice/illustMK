@@ -2642,19 +2642,13 @@ function App() {
                 </div>
                 <div className="field">
                   <label>カテゴリ</label>
-                  <input value={tagCategory} onChange={(event) => setTagCategory(event.target.value)} />
-                  <div className="category-choice-list">
+                  <select value={tagCategory} onChange={(event) => setTagCategory(event.target.value)}>
                     {uniqueCategories([...illustrationTagEditCategories(illustrationTags), tagCategory]).map((category) => (
-                      <button
-                        className={tagCategory.trim() === category ? "active" : ""}
-                        key={category}
-                        type="button"
-                        onClick={() => setTagCategory(category)}
-                      >
+                      <option value={category} key={category}>
                         {category}
-                      </button>
+                      </option>
                     ))}
-                  </div>
+                  </select>
                 </div>
               </div>
               <div className="field">

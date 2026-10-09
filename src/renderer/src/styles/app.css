@@ -894,26 +894,6 @@ label {
   gap: 8px;
 }
 
-.category-choice-list {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-}
-
-.category-choice-list button {
-  min-height: 30px;
-  padding: 0 10px;
-  border-color: #29406f;
-  background: #0d1830;
-  color: #dbe7ff;
-  font-size: 12px;
-}
-
-.category-choice-list button.active {
-  border-color: #44bcff;
-  background: #12335f;
-}
-
 .tag-chip {
   display: grid;
   grid-template-columns: minmax(0, auto) 34px 34px;
