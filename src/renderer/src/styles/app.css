@@ -329,7 +329,7 @@ label {
 .lora-sidebar {
   height: 100%;
   min-height: 0;
-  grid-template-rows: auto minmax(0, 1fr) auto;
+  grid-template-rows: auto auto minmax(0, 1fr) auto;
   overflow: hidden;
 }
 
@@ -383,6 +383,7 @@ label {
 }
 
 .lora-base-filter-row {
+  min-height: 38px;
   padding-bottom: 8px;
   border-bottom: 1px solid #142444;
 }
