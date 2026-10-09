@@ -358,6 +358,11 @@ export type SaveLoraTrainingProjectRequest = {
   learningRate?: string;
 };
 
+export type UpdateLoraThumbnailRequest = {
+  id: string;
+  sourcePath: string;
+};
+
 export type LoraTrainingRunParams = {
   resolution: number;
   repeats: number;
@@ -1668,6 +1673,39 @@ export async function saveLoraTrainingProject(request: SaveLoraTrainingProjectRe
     : [project, ...projects];
   await saveLoraTrainingProjects(nextProjects);
   return nextProjects;
+}
+
+export async function updateLoraTrainingProjectThumbnail(request: UpdateLoraThumbnailRequest): Promise<LoraTrainingProject[]> {
+  const sourcePath = request.sourcePath.trim();
+  if (!sourcePath) throw new Error("サムネイル画像を指定してください。");
+  const sourceStat = await stat(sourcePath).catch(() => null);
+  if (!sourceStat?.isFile()) throw new Error("サムネイル画像ファイルが見つかりません。");
+  const extension = basename(sourcePath).match(/\.(png|jpe?g|webp)$/i)?.[1]?.toLowerCase();
+  if (!extension) throw new Error("PNG / JPEG / WebP の画像を指定してください。");
+
+  const paths = await ensureRuntimeFiles();
+  const projects = await getLoraTrainingProjects();
+  const project = projects.find((item) => item.id === request.id);
+  if (!project) throw new Error("LoRAプロジェクトが見つかりません。");
+
+  const projectRoot = await resolveExistingLoraProjectDir(project, paths);
+  const assetsDir = join(projectRoot, "assets");
+  await mkdir(assetsDir, { recursive: true });
+  const stamp = new Date().toISOString().replace(/[-:.TZ]/g, "");
+  const normalizedExtension = extension === "jpeg" ? "jpg" : extension;
+  const thumbnailPath = join(assetsDir, `thumbnail-${stamp}.${normalizedExtension}`);
+  await cp(sourcePath, thumbnailPath);
+
+  const nextProject: LoraTrainingProject = {
+    ...project,
+    projectDir: projectRoot,
+    thumbnailPath,
+    updatedAt: new Date().toISOString()
+  };
+  await writeFile(join(projectRoot, "config", "lora-training.json"), JSON.stringify(stripLoraTransientFields(nextProject), null, 2), "utf8");
+  const nextProjects = projects.map((item) => (item.id === project.id ? nextProject : item));
+  await saveLoraTrainingProjects(nextProjects);
+  return getLoraTrainingProjects();
 }
 
 export async function importLoraFile(sourcePath: string): Promise<LoraTrainingProject[]> {

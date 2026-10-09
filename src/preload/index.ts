@@ -27,7 +27,8 @@ import type {
   TagDescriptionRequest,
   TagTranslationRequest,
   TestGenerationRequest,
-  TestGenerationResult
+  TestGenerationResult,
+  UpdateLoraThumbnailRequest
 } from "../main/runtime";
 
 type OperationLog = {
@@ -112,6 +113,8 @@ const api = {
     list: (): Promise<LoraTrainingProject[]> => ipcRenderer.invoke("lora-projects:list"),
     save: (request: SaveLoraTrainingProjectRequest): Promise<LoraTrainingProject[]> =>
       ipcRenderer.invoke("lora-projects:save", request),
+    updateThumbnail: (request: UpdateLoraThumbnailRequest): Promise<LoraTrainingProject[]> =>
+      ipcRenderer.invoke("lora-projects:update-thumbnail", request),
     start: (id: string): Promise<LoraTrainingProject[]> => ipcRenderer.invoke("lora-projects:start", id),
     pause: (id: string): Promise<LoraTrainingProject[]> => ipcRenderer.invoke("lora-projects:pause", id),
     stop: (id: string): Promise<LoraTrainingProject[]> => ipcRenderer.invoke("lora-projects:stop", id),

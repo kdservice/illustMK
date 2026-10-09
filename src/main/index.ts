@@ -58,6 +58,7 @@ import {
   uninstallOllama,
   translateTagDescription,
   trainLoraTrainingProject,
+  updateLoraTrainingProjectThumbnail,
   clearPromptHistory,
   clearLoraTrainingProjects,
   clearLlmChatHistory,
@@ -77,7 +78,8 @@ import {
   type SavePromptHistoryRequest,
   type TagDescriptionRequest,
   type TagTranslationRequest,
-  type TestGenerationRequest
+  type TestGenerationRequest,
+  type UpdateLoraThumbnailRequest
 } from "./runtime";
 
 let mainWindow: BrowserWindow | null = null;
@@ -312,6 +314,7 @@ function registerIpc(): void {
   ipcMain.handle("tags:delete", (_event, id: string) => deleteIllustrationTag(id));
   ipcMain.handle("lora-projects:list", () => getLoraTrainingProjects());
   ipcMain.handle("lora-projects:save", (_event, request: SaveLoraTrainingProjectRequest) => saveLoraTrainingProject(request));
+  ipcMain.handle("lora-projects:update-thumbnail", (_event, request: UpdateLoraThumbnailRequest) => updateLoraTrainingProjectThumbnail(request));
   ipcMain.handle("lora-projects:start", (_event, id: string) => startLoraTrainingProject(id));
   ipcMain.handle("lora-projects:pause", (_event, id: string) => pauseLoraTrainingProject(id));
   ipcMain.handle("lora-projects:stop", (_event, id: string) => stopLoraTrainingProject(id));

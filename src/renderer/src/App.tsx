@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type UIEvent } from "react";
+import { useEffect, useMemo, useRef, useState, type DragEvent, type UIEvent } from "react";
 import { createRoot } from "react-dom/client";
 import {
   Boxes,
@@ -215,6 +215,8 @@ function App() {
   const [editingLoraProjectId, setEditingLoraProjectId] = useState<string | null>(null);
   const [loraName, setLoraName] = useState("");
   const [loraTriggerWord, setLoraTriggerWord] = useState("");
+  const [loraDetailName, setLoraDetailName] = useState("");
+  const [loraDetailTriggerWord, setLoraDetailTriggerWord] = useState("");
   const [loraAdditionalTraining, setLoraAdditionalTraining] = useState(false);
   const [loraCatalogOpen, setLoraCatalogOpen] = useState(false);
   const [loraCatalogQuery, setLoraCatalogQuery] = useState("");
@@ -470,6 +472,11 @@ function App() {
       setSelectedLoraProjectId(loraProjects[0].id);
     }
   }, [loraProjects, selectedLoraProjectId]);
+
+  useEffect(() => {
+    setLoraDetailName(selectedLoraProject?.name ?? "");
+    setLoraDetailTriggerWord(selectedLoraProject?.triggerWord ?? "");
+  }, [selectedLoraProject?.id, selectedLoraProject?.name, selectedLoraProject?.triggerWord]);
 
   async function runAction<T>(message: string, task: () => Promise<T>, after?: (value: T) => void): Promise<void> {
     const id = crypto.randomUUID();
@@ -1136,6 +1143,49 @@ function App() {
         setSelectedLoraProjectId(targetProjectId ?? projects[0]?.id ?? null);
         setEditingLoraProjectId(null);
         setLoraCreateDialogOpen(false);
+      }
+    );
+  }
+
+  async function saveSelectedLoraDetails(): Promise<void> {
+    if (!selectedLoraProject) return;
+    const targetProjectId = selectedLoraProject.id;
+    await runAction(
+      "LoRA設定を更新中",
+      () =>
+        window.illustMK.loraProjects.save({
+          id: targetProjectId,
+          name: loraDetailName,
+          triggerWord: loraDetailTriggerWord,
+          baseCheckpoint: selectedLoraProject.baseCheckpoint
+        }),
+      (projects) => {
+        setLoraProjects(projects);
+        setSelectedLoraProjectId(targetProjectId);
+      }
+    );
+  }
+
+  function allowLoraThumbnailDrop(event: DragEvent<HTMLDivElement>): void {
+    event.preventDefault();
+    event.dataTransfer.dropEffect = "copy";
+  }
+
+  async function updateSelectedLoraThumbnail(event: DragEvent<HTMLDivElement>): Promise<void> {
+    event.preventDefault();
+    if (!selectedLoraProject) return;
+    const file = event.dataTransfer.files[0] as (File & { path?: string }) | undefined;
+    if (!file?.path) {
+      appendLog("stderr", "サムネイル画像のパスを取得できませんでした。");
+      return;
+    }
+    const targetProjectId = selectedLoraProject.id;
+    await runAction(
+      "LoRAサムネイルを更新中",
+      () => window.illustMK.loraProjects.updateThumbnail({ id: targetProjectId, sourcePath: file.path ?? "" }),
+      (projects) => {
+        setLoraProjects(projects);
+        setSelectedLoraProjectId(targetProjectId);
       }
     );
   }
@@ -2243,8 +2293,47 @@ function App() {
           </section>
           <section className="panel lora-project-panel">
             <div className="lora-create-header">
-              <PanelTitle icon={<TerminalSquare size={18} />} title="LoRA学習ジョブ" />
+              <PanelTitle icon={<TerminalSquare size={18} />} title="LoRA" />
             </div>
+            {selectedLoraProject ? (
+              <div className="lora-detail-panel">
+                <div
+                  className="lora-detail-thumb"
+                  onDragOver={allowLoraThumbnailDrop}
+                  onDrop={(event) => void updateSelectedLoraThumbnail(event)}
+                >
+                  <ImageIcon className="lora-project-placeholder-icon" size={34} />
+                  {selectedLoraProject.thumbnailDataUrl || selectedLoraProject.thumbnailPath ? (
+                    <img
+                      src={selectedLoraProject.thumbnailDataUrl || imageUrl(selectedLoraProject.thumbnailPath ?? "")}
+                      alt=""
+                      onError={(event) => {
+                        event.currentTarget.remove();
+                      }}
+                    />
+                  ) : null}
+                  <span>画像をD&D</span>
+                </div>
+                <div className="lora-detail-fields">
+                  <div className="field">
+                    <label>タイトル</label>
+                    <input value={loraDetailName} onChange={(event) => setLoraDetailName(event.target.value)} />
+                  </div>
+                  <div className="field">
+                    <label>トリガーワード</label>
+                    <input value={loraDetailTriggerWord} onChange={(event) => setLoraDetailTriggerWord(event.target.value)} />
+                  </div>
+                  <div className="lora-detail-actions">
+                    <button className="primary" disabled={action.busy || !loraDetailName.trim()} onClick={() => void saveSelectedLoraDetails()}>
+                      <Save size={17} />
+                      更新
+                    </button>
+                  </div>
+                </div>
+              </div>
+            ) : (
+              <p className="empty">LoRAプロジェクトを選択してください。</p>
+            )}
             <div className="lora-control-panel">
               <button
                 type="button"
