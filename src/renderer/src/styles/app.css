@@ -514,6 +514,12 @@ label {
   gap: 8px;
 }
 
+.tag-builder-header h2 {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
 .count-badge {
   min-width: 26px;
   border: 1px solid #44bcff;
@@ -886,6 +892,26 @@ label {
   display: flex;
   flex-wrap: wrap;
   gap: 8px;
+}
+
+.category-choice-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.category-choice-list button {
+  min-height: 30px;
+  padding: 0 10px;
+  border-color: #29406f;
+  background: #0d1830;
+  color: #dbe7ff;
+  font-size: 12px;
+}
+
+.category-choice-list button.active {
+  border-color: #44bcff;
+  background: #12335f;
 }
 
 .tag-chip {

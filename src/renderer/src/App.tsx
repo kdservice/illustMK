@@ -2642,11 +2642,19 @@ function App() {
                 </div>
                 <div className="field">
                   <label>カテゴリ</label>
-                  <select value={tagCategory} onChange={(event) => setTagCategory(event.target.value)}>
+                  <input value={tagCategory} onChange={(event) => setTagCategory(event.target.value)} />
+                  <div className="category-choice-list">
                     {uniqueCategories([...illustrationTagEditCategories(illustrationTags), tagCategory]).map((category) => (
-                      <option value={category} key={category} />
+                      <button
+                        className={tagCategory.trim() === category ? "active" : ""}
+                        key={category}
+                        type="button"
+                        onClick={() => setTagCategory(category)}
+                      >
+                        {category}
+                      </button>
                     ))}
-                  </select>
+                  </div>
                 </div>
               </div>
               <div className="field">
@@ -3442,9 +3450,12 @@ function GenerationLoraPanel({
   return (
     <div className="lora-apply-panel">
       <div className="tag-builder-header">
-        <h2>LoRA適用</h2>
+        <h2>
+          LoRA適用
+          {selectedLoras.length ? <span className="count-badge">{selectedLoras.length}</span> : null}
+        </h2>
         <div className="inline-actions">
-          <span className="count-badge">{selectedLoras.length}</span>
+          <span>{selectedLoras.length}件選択</span>
           <button className="tiny-button" disabled={!selectedLoras.length} onClick={onClearLoras}>選択クリア</button>
         </div>
       </div>
