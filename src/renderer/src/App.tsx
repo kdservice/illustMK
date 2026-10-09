@@ -37,6 +37,7 @@ import type {
   LoraTrainingProject,
   OllamaStatus,
   PromptEnhanceMode,
+  PromptGenerationSettings,
   PromptHistoryEntry,
   RuntimePaths,
   RuntimeStatus,
@@ -954,25 +955,32 @@ function App() {
   }
 
   function applyPromptHistory(entry: PromptHistoryEntry): void {
-    setJapanesePrompt(entry.japanesePrompt ?? "");
-    setPrompt(entry.prompt);
-    setNegativePrompt(entry.negativePrompt);
-    setSelectedCheckpoint(entry.checkpoint);
-    setSelectedVae(entry.vae && status?.vae.some((file) => file.name === entry.vae) ? entry.vae : "");
-    setSelectedClip(entry.clip && status?.clip.some((file) => file.name === entry.clip) ? entry.clip : "");
-    if (entry.llmUrl) setOllamaUrl(entry.llmUrl);
-    if (entry.llmModel) setOllamaModel(entry.llmModel);
-    setJapanesePromptTagIds(entry.japanesePromptTagIds ?? []);
-    setPositivePromptTagIds(entry.positivePromptTagIds ?? []);
-    setPositiveOptionTagIds(entry.positiveOptionTagIds ?? []);
-    setNegativeOptionTagIds(entry.negativeOptionTagIds ?? []);
-    setPositiveLoraTriggerIds(entry.positiveLoraTriggerIds ?? []);
-    setSelectedLoras((entry.loras ?? []).filter((lora) => availableLoraNames.has(lora.name)));
-    setGenerationWidth(entry.width);
-    setGenerationHeight(entry.height);
-    setImageSizePreset(`${entry.width}x${entry.height}`);
-    setSeedValue(entry.seed);
-    setSeedMode(entry.seed >= 0 ? "fixed" : "random");
+    const settings = entry.generationSettings;
+    setJapanesePrompt(settings?.japanesePrompt ?? entry.japanesePrompt ?? "");
+    setPrompt(settings?.prompt ?? entry.prompt);
+    setNegativePrompt(settings?.negativePrompt ?? entry.negativePrompt);
+    setPromptEnhanceMode(settings?.promptEnhanceMode ?? "balanced-detail");
+    setSelectedCheckpoint(settings?.checkpoint ?? entry.checkpoint);
+    setSelectedVae(normalizeExistingAssetName(settings?.vae ?? entry.vae ?? "", status?.vae ?? []));
+    setSelectedClip(normalizeExistingAssetName(settings?.clip ?? entry.clip ?? "", status?.clip ?? []));
+    const nextOllamaUrl = settings?.ollamaUrl ?? entry.llmUrl;
+    const nextOllamaModel = settings?.ollamaModel ?? entry.llmModel;
+    if (nextOllamaUrl) setOllamaUrl(nextOllamaUrl);
+    if (nextOllamaModel) setOllamaModel(nextOllamaModel);
+    setJapanesePromptTagIds(settings?.japanesePromptTagIds ?? entry.japanesePromptTagIds ?? []);
+    setPositivePromptTagIds(settings?.positivePromptTagIds ?? entry.positivePromptTagIds ?? []);
+    setPositiveOptionTagIds(settings?.positiveOptionTagIds ?? entry.positiveOptionTagIds ?? []);
+    setNegativeOptionTagIds(settings?.negativeOptionTagIds ?? entry.negativeOptionTagIds ?? []);
+    setPositiveLoraTriggerIds(settings?.positiveLoraTriggerIds ?? entry.positiveLoraTriggerIds ?? []);
+    setSelectedLoras(settings?.loras ?? entry.loras ?? []);
+    setGenerationWidth(settings?.width ?? entry.width);
+    setGenerationHeight(settings?.height ?? entry.height);
+    setImageSizePreset(settings?.imageSizePreset ?? `${entry.width}x${entry.height}`);
+    setSeedMode(settings?.seedMode ?? (entry.seed >= 0 ? "fixed" : "random"));
+    setSeedValue(settings?.seedValue ?? entry.seed);
+    if (settings?.baseFilters) setBaseFilters(settings.baseFilters);
+    if (settings?.selectedModelAddMode === "catalog" || settings?.selectedModelAddMode === "url") setModelAddMode(settings.selectedModelAddMode);
+    if (settings?.generationTab === "prompt" || settings?.generationTab === "lora" || settings?.generationTab === "options") setGenerateTab(settings.generationTab);
     setImageMemo(entry.memo ?? "");
     setLastHistoryId(entry.id);
     if (entry.imageDataUrl || entry.imagePath) setLastImage(entry.imageDataUrl ?? entry.imagePath ?? null);
@@ -1649,6 +1657,40 @@ function App() {
     vae: selectedVae || undefined,
     clip: selectedClip || undefined
   };
+
+  function buildGenerationHistorySettings(): PromptGenerationSettings {
+    return {
+      japanesePrompt,
+      prompt,
+      effectivePrompt,
+      negativePrompt,
+      effectiveNegativePrompt,
+      promptEnhanceMode,
+      checkpoint: selectedCheckpoint,
+      vae: selectedVae,
+      clip: selectedClip,
+      loras: selectedLoras,
+      japanesePromptTagIds,
+      positivePromptTagIds,
+      positiveOptionTagIds,
+      negativeOptionTagIds,
+      positiveLoraTriggerIds,
+      width: generationWidth,
+      height: generationHeight,
+      imageSizePreset,
+      steps: testRequest.steps,
+      cfg: testRequest.cfg,
+      seedMode,
+      seedValue,
+      requestSeed: testRequest.seed,
+      comfyUrl,
+      ollamaUrl,
+      ollamaModel,
+      selectedModelAddMode: modelAddMode,
+      baseFilters,
+      generationTab: generateTab
+    };
+  }
 
   async function runLoraOnOffCompare(): Promise<void> {
     const compareSeed = seedMode === "fixed" && seedValue >= 0 ? seedValue : Math.floor(Math.random() * Number.MAX_SAFE_INTEGER);
@@ -2692,6 +2734,7 @@ function App() {
                             negativeOptionTagIds,
                             positiveLoraTriggerIds,
                             memo: imageMemo,
+                            generationSettings: buildGenerationHistorySettings(),
                             imagePath: result.imagePath,
                             imageDataUrl: result.imageDataUrl
                           });
@@ -3986,6 +4029,10 @@ function formatGenerationDuration(milliseconds: number): string {
   const minutes = Math.floor(totalSeconds / 60);
   const seconds = totalSeconds % 60;
   return minutes ? `${minutes}分${seconds}秒` : `${seconds}秒`;
+}
+
+function normalizeExistingAssetName<T extends { name: string }>(name: string, files: T[]): string {
+  return name && files.some((file) => file.name === name) ? name : "";
 }
 
 function normalizeOptionPromptTags(value: unknown): OptionPromptTag[] {

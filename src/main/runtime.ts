@@ -405,6 +405,7 @@ export type PromptHistoryEntry = {
   cfg: number;
   seed: number;
   memo?: string;
+  generationSettings?: PromptGenerationSettings;
   imagePath?: string;
   imageDataUrl?: string;
   createdAt: string;
@@ -420,8 +421,41 @@ export type SavePromptHistoryRequest = TestGenerationRequest & {
   negativeOptionTagIds?: string[];
   positiveLoraTriggerIds?: string[];
   memo?: string;
+  generationSettings?: PromptGenerationSettings;
   imagePath?: string;
   imageDataUrl?: string;
+};
+
+export type PromptGenerationSettings = {
+  japanesePrompt: string;
+  prompt: string;
+  effectivePrompt: string;
+  negativePrompt: string;
+  effectiveNegativePrompt: string;
+  promptEnhanceMode: PromptEnhanceMode;
+  checkpoint: string;
+  vae: string;
+  clip: string;
+  loras: GenerationLora[];
+  japanesePromptTagIds: string[];
+  positivePromptTagIds: string[];
+  positiveOptionTagIds: string[];
+  negativeOptionTagIds: string[];
+  positiveLoraTriggerIds: string[];
+  width: number;
+  height: number;
+  imageSizePreset: string;
+  steps: number;
+  cfg: number;
+  seedMode: "random" | "fixed";
+  seedValue: number;
+  requestSeed: number;
+  comfyUrl: string;
+  ollamaUrl: string;
+  ollamaModel: string;
+  selectedModelAddMode?: string;
+  baseFilters?: string[];
+  generationTab?: string;
 };
 
 export type UpdatePromptHistoryMemoRequest = {
@@ -2276,6 +2310,7 @@ export async function savePromptHistoryEntry(request: SavePromptHistoryRequest):
     cfg: request.cfg,
     seed: request.seed,
     memo: request.memo?.trim() ?? "",
+    generationSettings: request.generationSettings,
     imagePath: request.imagePath,
     imageDataUrl: request.imageDataUrl,
     createdAt: new Date().toISOString()
