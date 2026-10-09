@@ -23,6 +23,7 @@ import {
 } from "lucide-react";
 import type {
   CivitaiModelCard,
+  CivitaiRequiredComponent,
   DownloadRequest,
   GenerationLora,
   HuggingFaceLlmModelCard,
@@ -90,6 +91,7 @@ type CheckpointExternalSelection = {
   vae: string;
   clip: string;
 };
+type CheckpointRequiredComponents = Record<string, CivitaiRequiredComponent[]>;
 const recommendedLlmModels = [
   { name: "qwen2.5:3b-instruct", source: "Ollama", size: "軽量", note: "まず試す用。日本語もそこそこ。" },
   { name: "qwen2.5:7b-instruct", source: "Ollama", size: "標準", note: "日本語prompt整形の本命寄り。" },
@@ -129,6 +131,7 @@ function App() {
   const [selectedVae, setSelectedVae] = useState("");
   const [selectedClip, setSelectedClip] = useState("");
   const [checkpointExternalSelections, setCheckpointExternalSelections] = useState<Record<string, CheckpointExternalSelection>>({});
+  const [checkpointRequiredComponents, setCheckpointRequiredComponents] = useState<CheckpointRequiredComponents>({});
   const [modelAddMode, setModelAddMode] = useState<"recommend" | "search" | "url">("recommend");
   const [catalogQuery, setCatalogQuery] = useState("");
   const [catalogModels, setCatalogModels] = useState<CivitaiModelCard[]>([]);
@@ -138,6 +141,7 @@ function App() {
   const [huggingFaceApiKey, setHuggingFaceApiKey] = useState("");
   const [ollamaUrl, setOllamaUrl] = useState("http://127.0.0.1:11434");
   const [ollamaModel, setOllamaModel] = useState("qwen2.5:3b-instruct");
+  const [llmPullName, setLlmPullName] = useState("qwen2.5:3b-instruct");
   const [ollamaStatus, setOllamaStatus] = useState<OllamaStatus | null>(null);
   const [llmCatalogQuery, setLlmCatalogQuery] = useState("");
   const [hfLlmModels, setHfLlmModels] = useState<HuggingFaceLlmModelCard[]>([]);
@@ -249,7 +253,7 @@ function App() {
       ].join(" / ")
     : "未選択";
   const canGenerate = Boolean(status?.comfyReachable && selectedCheckpointGenerationReady && !action.busy);
-  const canDownloadLlm = Boolean(ollamaStatus?.reachable && ollamaStatus.dataLinked && ollamaModel.trim() && !action.busy);
+  const canDownloadLlm = Boolean(ollamaStatus?.reachable && ollamaStatus.dataLinked && llmPullName.trim() && !action.busy);
   const canSendLlmPrompt = Boolean(ollamaStatus?.reachable && ollamaStatus.dataLinked && ollamaModel.trim() && llmPrompt.trim() && !action.busy);
   const llmPromptDisabledReason = useMemo(() => {
     if (action.busy) return "処理中です。";
@@ -327,6 +331,12 @@ function App() {
       if (raw) setCheckpointExternalSelections(JSON.parse(raw) as Record<string, CheckpointExternalSelection>);
     } catch {
       setCheckpointExternalSelections({});
+    }
+    try {
+      const rawRequired = localStorage.getItem("illustmk.checkpointRequiredComponents");
+      if (rawRequired) setCheckpointRequiredComponents(JSON.parse(rawRequired) as CheckpointRequiredComponents);
+    } catch {
+      setCheckpointRequiredComponents({});
     }
   }, []);
 
@@ -410,7 +420,7 @@ function App() {
     }
   }
 
-  async function runOllamaPull(modelName = ollamaModel): Promise<void> {
+  async function runOllamaPull(modelName = llmPullName): Promise<void> {
     if (!ollamaStatus?.reachable || !ollamaStatus.dataLinked) {
       const errorText = !ollamaStatus?.dataLinked
         ? "Ollama保存先がDataPathに向いていません。先に「起動」を実行してください。"
@@ -466,6 +476,13 @@ function App() {
       source: "civitai"
     }, () => {
       setSelectedCheckpoint(model.fileName);
+      if (model.requiredComponents.length) {
+        setCheckpointRequiredComponents((current) => {
+          const next = { ...current, [model.fileName]: model.requiredComponents };
+          localStorage.setItem("illustmk.checkpointRequiredComponents", JSON.stringify(next));
+          return next;
+        });
+      }
     });
   }
 
@@ -564,6 +581,31 @@ function App() {
     });
   }
 
+  function componentTargetType(component: CivitaiRequiredComponent): "vae" | "clip" | null {
+    const type = component.type.toLowerCase();
+    if (type === "vae") return "vae";
+    if (type === "text encoder") return "clip";
+    return null;
+  }
+
+  function isComponentInstalled(component: CivitaiRequiredComponent): boolean {
+    const targetType = componentTargetType(component);
+    if (targetType === "vae") return Boolean(status?.vae.some((file) => file.name === component.name));
+    if (targetType === "clip") return Boolean(status?.clip.some((file) => file.name === component.name));
+    return false;
+  }
+
+  async function installRequiredComponent(checkpoint: string, component: CivitaiRequiredComponent): Promise<void> {
+    const targetType = componentTargetType(component);
+    if (!targetType) return;
+    await installModelAsset(targetType, component.downloadUrl, component.name, component.name);
+    const current = checkpointExternalSelections[checkpoint] ?? { vae: "", clip: "" };
+    saveCheckpointExternalSelection(checkpoint, {
+      ...current,
+      [targetType]: component.name
+    });
+  }
+
   async function deleteSelectedVae(): Promise<void> {
     if (!selectedVae) return;
     await deleteModelAsset("vae", selectedVae);
@@ -659,6 +701,7 @@ function App() {
     setHuggingFaceApiKey(settings.huggingFaceApiKey);
     setOllamaUrl(settings.ollamaUrl);
     setOllamaModel(settings.ollamaModel);
+    setLlmPullName(settings.ollamaModel);
     setOllamaStatus(await window.illustMK.ollama.status(settings.ollamaUrl));
   }
 
@@ -1242,7 +1285,7 @@ function App() {
       </header>
 
       <section className="panel global-status-panel">
-        <StatusGrid status={status} ollamaStatus={ollamaStatus} runtimeTab={runtimeTab} />
+        <StatusGrid status={status} ollamaStatus={ollamaStatus} runtimeTab={runtimeTab} ollamaModel={ollamaModel} />
       </section>
 
       <nav className="main-tabs">
@@ -1284,7 +1327,7 @@ function App() {
               </div>
 
               {runtimeTab === "macos" ? (
-                <div className="button-grid">
+                <div className="button-row compact-actions">
                   <button onClick={() => void runStreamOperation("native-init", "macOSランタイムを初期化中")}>
                     <FolderOpen size={17} />
                     初期化
@@ -1300,10 +1343,6 @@ function App() {
                   <button onClick={() => void runStreamOperation("native-stop", "macOS ComfyUIを停止中")}>
                     <Square size={17} />
                     停止
-                  </button>
-                  <button onClick={() => void runStreamOperation("native-logs", "macOS ComfyUIログを取得中")}>
-                    <TerminalSquare size={17} />
-                    ログ
                   </button>
                 </div>
               ) : (
@@ -1351,10 +1390,10 @@ function App() {
               <div className="asset-catalog-list">
                 {recommendedVaeModels.map((item) => (
                   <article className="llm-catalog-card" key={item.fileName}>
-                    <button className="llm-select-button" onClick={() => setVaeUrl(item.url)}>
+                    <div className="llm-select-button">
                       <span>{item.name}</span>
                       <small>{item.source}</small>
-                    </button>
+                    </div>
                     <p>{item.note}</p>
                     <button disabled={action.busy} onClick={() => void installModelAsset("vae", item.url, item.fileName, item.fileName)}>
                       <Download size={15} />
@@ -1397,10 +1436,10 @@ function App() {
               <div className="asset-catalog-list">
                 {recommendedClipModels.map((item) => (
                   <article className="llm-catalog-card" key={item.fileName}>
-                    <button className="llm-select-button" onClick={() => setClipUrl(item.url)}>
+                    <div className="llm-select-button">
                       <span>{item.name}</span>
                       <small>{item.source}</small>
-                    </button>
+                    </div>
                     <p>{item.note}</p>
                     <button disabled={action.busy} onClick={() => void installModelAsset("clip", item.url, item.fileName, item.fileName)}>
                       <Download size={15} />
@@ -1442,15 +1481,6 @@ function App() {
           <section className="panel llm-panel">
             <PanelTitle icon={<Bot size={18} />} title="LLM / Ollama" />
             <div className="field">
-              <label>Ollama API</label>
-              <div className="inline">
-                <input value={ollamaUrl} onChange={(event) => setOllamaUrl(event.target.value)} />
-                <button className="icon-button" onClick={() => void refreshOllamaStatus()} title="再確認">
-                  <RefreshCw size={17} />
-                </button>
-              </div>
-            </div>
-            <div className="field">
               <label>Hugging Face API Key</label>
               <div className="inline">
                 <input
@@ -1464,19 +1494,10 @@ function App() {
                 </button>
               </div>
             </div>
-            <div className="field">
-              <label>LLM Model</label>
-              <input list="llm-models" value={ollamaModel} onChange={(event) => setOllamaModel(event.target.value)} />
-              <datalist id="llm-models">
-                {recommendedLlmModels.map((model) => (
-                  <option key={model.name} value={model.name} />
-                ))}
-              </datalist>
-            </div>
-            <div className="button-grid">
+            <div className="button-row compact-actions">
               <button onClick={() => void runStreamOperation("ollama-install", "Ollama環境をインストール中")}>
                 <Download size={17} />
-                インストール
+                Ollamaインストール
               </button>
               <button onClick={() => void runAction("Ollamaを起動中", () => window.illustMK.ollama.start(), () => void refreshOllamaStatus())}>
                 <Play size={17} />
@@ -1486,36 +1507,15 @@ function App() {
                 <Square size={17} />
                 停止
               </button>
-              <button onClick={() => void runOllamaPull()} disabled={!canDownloadLlm} title={canDownloadLlm ? "Download" : "先にOllamaを起動してください"}>
-                <Download size={17} />
-                Download
-              </button>
-              <button onClick={() => void saveSettings()}>
-                <CheckCircle2 size={17} />
-                保存
-              </button>
-              <button
-                className="danger"
-                onClick={() => {
-                  if (window.confirm("Ollama.appをアンインストールします。モデル保存先は残します。")) {
-                    void runStreamOperation("ollama-uninstall", "Ollama.appをアンインストール中");
-                  }
-                }}
-              >
-                <Trash2 size={17} />
-                App削除
-              </button>
-              <button
-                className="danger"
-                onClick={() => {
-                  if (window.confirm("OllamaのDL済みモデル保存先を削除します。元に戻せません。")) {
-                    void runStreamOperation("ollama-delete-storage", "Ollamaモデル保存先を削除中");
-                  }
-                }}
-              >
-                <Trash2 size={17} />
-                モデル全削除
-              </button>
+            </div>
+            <div className="field">
+              <label>LLMダウンロード</label>
+              <div className="inline">
+                <input placeholder="qwen2.5:7b-instruct / hf.co/..." value={llmPullName} onChange={(event) => setLlmPullName(event.target.value)} />
+                <button className="icon-button" onClick={() => void runOllamaPull(llmPullName)} disabled={!canDownloadLlm} title="LLMダウンロード">
+                  <Download size={17} />
+                </button>
+              </div>
             </div>
             <div className="field catalog-search">
               <label>LLM Search</label>
@@ -1530,16 +1530,23 @@ function App() {
               <div className="llm-catalog-list">
                 {hfLlmModels.map((model) => (
                   <article className="llm-search-card" key={model.id}>
-                    <button className="llm-search-select" onClick={() => setOllamaModel(model.pullName)}>
+                    <div className="llm-search-select">
                       <strong>{model.id}</strong>
                       <span>
                         HF GGUF / DL {model.downloads.toLocaleString()} / {model.totalSizeLabel}
                       </span>
-                    </button>
+                    </div>
                     <p>{model.ggufFiles.slice(0, 4).map((file) => `${file.name} (${file.sizeLabel})`).join(", ") || "GGUF repo"}</p>
-                    <button className="llm-download-button" disabled={!ollamaStatus?.reachable || !ollamaStatus.dataLinked || action.busy} onClick={() => void runOllamaPull(model.pullName)}>
+                    <button
+                      className="llm-download-button"
+                      disabled={!ollamaStatus?.reachable || !ollamaStatus.dataLinked || action.busy}
+                      onClick={() => {
+                        setLlmPullName(model.pullName);
+                        void runOllamaPull(model.pullName);
+                      }}
+                    >
                       <Download size={15} />
-                      D O W N L O A D
+                      Download
                     </button>
                   </article>
                 ))}
@@ -1551,12 +1558,18 @@ function App() {
             <div className="llm-catalog-list">
               {filteredLlmModels.map((model) => (
                 <article className="llm-catalog-card" key={model.name}>
-                  <button className="llm-select-button" onClick={() => setOllamaModel(model.name)}>
+                  <div className="llm-select-button">
                     <span>{model.name}</span>
                     <small>{model.source} / {model.size}</small>
-                  </button>
+                  </div>
                   <p>{model.note}</p>
-                  <button disabled={!ollamaStatus?.reachable || !ollamaStatus.dataLinked || action.busy} onClick={() => void runOllamaPull(model.name)}>
+                  <button
+                    disabled={!ollamaStatus?.reachable || !ollamaStatus.dataLinked || action.busy}
+                    onClick={() => {
+                      setLlmPullName(model.name);
+                      void runOllamaPull(model.name);
+                    }}
+                  >
                     <Download size={15} />
                     Download
                   </button>
@@ -1571,7 +1584,13 @@ function App() {
               {ollamaStatus?.models.length ? (
                 ollamaStatus.models.map((model) => (
                   <div className="model-row" key={model.name}>
-                    <button className={ollamaModel === model.name ? "model selected" : "model"} onClick={() => setOllamaModel(model.name)}>
+                    <button
+                      className={ollamaModel === model.name ? "model selected" : "model"}
+                      onClick={() => {
+                        setOllamaModel(model.name);
+                        setLlmPullName(model.name);
+                      }}
+                    >
                       <span>{model.name}</span>
                       <small>{model.sizeLabel}</small>
                     </button>
@@ -1724,6 +1743,7 @@ function App() {
               {status?.checkpoints.length ? (
                 status.checkpoints.map((file) => {
                   const external = checkpointExternalSelections[file.name] ?? { vae: "", clip: "" };
+                  const requiredComponents = checkpointRequiredComponents[file.name] ?? [];
                   const needsVae = !file.hasVae;
                   const needsClip = !file.hasClip;
                   const suggestedVae = needsVae ? status.vae.find((item) => item.hasVae)?.name ?? status.vae[0]?.name ?? "" : "";
@@ -1784,6 +1804,35 @@ function App() {
                           >
                             推奨を設定
                           </button>
+                          {requiredComponents.length ? (
+                            <div className="required-component-list">
+                              <strong>Required Components</strong>
+                              {requiredComponents.map((component) => {
+                                const targetType = componentTargetType(component);
+                                const installed = isComponentInstalled(component);
+                                const selected =
+                                  (targetType === "vae" && external.vae === component.name) ||
+                                  (targetType === "clip" && external.clip === component.name);
+                                return (
+                                  <button
+                                    key={`${component.type}-${component.name}`}
+                                    disabled={action.busy}
+                                    className={selected ? "component-option selected" : "component-option"}
+                                    onClick={() => {
+                                      if (installed && targetType) {
+                                        saveCheckpointExternalSelection(file.name, { ...external, [targetType]: component.name });
+                                        return;
+                                      }
+                                      void installRequiredComponent(file.name, component);
+                                    }}
+                                  >
+                                    <span>{component.name}</span>
+                                    <small>{component.type} / {Math.round(component.sizeKB / 1024)} MB / {installed ? "installed" : "download"}</small>
+                                  </button>
+                                );
+                              })}
+                            </div>
+                          ) : null}
                         </div>
                       ) : null}
                     </div>
@@ -2929,11 +2978,13 @@ type StatusTone = "ok" | "warn" | "error";
 function StatusGrid({
   status,
   ollamaStatus,
-  runtimeTab
+  runtimeTab,
+  ollamaModel
 }: {
   status: RuntimeStatus | null;
   ollamaStatus?: OllamaStatus | null;
   runtimeTab: "macos" | "docker";
+  ollamaModel: string;
 }) {
   const runtimeItems: Array<{ label: string; value: string; tone: StatusTone }> =
     runtimeTab === "docker"
@@ -2954,7 +3005,8 @@ function StatusGrid({
     ...runtimeItems,
     { label: "Runtime Path", value: status?.pathsReady ? "OK" : "未初期化", tone: status?.pathsReady ? "ok" : "error" },
     { label: "Ollama", value: ollamaValue, tone: ollamaTone },
-    { label: "DataPath", value: ollamaStatus?.dataLinked ? "OK" : "未切替", tone: dataTone }
+    { label: "DataPath", value: ollamaStatus?.dataLinked ? "OK" : "未切替", tone: dataTone },
+    { label: "LLM", value: ollamaModel || "未選択", tone: ollamaModel ? "ok" : "warn" }
   ];
 
   return (

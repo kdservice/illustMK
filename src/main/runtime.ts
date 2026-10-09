@@ -131,6 +131,15 @@ export type CivitaiModelCard = {
   downloadCount: number;
   rating: number;
   sha256?: string;
+  requiredComponents: CivitaiRequiredComponent[];
+};
+
+export type CivitaiRequiredComponent = {
+  name: string;
+  type: string;
+  sizeKB: number;
+  downloadUrl: string;
+  sha256?: string;
 };
 
 export type HuggingFaceLlmModelCard = {
@@ -3477,11 +3486,15 @@ function normalizeCivitaiModel(item: unknown): CivitaiModelCard[] {
   const version = versions[0] as Record<string, unknown> | undefined;
   if (!version) return [];
   const files = Array.isArray(version.files) ? version.files : [];
-  const file = files.find((candidate) => {
+  const safetensorFiles = files.filter((candidate) => {
     const record = candidate as Record<string, unknown>;
     return String(record.name ?? "").toLowerCase().endsWith(".safetensors");
-  }) as Record<string, unknown> | undefined;
-  const downloadUrl = String(version.downloadUrl ?? "");
+  }) as Record<string, unknown>[];
+  const file =
+    safetensorFiles.find((candidate) => Boolean(candidate.primary)) ??
+    safetensorFiles.find((candidate) => String(candidate.type ?? "").toLowerCase() === "model") ??
+    safetensorFiles[0];
+  const downloadUrl = String(file?.downloadUrl ?? version.downloadUrl ?? "");
   if (!file || !downloadUrl) return [];
 
   const stats = (model.stats ?? {}) as Record<string, unknown>;
@@ -3492,6 +3505,23 @@ function normalizeCivitaiModel(item: unknown): CivitaiModelCard[] {
   const hashes = (file.hashes ?? {}) as Record<string, unknown>;
   const modelId = Number(model.id ?? 0);
   const versionId = Number(version.id ?? 0);
+  const requiredComponents = safetensorFiles
+    .filter((candidate) => {
+      const type = String(candidate.type ?? "").toLowerCase();
+      const metadata = (candidate.metadata ?? {}) as Record<string, unknown>;
+      return Boolean(metadata.isRequired) && (type === "vae" || type === "text encoder");
+    })
+    .map((candidate) => {
+      const componentHashes = (candidate.hashes ?? {}) as Record<string, unknown>;
+      return {
+        name: String(candidate.name ?? ""),
+        type: String(candidate.type ?? ""),
+        sizeKB: Number(candidate.sizeKB ?? 0),
+        downloadUrl: String(candidate.downloadUrl ?? ""),
+        sha256: componentHashes.SHA256 ? String(componentHashes.SHA256) : undefined
+      };
+    })
+    .filter((component) => component.name && component.downloadUrl);
   return [
     {
       id: modelId,
@@ -3509,7 +3539,8 @@ function normalizeCivitaiModel(item: unknown): CivitaiModelCard[] {
       imageUrl: image?.url ? String(image.url) : null,
       downloadCount: Number(stats.downloadCount ?? versionStats.downloadCount ?? 0),
       rating: Number(stats.rating ?? 0),
-      sha256: hashes.SHA256 ? String(hashes.SHA256) : undefined
+      sha256: hashes.SHA256 ? String(hashes.SHA256) : undefined,
+      requiredComponents
     }
   ];
 }
