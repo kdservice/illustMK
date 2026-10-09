@@ -175,7 +175,7 @@ function App() {
   const [tagName, setTagName] = useState("");
   const [tagEnglishName, setTagEnglishName] = useState("");
   const [tagColor, setTagColor] = useState("#3388ff");
-  const [tagCategory, setTagCategory] = useState("未分類");
+  const [tagCategory, setTagCategory] = useState("");
   const [tagPrompt, setTagPrompt] = useState("");
   const [tagJapaneseDescription, setTagJapaneseDescription] = useState("");
   const [tagEnglishDescription, setTagEnglishDescription] = useState("");
@@ -929,7 +929,7 @@ function App() {
     }
   }
 
-  function openNewTagDialog(category = "未分類"): void {
+  function openNewTagDialog(category = ""): void {
     setTagEditingId(null);
     setTagName("");
     setTagEnglishName("");
@@ -991,7 +991,7 @@ function App() {
           name: tagName,
           englishName: tagEnglishName,
           color: tagColor,
-          category: tagCategory,
+          category: tagCategory.trim() || "未分類",
           sourcePrompt: tagPrompt,
           japaneseDescription: tagJapaneseDescription,
           englishDescription: tagEnglishDescription
@@ -3664,8 +3664,7 @@ function illustrationTagCategories(tags: IllustrationTag[]): string[] {
 }
 
 function illustrationTagEditCategories(tags: IllustrationTag[]): string[] {
-  const categories = uniqueCategories(tags.map((tag) => tag.category));
-  return categories.length ? categories : ["未分類"];
+  return uniqueCategories(tags.map((tag) => tag.category));
 }
 
 function uniqueCategories(categories: Array<string | undefined | null>): string[] {
