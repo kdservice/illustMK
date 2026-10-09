@@ -623,6 +623,18 @@ function App() {
     await deleteModelAsset("vae", selectedVae);
   }
 
+  async function importModelAsset(targetType: "vae" | "clip"): Promise<void> {
+    const label = targetType === "vae" ? "VAE" : "CLIP/text encoder";
+    await runAction(`${label}をインポート中`, () => window.illustMK.runtime.importModelAsset({ targetType }), (result) => {
+      if (!result) return;
+      const fileName = result.path.split(/[\\/]/).pop() ?? "";
+      if (targetType === "vae") setSelectedVae(fileName);
+      if (targetType === "clip") setSelectedClip(fileName);
+      appendLog("info", result.message);
+      void refreshStatus();
+    });
+  }
+
   async function deleteModelAsset(targetType: "vae" | "clip", fileName: string): Promise<void> {
     if (!fileName) return;
     if (!window.confirm(`${fileName} を削除します。元に戻せません。`)) return;
@@ -1425,7 +1437,13 @@ function App() {
                 </div>
               </div>
               <div className="model-list">
-                <h2>インストール済みVAE</h2>
+                <div className="model-list-header">
+                  <h2>インストール済みVAE</h2>
+                  <button disabled={action.busy} onClick={() => void importModelAsset("vae")}>
+                    <FolderOpen size={15} />
+                    インポート
+                  </button>
+                </div>
                 {status?.vae.length ? (
                   status.vae.map((file) => (
                     <div className="model-row" key={file.name}>
@@ -1471,7 +1489,13 @@ function App() {
                 </div>
               </div>
               <div className="model-list">
-                <h2>インストール済みCLIP</h2>
+                <div className="model-list-header">
+                  <h2>インストール済みCLIP</h2>
+                  <button disabled={action.busy} onClick={() => void importModelAsset("clip")}>
+                    <FolderOpen size={15} />
+                    インポート
+                  </button>
+                </div>
                 {status?.clip.length ? (
                   status.clip.map((file) => (
                     <div className="model-row" key={file.name}>

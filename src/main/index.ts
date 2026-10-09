@@ -26,6 +26,7 @@ import {
   generateTagJapaneseDescription,
   initNativeRuntime,
   installLoraRuntime,
+  importModelAsset,
   importLoraFile,
   installOllama,
   installNativeRuntime,
@@ -65,6 +66,7 @@ import {
   type DeleteModelRequest,
   type DownloadCivitaiLoraProjectRequest,
   type DownloadRequest,
+  type ImportModelAssetRequest,
   type LoraTrainingRunParams,
   type LlmChatRequest,
   type PromptEnhanceRequest,
@@ -284,6 +286,17 @@ function registerIpc(): void {
     })
   );
   ipcMain.handle("runtime:delete-model", (_event, request: DeleteModelRequest) => deleteModelFile(request));
+  ipcMain.handle("runtime:import-model-asset", async (_event, request: Omit<ImportModelAssetRequest, "sourcePath">) => {
+    const label = request.targetType === "vae" ? "VAE" : "CLIP/text encoder";
+    const options: OpenDialogOptions = {
+      title: `${label} safetensorsをインポート`,
+      properties: ["openFile"],
+      filters: [{ name: `${label} safetensors`, extensions: ["safetensors"] }]
+    };
+    const result = mainWindow ? await dialog.showOpenDialog(mainWindow, options) : await dialog.showOpenDialog(options);
+    if (result.canceled || !result.filePaths[0]) return null;
+    return importModelAsset({ targetType: request.targetType, sourcePath: result.filePaths[0] });
+  });
   ipcMain.handle("runtime:search-civitai", (_event, options) => searchCivitaiModels(options));
   ipcMain.handle("runtime:search-huggingface-llm", (_event, options) => searchHuggingFaceLlmModels(options));
   ipcMain.handle("runtime:test-generate", (_event, request: TestGenerationRequest) => runTestGeneration(request));

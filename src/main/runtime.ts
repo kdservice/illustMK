@@ -102,6 +102,11 @@ export type DeleteModelRequest = {
   fileName: string;
 };
 
+export type ImportModelAssetRequest = {
+  targetType: "vae" | "clip";
+  sourcePath: string;
+};
+
 export type DownloadResult = {
   ok: boolean;
   path: string;
@@ -945,6 +950,28 @@ export async function deleteModelFile(request: DeleteModelRequest): Promise<stri
 
   await rm(join(targetDir, fileName), { force: true });
   return `${fileName} を削除しました。`;
+}
+
+export async function importModelAsset(request: ImportModelAssetRequest): Promise<DownloadResult> {
+  if (!request.sourcePath.trim()) throw new Error("インポートするファイルを選択してください。");
+  const paths = await ensureRuntimeFiles();
+  const targetDir = request.targetType === "vae" ? paths.vae : paths.clip;
+  const fileName = normalizeSafetensorsName(basename(request.sourcePath));
+  const destination = join(targetDir, fileName);
+  const from = resolve(request.sourcePath);
+  const to = resolve(destination);
+  const relation = relative(targetDir, from);
+  await mkdir(targetDir, { recursive: true });
+  if (relation.startsWith("..") || resolve(targetDir, relation) !== from) {
+    await cp(from, to);
+  }
+  const digest = await sha256File(to);
+  return {
+    ok: true,
+    path: to,
+    sha256: digest,
+    message: `${fileName} をインポートしました。`
+  };
 }
 
 export async function searchCivitaiModels(options: {

@@ -1261,11 +1261,28 @@ label {
   margin-top: 16px;
 }
 
+.model-list-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 8px;
+}
+
+.model-list-header button {
+  min-height: 30px;
+  padding: 0 10px;
+}
+
 .model-list h2,
 .callout h2 {
   margin: 0 0 8px;
   font-size: 13px;
   color: #dbe7ff;
+}
+
+.model-list-header h2 {
+  margin: 0;
 }
 
 .model {
