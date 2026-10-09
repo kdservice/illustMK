@@ -2130,8 +2130,8 @@ function App() {
                   >
                     <div className="lora-project-thumb">
                       <ImageIcon className="lora-project-placeholder-icon" size={22} />
-                      {project.thumbnailPath ? (
-                        <img src={imageUrl(project.thumbnailPath)} alt="" onError={(event) => { event.currentTarget.remove(); }} />
+                      {project.thumbnailDataUrl || project.thumbnailPath ? (
+                        <img src={project.thumbnailDataUrl || imageUrl(project.thumbnailPath ?? "")} alt="" onError={(event) => { event.currentTarget.remove(); }} />
                       ) : null}
                     </div>
                     <div className="lora-project-body">

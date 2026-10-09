@@ -295,6 +295,7 @@ export type LoraTrainingProject = {
   datasetPath: string;
   outputName: string;
   thumbnailPath?: string;
+  thumbnailDataUrl?: string;
   resolution: number;
   repeats: number;
   epochs: number;
@@ -1563,7 +1564,11 @@ export async function getLoraTrainingProjects(): Promise<LoraTrainingProject[]> 
       // Ignore directories that are not LoRA projects yet.
     }
   }
-  const projects = [...byId.values()].sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+  const projects = await Promise.all(
+    [...byId.values()]
+      .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))
+      .map((project) => attachLoraThumbnailDataUrl(project))
+  );
   await saveLoraTrainingProjects(projects);
   return projects;
 }
@@ -1657,7 +1662,7 @@ export async function saveLoraTrainingProject(request: SaveLoraTrainingProjectRe
   await mkdir(loraTrainingImageDir(project), { recursive: true });
   await mkdir(join(projectRoot, "config"), { recursive: true });
   await ensureLoraCaptionTagsFile(project);
-  await writeFile(join(projectRoot, "config", "lora-training.json"), JSON.stringify(project, null, 2), "utf8");
+  await writeFile(join(projectRoot, "config", "lora-training.json"), JSON.stringify(stripLoraTransientFields(project), null, 2), "utf8");
   const nextProjects = existing
     ? projects.map((item) => (item.id === existing.id ? project : item))
     : [project, ...projects];
@@ -1761,7 +1766,7 @@ export async function downloadCivitaiLoraProject(
   await mkdir(loraTrainingImageDir(project), { recursive: true });
   await mkdir(join(projectRoot, "config"), { recursive: true });
   await ensureLoraCaptionTagsFile(project);
-  await writeFile(join(projectRoot, "config", "lora-training.json"), JSON.stringify(project, null, 2), "utf8");
+  await writeFile(join(projectRoot, "config", "lora-training.json"), JSON.stringify(stripLoraTransientFields(project), null, 2), "utf8");
   const nextProjects = [project, ...projects];
   await saveLoraTrainingProjects(nextProjects);
   return nextProjects;
@@ -2127,7 +2132,27 @@ async function savePromptHistory(history: PromptHistoryEntry[]): Promise<void> {
 
 async function saveLoraTrainingProjects(projects: LoraTrainingProject[]): Promise<void> {
   await mkdir(appDataRoot, { recursive: true });
-  await writeFile(loraTrainingProjectsPath, JSON.stringify(projects, null, 2), "utf8");
+  await writeFile(loraTrainingProjectsPath, JSON.stringify(projects.map(stripLoraTransientFields), null, 2), "utf8");
+}
+
+async function attachLoraThumbnailDataUrl(project: LoraTrainingProject): Promise<LoraTrainingProject> {
+  if (!project.thumbnailPath) return project;
+  try {
+    const file = await readFile(project.thumbnailPath);
+    const lowerPath = project.thumbnailPath.toLowerCase();
+    const mime = lowerPath.endsWith(".webp") ? "image/webp" : lowerPath.endsWith(".png") ? "image/png" : "image/jpeg";
+    return {
+      ...project,
+      thumbnailDataUrl: `data:${mime};base64,${file.toString("base64")}`
+    };
+  } catch {
+    return project;
+  }
+}
+
+function stripLoraTransientFields(project: LoraTrainingProject): LoraTrainingProject {
+  const { thumbnailDataUrl: _thumbnailDataUrl, ...serializableProject } = project;
+  return serializableProject;
 }
 
 async function validateLoraTrainingProject(project: LoraTrainingProject, loraOutputPath: string): Promise<LoraTrainingProject> {
