@@ -1704,7 +1704,10 @@ export async function downloadCivitaiLoraProject(
   const existing = projects.find((project) => project.outputName === fileName || project.sourceLora === fileName);
   if (existing) {
     const projectRoot = await resolveExistingLoraProjectDir(existing, paths);
-    const thumbnailPath = existing.thumbnailPath ?? await saveCivitaiLoraThumbnail(model, projectRoot);
+    const thumbnailExists = existing.thumbnailPath ? await exists(existing.thumbnailPath) : false;
+    const thumbnailPath = existing.thumbnailPath && thumbnailExists
+      ? existing.thumbnailPath
+      : await saveCivitaiLoraThumbnail(model, projectRoot);
     const nextProjects: LoraTrainingProject[] = projects.map((project) =>
       project.id === existing.id
         ? {
@@ -1769,14 +1772,19 @@ async function saveCivitaiLoraThumbnail(model: CivitaiModelCard, projectRoot: st
   try {
     await mkdir(join(projectRoot, "assets"), { recursive: true });
     const response = await fetch(model.imageUrl, {
-      headers: { "User-Agent": "illustMK/0.1" },
+      headers: {
+        Accept: "image/avif,image/webp,image/png,image/jpeg,*/*",
+        Referer: "https://civitai.com/",
+        "User-Agent": "illustMK/0.1"
+      },
       signal: AbortSignal.timeout(30000)
     });
     if (!response.ok || !response.body) return undefined;
     const contentType = response.headers.get("content-type") ?? "";
     const urlExtension = new URL(model.imageUrl).pathname.match(/\.(png|jpe?g|webp)$/i)?.[1]?.toLowerCase();
     const extension = contentType.includes("png") ? "png" : contentType.includes("webp") ? "webp" : urlExtension === "png" || urlExtension === "webp" ? urlExtension : "jpg";
-    const path = join(projectRoot, "assets", `thumbnail.${extension}`);
+    const stamp = new Date().toISOString().replace(/[-:.TZ]/g, "");
+    const path = join(projectRoot, "assets", `thumbnail-${stamp}.${extension}`);
     await pipeline(response.body as unknown as NodeJS.ReadableStream, createWriteStream(path));
     return path;
   } catch {
