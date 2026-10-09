@@ -1047,7 +1047,7 @@ function App() {
     setOptionTagJapanese(tag?.japanese ?? "");
     setOptionTagEnglish(tag?.english ?? "");
     setOptionTagColor(tag?.color ?? "#3388ff");
-    setOptionTagCategory(tag?.category ?? optionPromptTagCategories(optionPromptTags)[0] ?? "品質");
+    setOptionTagCategory(tag ? tag.category || "未分類" : "");
     setOptionTagEditorOpen(true);
   }
 
@@ -2728,8 +2728,10 @@ function App() {
                   placeholder="品質"
                 />
                 <datalist id="option-tag-categories">
-                  {optionPromptTagCategories(optionPromptTags).map((category) => (
-                    <option value={category} key={category} />
+                  {optionPromptTagEditCategories(optionPromptTags).map((category) => (
+                    <option value={category} key={category}>
+                      {category}
+                    </option>
                   ))}
                 </datalist>
               </div>
@@ -3794,6 +3796,10 @@ function normalizeOptionPromptTags(value: unknown): OptionPromptTag[] {
 function optionPromptTagCategories(tags: OptionPromptTag[]): string[] {
   const defaults = ["品質", "人物", "構図", "視線", "服装", "背景", "画風", "Negative"];
   return uniqueCategories([...defaults, ...tags.map((tag) => tag.category)]);
+}
+
+function optionPromptTagEditCategories(tags: OptionPromptTag[]): string[] {
+  return uniqueCategories(groupOptionPromptTags(tags).map((group) => group.category));
 }
 
 function illustrationTagCategories(tags: IllustrationTag[]): string[] {
