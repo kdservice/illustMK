@@ -211,6 +211,8 @@ function App() {
   const [imageSizePreset, setImageSizePreset] = useState("768x1024");
   const [generationWidth, setGenerationWidth] = useState(768);
   const [generationHeight, setGenerationHeight] = useState(1024);
+  const [generationSteps, setGenerationSteps] = useState(20);
+  const [generationCfg, setGenerationCfg] = useState(7);
   const [seedMode, setSeedMode] = useState<"random" | "fixed">("random");
   const [seedValue, setSeedValue] = useState(-1);
   const [promptHistory, setPromptHistory] = useState<PromptHistoryEntry[]>([]);
@@ -976,6 +978,8 @@ function App() {
     setGenerationWidth(settings?.width ?? entry.width);
     setGenerationHeight(settings?.height ?? entry.height);
     setImageSizePreset(settings?.imageSizePreset ?? `${entry.width}x${entry.height}`);
+    setGenerationSteps(settings?.steps ?? entry.steps);
+    setGenerationCfg(settings?.cfg ?? entry.cfg);
     setSeedMode(settings?.seedMode ?? (entry.seed >= 0 ? "fixed" : "random"));
     setSeedValue(settings?.seedValue ?? entry.seed);
     if (settings?.baseFilters) setBaseFilters(settings.baseFilters);
@@ -1650,8 +1654,8 @@ function App() {
     loras: activeGenerationLoras,
     width: generationWidth,
     height: generationHeight,
-    steps: 20,
-    cfg: 7,
+    steps: generationSteps,
+    cfg: generationCfg,
     seed: seedMode === "random" ? -1 : seedValue,
     comfyUrl,
     vae: selectedVae || undefined,
@@ -2714,8 +2718,9 @@ function App() {
                           appendLog("info", `ComfyUI Positive Prompt: ${testRequest.prompt}`);
                           appendLog("info", `ComfyUI Negative Prompt: ${testRequest.negativePrompt}`);
                           appendLog("info", `ComfyUI LoRA: ${activeGenerationLoras.length ? activeGenerationLoras.map((lora) => `${lora.name} model=${lora.modelStrength} clip=${lora.clipStrength}`).join(", ") : "なし"}`);
-                          appendLog("info", `ComfyUI Size/Seed: ${testRequest.width}x${testRequest.height} / ${testRequest.seed}`);
+                          appendLog("info", `ComfyUI Size/Steps/CFG/Seed: ${testRequest.width}x${testRequest.height} / ${testRequest.steps} / ${testRequest.cfg} / ${testRequest.seed}`);
                           const result = await window.illustMK.runtime.testGenerate(testRequest);
+                          appendLog("info", `ComfyUI Prompt ID: ${result.promptId ?? "なし"}`);
                           const durationText = formatGenerationDuration(performance.now() - startedAt);
                           const resultWithDuration = {
                             ...result,
@@ -2785,6 +2790,16 @@ function App() {
                   <div className="field">
                     <label>Height</label>
                     <input type="number" min="256" step="64" value={generationHeight} onChange={(event) => setGenerationHeight(Number(event.target.value))} />
+                  </div>
+                </div>
+                <div className="two-columns">
+                  <div className="field">
+                    <label>Steps</label>
+                    <input type="number" min="1" max="150" value={generationSteps} onChange={(event) => setGenerationSteps(Number(event.target.value))} />
+                  </div>
+                  <div className="field">
+                    <label>CFG</label>
+                    <input type="number" min="1" max="30" step="0.5" value={generationCfg} onChange={(event) => setGenerationCfg(Number(event.target.value))} />
                   </div>
                 </div>
                 <div className="field">

@@ -2315,7 +2315,7 @@ export async function savePromptHistoryEntry(request: SavePromptHistoryRequest):
     imageDataUrl: request.imageDataUrl,
     createdAt: new Date().toISOString()
   };
-  const history = [entry, ...(await getSavedPromptHistory()).filter((item) => item.japanesePrompt !== request.japanesePrompt || item.prompt !== request.prompt || item.negativePrompt !== request.negativePrompt)].slice(0, 100);
+  const history = [entry, ...(await getSavedPromptHistory())].slice(0, 100);
   await savePromptHistory(history);
   return history;
 }
