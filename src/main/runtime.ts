@@ -2993,6 +2993,7 @@ export async function runTestGeneration(request: TestGenerationRequest): Promise
   workflow["3"].inputs.steps = request.steps;
   workflow["3"].inputs.cfg = request.cfg;
 
+  const before = new Set(await listFiles(paths.outputs));
   const promptResponse = await fetch(`${request.comfyUrl.replace(/\/$/, "")}/prompt`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -3009,7 +3010,6 @@ export async function runTestGeneration(request: TestGenerationRequest): Promise
     return { ok: false, message: "ComfyUIからprompt_idが返りませんでした。" };
   }
 
-  const before = new Set(await listFiles(paths.outputs));
   const deadline = Date.now() + 1000 * 300;
   while (Date.now() < deadline) {
     await delay(1500);

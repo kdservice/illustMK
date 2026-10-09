@@ -341,6 +341,14 @@ function App() {
     () => optionPromptTags.filter((tag) => negativeOptionTagIds.includes(tag.id)),
     [negativeOptionTagIds, optionPromptTags]
   );
+  const availableLoraNames = useMemo(
+    () => new Set((status?.loras ?? []).filter((lora) => !isStepLoraName(lora.name)).map((lora) => lora.name)),
+    [status?.loras]
+  );
+  const activeGenerationLoras = useMemo(
+    () => selectedLoras.filter((lora) => availableLoraNames.has(lora.name)),
+    [availableLoraNames, selectedLoras]
+  );
   const effectivePrompt = composeGenerationPrompt(prompt, [
     ...positivePromptTags.map((tag) => tag.englishDescription),
     ...positiveOptionTags.map((tag) => tag.english),
@@ -950,8 +958,8 @@ function App() {
     setPrompt(entry.prompt);
     setNegativePrompt(entry.negativePrompt);
     setSelectedCheckpoint(entry.checkpoint);
-    setSelectedVae(entry.vae ?? "");
-    setSelectedClip(entry.clip ?? "");
+    setSelectedVae(entry.vae && status?.vae.some((file) => file.name === entry.vae) ? entry.vae : "");
+    setSelectedClip(entry.clip && status?.clip.some((file) => file.name === entry.clip) ? entry.clip : "");
     if (entry.llmUrl) setOllamaUrl(entry.llmUrl);
     if (entry.llmModel) setOllamaModel(entry.llmModel);
     setJapanesePromptTagIds(entry.japanesePromptTagIds ?? []);
@@ -959,7 +967,7 @@ function App() {
     setPositiveOptionTagIds(entry.positiveOptionTagIds ?? []);
     setNegativeOptionTagIds(entry.negativeOptionTagIds ?? []);
     setPositiveLoraTriggerIds(entry.positiveLoraTriggerIds ?? []);
-    setSelectedLoras(entry.loras ?? []);
+    setSelectedLoras((entry.loras ?? []).filter((lora) => availableLoraNames.has(lora.name)));
     setGenerationWidth(entry.width);
     setGenerationHeight(entry.height);
     setImageSizePreset(`${entry.width}x${entry.height}`);
@@ -1631,7 +1639,7 @@ function App() {
     prompt: effectivePrompt,
     negativePrompt: effectiveNegativePrompt,
     checkpoint: selectedCheckpoint,
-    loras: selectedLoras,
+    loras: activeGenerationLoras,
     width: generationWidth,
     height: generationHeight,
     steps: 20,
@@ -2663,7 +2671,7 @@ function App() {
                           const startedAt = performance.now();
                           appendLog("info", `ComfyUI Positive Prompt: ${testRequest.prompt}`);
                           appendLog("info", `ComfyUI Negative Prompt: ${testRequest.negativePrompt}`);
-                          appendLog("info", `ComfyUI LoRA: ${selectedLoras.length ? selectedLoras.map((lora) => `${lora.name} model=${lora.modelStrength} clip=${lora.clipStrength}`).join(", ") : "なし"}`);
+                          appendLog("info", `ComfyUI LoRA: ${activeGenerationLoras.length ? activeGenerationLoras.map((lora) => `${lora.name} model=${lora.modelStrength} clip=${lora.clipStrength}`).join(", ") : "なし"}`);
                           appendLog("info", `ComfyUI Size/Seed: ${testRequest.width}x${testRequest.height} / ${testRequest.seed}`);
                           const result = await window.illustMK.runtime.testGenerate(testRequest);
                           const durationText = formatGenerationDuration(performance.now() - startedAt);
