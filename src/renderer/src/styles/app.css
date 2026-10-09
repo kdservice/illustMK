@@ -514,6 +514,37 @@ label {
   gap: 8px;
 }
 
+.count-badge {
+  min-width: 26px;
+  border: 1px solid #44bcff;
+  border-radius: 999px;
+  background: #12335f;
+  color: #dff4ff;
+  padding: 3px 8px;
+  text-align: center;
+  font-size: 12px;
+  font-weight: 900;
+}
+
+.lora-trigger-row {
+  display: grid;
+  grid-template-columns: minmax(180px, 0.4fr) minmax(0, 1fr);
+  gap: 12px;
+  width: 100%;
+  justify-content: stretch;
+  text-align: left;
+}
+
+.lora-trigger-row.selected {
+  border-color: #44bcff;
+  background: #12335f;
+}
+
+.lora-trigger-row span {
+  color: #91a3c9;
+  overflow-wrap: anywhere;
+}
+
 .lora-meta-tags {
   display: flex;
   flex-wrap: wrap;

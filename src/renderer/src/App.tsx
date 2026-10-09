@@ -103,6 +103,11 @@ type OptionPromptTag = {
   color: string;
   category: string;
 };
+type AppliedLoraTrigger = {
+  loraName: string;
+  title: string;
+  triggerWord: string;
+};
 const recommendedLlmModels = [
   { name: "qwen2.5:3b-instruct", source: "Ollama", size: "軽量", note: "まず試す用。日本語もそこそこ。" },
   { name: "qwen2.5:7b-instruct", source: "Ollama", size: "標準", note: "日本語prompt整形の本命寄り。" },
@@ -163,6 +168,8 @@ function App() {
   const [selectedTagIds, setSelectedTagIds] = useState<string[]>([]);
   const [japanesePromptTagIds, setJapanesePromptTagIds] = useState<string[]>([]);
   const [positivePromptTagIds, setPositivePromptTagIds] = useState<string[]>([]);
+  const [positiveLoraTriggerIds, setPositiveLoraTriggerIds] = useState<string[]>([]);
+  const [loraTriggerDialogOpen, setLoraTriggerDialogOpen] = useState(false);
   const [tagDialogOpen, setTagDialogOpen] = useState(false);
   const [tagEditingId, setTagEditingId] = useState<string | null>(null);
   const [tagName, setTagName] = useState("");
@@ -287,13 +294,34 @@ function App() {
     () => optionPromptTags.filter((tag) => positiveOptionTagIds.includes(tag.id)),
     [optionPromptTags, positiveOptionTagIds]
   );
+  const selectedLoraTriggers = useMemo<AppliedLoraTrigger[]>(
+    () =>
+      selectedLoras
+        .map((lora) => {
+          const project = loraProjects.find((item) => item.outputName === lora.name || item.sourceLora === lora.name);
+          const triggerWord = project?.triggerWord.trim();
+          if (!triggerWord) return null;
+          return {
+            loraName: lora.name,
+            title: project?.name || lora.name,
+            triggerWord
+          };
+        })
+        .filter((item): item is AppliedLoraTrigger => Boolean(item)),
+    [loraProjects, selectedLoras]
+  );
+  const positiveLoraTriggers = useMemo(
+    () => selectedLoraTriggers.filter((item) => positiveLoraTriggerIds.includes(item.loraName)),
+    [positiveLoraTriggerIds, selectedLoraTriggers]
+  );
   const negativeOptionTags = useMemo(
     () => optionPromptTags.filter((tag) => negativeOptionTagIds.includes(tag.id)),
     [negativeOptionTagIds, optionPromptTags]
   );
   const effectivePrompt = composeGenerationPrompt(prompt, [
     ...positivePromptTags.map((tag) => tag.englishDescription),
-    ...positiveOptionTags.map((tag) => tag.english)
+    ...positiveOptionTags.map((tag) => tag.english),
+    ...positiveLoraTriggers.map((item) => item.triggerWord)
   ]);
   const effectiveNegativePrompt = composeGenerationPrompt(negativePrompt, negativeOptionTags.map((tag) => tag.english));
   const selectedCheckpointGenerationReady = Boolean(
@@ -2349,6 +2377,7 @@ function App() {
                   positivePromptTags={positivePromptTags}
                   positiveOptionTags={positiveOptionTags}
                   negativeOptionTags={negativeOptionTags}
+                  positiveLoraTriggers={positiveLoraTriggers}
                 canEnhancePrompt={canEnhancePrompt}
                 disabledReason={enhancePromptDisabledReason}
                 onEnhance={() => void enhanceJapanesePrompt()}
@@ -2356,6 +2385,7 @@ function App() {
                 onRemoveOptionTag={removeOptionPromptTag}
                   onOpenTagBrowser={setTagPromptTarget}
                   onOpenHistory={() => setPromptHistoryOpen(true)}
+                  onOpenLoraTriggers={() => setLoraTriggerDialogOpen(true)}
                   onRemoveIllustrationTag={(target, tag) => {
                     if (target === "japanese") {
                       setJapanesePromptTagIds((current) => current.filter((id) => id !== tag.id));
@@ -2363,6 +2393,7 @@ function App() {
                     }
                     setPositivePromptTagIds((current) => current.filter((id) => id !== tag.id));
                   }}
+                  onRemoveLoraTrigger={(trigger) => setPositiveLoraTriggerIds((current) => current.filter((id) => id !== trigger.loraName))}
                 />
                 <div className="button-row">
                   <button
@@ -2480,7 +2511,7 @@ function App() {
         <div className="modal-backdrop">
           <section className="modal-panel option-tag-modal">
             <div className="modal-header">
-              <PanelTitle icon={<WandSparkles size={18} />} title={`${tagPromptTarget === "positive" ? "Final Prompt" : "Japanese Prompt"} タグ`} />
+              <PanelTitle icon={<WandSparkles size={18} />} title="タグ一覧" />
               <button className="icon-button" onClick={() => setTagPromptTarget(null)} title="閉じる">
                 <Square size={16} />
               </button>
@@ -2492,6 +2523,36 @@ function App() {
               </button>
             </div>
             <IllustrationTagBrowser tags={illustrationTags} onApply={applyIllustrationTagToPrompt} onEdit={openEditTagDialog} onAddCategory={openNewTagDialogForCategory} />
+          </section>
+        </div>
+      ) : null}
+      {loraTriggerDialogOpen ? (
+        <div className="modal-backdrop">
+          <section className="modal-panel option-tag-modal">
+            <div className="modal-header">
+              <PanelTitle icon={<Boxes size={18} />} title="LoRAトリガーワード一覧" />
+              <button className="icon-button" onClick={() => setLoraTriggerDialogOpen(false)} title="閉じる">
+                <Square size={16} />
+              </button>
+            </div>
+            <div className="option-tag-browser">
+              {selectedLoraTriggers.length ? (
+                <div className="option-tag-list">
+                  {selectedLoraTriggers.map((trigger) => (
+                    <button
+                      className={positiveLoraTriggerIds.includes(trigger.loraName) ? "lora-trigger-row selected" : "lora-trigger-row"}
+                      key={trigger.loraName}
+                      onClick={() => setPositiveLoraTriggerIds((current) => (current.includes(trigger.loraName) ? current : [...current, trigger.loraName]))}
+                    >
+                      <strong>{trigger.title}</strong>
+                      <span>{trigger.triggerWord}</span>
+                    </button>
+                  ))}
+                </div>
+              ) : (
+                <p className="empty">選択中LoRAにトリガーワードがありません。</p>
+              )}
+            </div>
           </section>
         </div>
       ) : null}
@@ -2581,7 +2642,7 @@ function App() {
                 <div className="field">
                   <label>カテゴリ</label>
                   <select value={tagCategory} onChange={(event) => setTagCategory(event.target.value)}>
-                    {Array.from(new Set([...illustrationTagCategories(illustrationTags), ...optionPromptTagCategories(optionPromptTags)])).map((category) => (
+                    {mergedTagCategories(illustrationTags, optionPromptTags).map((category) => (
                       <option value={category} key={category} />
                     ))}
                   </select>
@@ -3035,6 +3096,7 @@ function PromptTransformPanel({
   positivePromptTags,
   positiveOptionTags,
   negativeOptionTags,
+  positiveLoraTriggers,
   canEnhancePrompt,
   disabledReason,
   onEnhance,
@@ -3042,7 +3104,9 @@ function PromptTransformPanel({
   onRemoveOptionTag,
   onOpenTagBrowser,
   onOpenHistory,
-  onRemoveIllustrationTag
+  onOpenLoraTriggers,
+  onRemoveIllustrationTag,
+  onRemoveLoraTrigger
 }: {
   japanesePrompt: string;
   setJapanesePrompt: (value: string) => void;
@@ -3058,6 +3122,7 @@ function PromptTransformPanel({
   positivePromptTags: IllustrationTag[];
   positiveOptionTags: OptionPromptTag[];
   negativeOptionTags: OptionPromptTag[];
+  positiveLoraTriggers: AppliedLoraTrigger[];
   canEnhancePrompt: boolean;
   disabledReason: string;
   onEnhance: () => void;
@@ -3065,7 +3130,9 @@ function PromptTransformPanel({
   onRemoveOptionTag: (target: PromptKind, tag: OptionPromptTag) => void;
   onOpenTagBrowser: (target: TagPromptTarget) => void;
   onOpenHistory: () => void;
+  onOpenLoraTriggers: () => void;
   onRemoveIllustrationTag: (target: TagPromptTarget, tag: IllustrationTag) => void;
+  onRemoveLoraTrigger: (trigger: AppliedLoraTrigger) => void;
 }) {
   return (
     <div className="prompt-transform">
@@ -3114,6 +3181,10 @@ function PromptTransformPanel({
             <WandSparkles size={15} />
             オプションタグ
           </button>
+          <button onClick={onOpenLoraTriggers}>
+            <Boxes size={15} />
+            LoRA
+          </button>
         </div>
         <textarea
           value={prompt}
@@ -3127,6 +3198,7 @@ function PromptTransformPanel({
           onRemove={onRemoveOptionTag}
         />
         <AppliedIllustrationTags target="positive" tags={positivePromptTags} onRemove={onRemoveIllustrationTag} />
+        <AppliedLoraTriggers triggers={positiveLoraTriggers} onRemove={onRemoveLoraTrigger} />
       </div>
       <div className="field">
         <div className="prompt-field-header">
@@ -3187,6 +3259,28 @@ function AppliedIllustrationTags({
         <span className="option-tag-chip" style={{ borderColor: tag.color, backgroundColor: hexToTagBackground(tag.color) }} key={tag.id}>
           {tag.name}
           <button onClick={() => onRemove(target, tag)} title="Promptから削除">
+            <Trash2 size={13} />
+          </button>
+        </span>
+      ))}
+    </div>
+  );
+}
+
+function AppliedLoraTriggers({
+  triggers,
+  onRemove
+}: {
+  triggers: AppliedLoraTrigger[];
+  onRemove: (trigger: AppliedLoraTrigger) => void;
+}) {
+  if (!triggers.length) return null;
+  return (
+    <div className="applied-option-tags">
+      {triggers.map((trigger) => (
+        <span className="option-tag-chip" key={trigger.loraName}>
+          {trigger.title}
+          <button onClick={() => onRemove(trigger)} title="Promptから削除">
             <Trash2 size={13} />
           </button>
         </span>
@@ -3349,7 +3443,7 @@ function GenerationLoraPanel({
       <div className="tag-builder-header">
         <h2>LoRA適用</h2>
         <div className="inline-actions">
-          <span>{selectedLoras.length}件選択</span>
+          <span className="count-badge">{selectedLoras.length}</span>
           <button className="tiny-button" disabled={!selectedLoras.length} onClick={onClearLoras}>選択クリア</button>
         </div>
       </div>
@@ -3554,12 +3648,20 @@ function normalizeOptionPromptTags(value: unknown): OptionPromptTag[] {
 
 function optionPromptTagCategories(tags: OptionPromptTag[]): string[] {
   const defaults = ["品質", "人物", "構図", "視線", "服装", "背景", "画風", "Negative"];
-  return Array.from(new Set([...defaults, ...tags.map((tag) => tag.category).filter(Boolean)]));
+  return uniqueCategories([...defaults, ...tags.map((tag) => tag.category)]);
 }
 
 function illustrationTagCategories(tags: IllustrationTag[]): string[] {
   const defaults = ["衣装", "キャラ", "構図", "背景", "画風", "品質", "その他"];
-  return Array.from(new Set([...defaults, ...tags.map((tag) => tag.category).filter(Boolean)]));
+  return uniqueCategories([...defaults, ...tags.map((tag) => tag.category)]);
+}
+
+function mergedTagCategories(tags: IllustrationTag[], optionTags: OptionPromptTag[]): string[] {
+  return uniqueCategories([...illustrationTagCategories(tags), ...optionPromptTagCategories(optionTags)]);
+}
+
+function uniqueCategories(categories: Array<string | undefined | null>): string[] {
+  return Array.from(new Set(categories.map((category) => category?.trim()).filter((category): category is string => Boolean(category))));
 }
 
 function groupIllustrationTags(tags: IllustrationTag[]): Array<{ category: string; items: IllustrationTag[] }> {
