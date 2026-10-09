@@ -399,15 +399,16 @@ label {
   background: #071020;
   padding: 12px;
   display: grid;
-  grid-template-columns: 180px minmax(0, 1fr);
-  gap: 14px;
-  align-items: stretch;
+  grid-template-columns: 360px minmax(0, 1fr);
+  gap: 18px;
+  align-items: start;
+  overflow: hidden;
 }
 
 .lora-detail-thumb {
   position: relative;
-  min-height: 180px;
-  aspect-ratio: 1;
+  width: 360px;
+  height: 360px;
   border: 1px dashed #29406f;
   border-radius: 8px;
   background: #050b18;
@@ -450,6 +451,7 @@ label {
   grid-template-rows: auto auto minmax(0, 1fr);
   gap: 10px;
   min-width: 0;
+  width: 100%;
 }
 
 .lora-detail-actions {
