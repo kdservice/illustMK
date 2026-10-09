@@ -231,6 +231,8 @@ export type IllustrationTag = {
   id: string;
   name: string;
   englishName: string;
+  color: string;
+  category: string;
   sourcePrompt: string;
   japaneseDescription: string;
   englishDescription: string;
@@ -255,6 +257,8 @@ export type SaveIllustrationTagRequest = {
   id?: string;
   name: string;
   englishName: string;
+  color?: string;
+  category?: string;
   sourcePrompt: string;
   japaneseDescription: string;
   englishDescription: string;
@@ -1475,6 +1479,8 @@ export async function translateTagDescription(request: TagTranslationRequest): P
 export async function saveIllustrationTag(request: SaveIllustrationTagRequest): Promise<IllustrationTag[]> {
   const name = request.name.trim();
   const englishName = request.englishName.trim();
+  const color = /^#[0-9a-f]{6}$/i.test(request.color ?? "") ? request.color! : "#3388ff";
+  const category = request.category?.trim() || "未分類";
   const sourcePrompt = request.sourcePrompt.trim();
   const japaneseDescription = request.japaneseDescription.trim();
   const englishDescription = request.englishDescription.trim();
@@ -1491,6 +1497,8 @@ export async function saveIllustrationTag(request: SaveIllustrationTagRequest): 
     id: existing?.id ?? randomUUID(),
     name,
     englishName,
+    color,
+    category,
     sourcePrompt,
     japaneseDescription,
     englishDescription,
@@ -1766,7 +1774,8 @@ async function saveCivitaiLoraThumbnail(model: CivitaiModelCard, projectRoot: st
     });
     if (!response.ok || !response.body) return undefined;
     const contentType = response.headers.get("content-type") ?? "";
-    const extension = contentType.includes("png") ? "png" : contentType.includes("webp") ? "webp" : "jpg";
+    const urlExtension = new URL(model.imageUrl).pathname.match(/\.(png|jpe?g|webp)$/i)?.[1]?.toLowerCase();
+    const extension = contentType.includes("png") ? "png" : contentType.includes("webp") ? "webp" : urlExtension === "png" || urlExtension === "webp" ? urlExtension : "jpg";
     const path = join(projectRoot, "assets", `thumbnail.${extension}`);
     await pipeline(response.body as unknown as NodeJS.ReadableStream, createWriteStream(path));
     return path;
@@ -2654,7 +2663,7 @@ async function saveIllustrationTags(tags: IllustrationTag[]): Promise<void> {
 function normalizeIllustrationTag(value: unknown): IllustrationTag | null {
   if (!value || typeof value !== "object") return null;
   const tag = value as Partial<IllustrationTag>;
-  const { id, name, englishName, sourcePrompt, japaneseDescription, englishDescription, createdAt, updatedAt } = tag;
+  const { id, name, englishName, color, category, sourcePrompt, japaneseDescription, englishDescription, createdAt, updatedAt } = tag;
   if (
     typeof id !== "string" ||
     typeof name !== "string" ||
@@ -2670,6 +2679,8 @@ function normalizeIllustrationTag(value: unknown): IllustrationTag | null {
     id,
     name,
     englishName: typeof englishName === "string" && englishName.trim() ? englishName : name,
+    color: typeof color === "string" && /^#[0-9a-f]{6}$/i.test(color) ? color : "#3388ff",
+    category: typeof category === "string" && category.trim() ? category : "未分類",
     sourcePrompt,
     japaneseDescription,
     englishDescription,
