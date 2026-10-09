@@ -508,11 +508,16 @@ label {
   background: #0c1b35;
 }
 
-.lora-apply-card > button {
-  display: flex;
-  justify-content: space-between;
-  gap: 10px;
-  align-items: center;
+.lora-apply-select {
+  display: grid;
+  grid-template-columns: 72px minmax(0, 1fr);
+  gap: 12px;
+  align-items: start;
+  min-height: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  text-align: left;
 }
 
 .lora-meta-tags {
@@ -940,6 +945,16 @@ label {
   color: #dbe7ff;
 }
 
+.option-tag-add-category {
+  width: fit-content;
+  min-height: 26px;
+  padding: 0 10px;
+  border-color: #29406f;
+  background: #0d1830;
+  color: #dbe7ff;
+  font-size: 12px;
+}
+
 .option-tag-modal {
   width: min(1180px, 100%);
 }
@@ -1318,7 +1333,23 @@ label {
 }
 
 .tag-modal {
-  width: min(1180px, 100%);
+  width: min(1440px, calc(100vw - 48px));
+  height: min(920px, calc(100vh - 48px));
+  max-height: calc(100vh - 48px);
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr) auto;
+  overflow: hidden;
+}
+
+.tag-modal-body {
+  min-height: 0;
+  overflow: auto;
+  padding-right: 4px;
+}
+
+.tag-modal .modal-actions {
+  border-top: 1px solid #1c2d53;
+  padding-top: 12px;
 }
 
 .generation-controls {

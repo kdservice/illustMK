@@ -877,12 +877,12 @@ function App() {
     }
   }
 
-  function openNewTagDialog(): void {
+  function openNewTagDialog(category = "未分類"): void {
     setTagEditingId(null);
     setTagName("");
     setTagEnglishName("");
     setTagColor("#3388ff");
-    setTagCategory("未分類");
+    setTagCategory(category);
     setTagPrompt("");
     setTagJapaneseDescription("");
     setTagEnglishDescription("");
@@ -899,6 +899,10 @@ function App() {
     setTagJapaneseDescription(tag.japaneseDescription);
     setTagEnglishDescription(tag.englishDescription);
     setTagDialogOpen(true);
+  }
+
+  function openNewTagDialogForCategory(category: string): void {
+    openNewTagDialog(category);
   }
 
   async function runTagJapaneseGeneration(): Promise<void> {
@@ -953,6 +957,10 @@ function App() {
     await runAction("タグを削除中", () => window.illustMK.tags.delete(id), (tags) => {
       setIllustrationTags(tags);
       setSelectedTagIds((current) => current.filter((tagId) => tagId !== id));
+      if (tagEditingId === id) {
+        setTagDialogOpen(false);
+        setTagEditingId(null);
+      }
     });
   }
 
@@ -2316,19 +2324,10 @@ function App() {
                 onEnhance={() => void enhanceJapanesePrompt()}
                 onOpenOptionTags={setOptionTagDialogTarget}
                 onRemoveOptionTag={removeOptionPromptTag}
-                illustrationTags={illustrationTags}
-                  selectedTagIds={selectedTagIds}
-                  onToggleTag={toggleIllustrationTag}
-                  onAddTag={openNewTagDialog}
-                  onEditTag={openEditTagDialog}
-                  onDeleteTag={(id) => void deleteIllustrationTag(id)}
-                onOpenTagBrowser={setTagPromptTarget}
+                  onOpenTagBrowser={setTagPromptTarget}
+                  onOpenHistory={() => setPromptHistoryOpen(true)}
                 />
                 <div className="button-row">
-                  <button onClick={() => setPromptHistoryOpen(true)}>
-                    <RefreshCw size={17} />
-                    履歴
-                  </button>
                   <button
                     className="generate"
                     disabled={!canGenerate}
@@ -2449,12 +2448,12 @@ function App() {
               </button>
             </div>
             <div className="option-tag-toolbar">
-              <button onClick={openNewTagDialog}>
+              <button onClick={() => openNewTagDialog()}>
                 <Plus size={17} />
                 タグ追加
               </button>
             </div>
-            <IllustrationTagBrowser tags={illustrationTags} onApply={applyIllustrationTagToPrompt} onEdit={openEditTagDialog} />
+            <IllustrationTagBrowser tags={illustrationTags} onApply={applyIllustrationTagToPrompt} onEdit={openEditTagDialog} onAddCategory={openNewTagDialogForCategory} />
           </section>
         </div>
       ) : null}
@@ -2525,68 +2524,76 @@ function App() {
                 <Square size={16} />
               </button>
             </div>
-            <div className="two-columns">
-              <div className="field">
-                <label>タグ名</label>
-                <input placeholder="制服" value={tagName} onChange={(event) => setTagName(event.target.value)} />
+            <div className="tag-modal-body">
+              <div className="two-columns">
+                <div className="field">
+                  <label>タグ名</label>
+                  <input placeholder="制服" value={tagName} onChange={(event) => setTagName(event.target.value)} />
+                </div>
+                <div className="field">
+                  <label>英名タグ名</label>
+                  <input placeholder="school_uniform" value={tagEnglishName} onChange={(event) => setTagEnglishName(event.target.value)} />
+                </div>
+              </div>
+              <p className="modal-subtitle">使用LLM: {ollamaModel || "未選択"}</p>
+              <div className="two-columns">
+                <div className="field">
+                  <label>色</label>
+                  <input type="color" value={tagColor} onChange={(event) => setTagColor(event.target.value)} />
+                </div>
+                <div className="field">
+                  <label>カテゴリ</label>
+                  <input list="illustration-tag-categories" value={tagCategory} onChange={(event) => setTagCategory(event.target.value)} />
+                  <datalist id="illustration-tag-categories">
+                    {Array.from(new Set([...illustrationTagCategories(illustrationTags), ...optionPromptTagCategories(optionPromptTags)])).map((category) => (
+                      <option value={category} key={category} />
+                    ))}
+                  </datalist>
+                </div>
               </div>
               <div className="field">
-                <label>英名タグ名</label>
-                <input placeholder="school_uniform" value={tagEnglishName} onChange={(event) => setTagEnglishName(event.target.value)} />
+                <label>プロンプト</label>
+                <textarea
+                  placeholder="例: セーラー服をイラストとして描く時の重要なディテールをまとめて。"
+                  value={tagPrompt}
+                  onChange={(event) => setTagPrompt(event.target.value)}
+                />
               </div>
-            </div>
-            <p className="modal-subtitle">使用LLM: {ollamaModel || "未選択"}</p>
-            <div className="two-columns">
+              <button className="primary" disabled={action.busy || !tagName.trim() || !tagPrompt.trim()} onClick={() => void runTagJapaneseGeneration()}>
+                <Bot size={17} />
+                実行
+              </button>
               <div className="field">
-                <label>色</label>
-                <input type="color" value={tagColor} onChange={(event) => setTagColor(event.target.value)} />
+                <label>日本語説明文</label>
+                <textarea
+                  className="tag-description"
+                  placeholder="LLMの結果がここに表示されます。手編集できます。"
+                  value={tagJapaneseDescription}
+                  onChange={(event) => setTagJapaneseDescription(event.target.value)}
+                />
               </div>
+              <button className="primary" disabled={action.busy || !tagJapaneseDescription.trim()} onClick={() => void translateTagEnglishDescription()}>
+                <Bot size={17} />
+                英訳
+              </button>
               <div className="field">
-                <label>カテゴリ</label>
-                <input list="illustration-tag-categories" value={tagCategory} onChange={(event) => setTagCategory(event.target.value)} />
-                <datalist id="illustration-tag-categories">
-                  {illustrationTagCategories(illustrationTags).map((category) => (
-                    <option value={category} key={category} />
-                  ))}
-                </datalist>
+                <label>英訳説明文</label>
+                <textarea
+                  className="tag-description"
+                  placeholder="英訳ボタンの結果がここに表示されます。手編集できます。"
+                  value={tagEnglishDescription}
+                  onChange={(event) => setTagEnglishDescription(event.target.value)}
+                />
               </div>
-            </div>
-            <div className="field">
-              <label>プロンプト</label>
-              <textarea
-                placeholder="例: セーラー服をイラストとして描く時の重要なディテールをまとめて。"
-                value={tagPrompt}
-                onChange={(event) => setTagPrompt(event.target.value)}
-              />
-            </div>
-            <button className="primary" disabled={action.busy || !tagName.trim() || !tagPrompt.trim()} onClick={() => void runTagJapaneseGeneration()}>
-              <Bot size={17} />
-              実行
-            </button>
-            <div className="field">
-              <label>日本語説明文</label>
-              <textarea
-                className="tag-description"
-                placeholder="LLMの結果がここに表示されます。手編集できます。"
-                value={tagJapaneseDescription}
-                onChange={(event) => setTagJapaneseDescription(event.target.value)}
-              />
-            </div>
-            <button className="primary" disabled={action.busy || !tagJapaneseDescription.trim()} onClick={() => void translateTagEnglishDescription()}>
-              <Bot size={17} />
-              英訳
-            </button>
-            <div className="field">
-              <label>英訳説明文</label>
-              <textarea
-                className="tag-description"
-                placeholder="英訳ボタンの結果がここに表示されます。手編集できます。"
-                value={tagEnglishDescription}
-                onChange={(event) => setTagEnglishDescription(event.target.value)}
-              />
             </div>
             <div className="modal-actions">
               <button onClick={() => setTagDialogOpen(false)}>キャンセル</button>
+              {tagEditingId ? (
+                <button className="danger" onClick={() => void deleteIllustrationTag(tagEditingId)}>
+                  <Trash2 size={17} />
+                  削除
+                </button>
+              ) : null}
               <button className="primary" disabled={action.busy || !tagName.trim() || !tagEnglishName.trim() || !tagPrompt.trim() || !tagJapaneseDescription.trim() || !tagEnglishDescription.trim()} onClick={() => void saveTagFromDialog()}>
                 <CheckCircle2 size={17} />
                 保存
@@ -2993,13 +3000,8 @@ function PromptTransformPanel({
   onEnhance,
   onOpenOptionTags,
   onRemoveOptionTag,
-  illustrationTags,
-  selectedTagIds,
-  onToggleTag,
-  onAddTag,
-  onEditTag,
-  onDeleteTag,
-  onOpenTagBrowser
+  onOpenTagBrowser,
+  onOpenHistory
 }: {
   japanesePrompt: string;
   setJapanesePrompt: (value: string) => void;
@@ -3016,19 +3018,18 @@ function PromptTransformPanel({
   onEnhance: () => void;
   onOpenOptionTags: (target: PromptKind) => void;
   onRemoveOptionTag: (target: PromptKind, tag: OptionPromptTag) => void;
-  illustrationTags: IllustrationTag[];
-  selectedTagIds: string[];
-  onToggleTag: (id: string) => void;
-  onAddTag: () => void;
-  onEditTag: (tag: IllustrationTag) => void;
-  onDeleteTag: (id: string) => void;
   onOpenTagBrowser: (target: TagPromptTarget) => void;
+  onOpenHistory: () => void;
 }) {
   return (
     <div className="prompt-transform">
       <div className="field">
         <div className="prompt-field-header">
           <label>Japanese Prompt</label>
+          <button onClick={onOpenHistory}>
+            <RefreshCw size={15} />
+            履歴
+          </button>
           <button onClick={() => onOpenTagBrowser("japanese")}>
             <WandSparkles size={15} />
             タグ
@@ -3049,14 +3050,6 @@ function PromptTransformPanel({
           <option value="tag-dense">タグ密度重視: 細かいタグへ分解</option>
         </select>
       </div>
-      <TagSelector
-        illustrationTags={illustrationTags}
-        selectedTagIds={selectedTagIds}
-        onToggleTag={onToggleTag}
-        onAddTag={onAddTag}
-        onEditTag={onEditTag}
-        onDeleteTag={onDeleteTag}
-      />
       <button className="primary" disabled={!canEnhancePrompt} title={disabledReason} onClick={onEnhance}>
         <Bot size={17} />
         日本語から生成promptへ変換
@@ -3065,7 +3058,7 @@ function PromptTransformPanel({
       {promptNotes ? <p className="result-message">{promptNotes}</p> : null}
       <div className="field">
         <div className="prompt-field-header">
-          <label>Positive Prompt</label>
+          <label>Final Positive Prompt</label>
           <button onClick={() => onOpenTagBrowser("positive")}>
             <WandSparkles size={15} />
             タグ
@@ -3172,14 +3165,26 @@ function OptionPromptTagBrowser({
 function IllustrationTagBrowser({
   tags,
   onApply,
-  onEdit
+  onEdit,
+  onAddCategory
 }: {
   tags: IllustrationTag[];
   onApply: (tag: IllustrationTag) => void;
   onEdit: (tag: IllustrationTag) => void;
+  onAddCategory: (category: string) => void;
 }) {
   const groups = groupIllustrationTags(tags);
-  if (!groups.length) return <p className="empty">まだタグがありません。</p>;
+  if (!groups.length) {
+    return (
+      <div className="option-tag-browser">
+        <p className="empty">まだタグがありません。</p>
+        <button className="option-tag-add-category" onClick={() => onAddCategory("未分類")}>
+          <Plus size={15} />
+          未分類に追加
+        </button>
+      </div>
+    );
+  }
   return (
     <div className="option-tag-browser">
       {groups.map(({ category, items }) => (
@@ -3196,6 +3201,10 @@ function IllustrationTagBrowser({
                 </button>
               </span>
             ))}
+            <button className="option-tag-add-category" onClick={() => onAddCategory(category)}>
+              <Plus size={15} />
+              {category}に追加
+            </button>
           </div>
         </section>
       ))}
@@ -3265,6 +3274,7 @@ function GenerationLoraPanel({
   onUpdateLora: (name: string, field: "modelStrength" | "clipStrength", value: number) => void;
 }) {
   const projectByOutputName = useMemo(() => new Map(projects.map((project) => [project.outputName, project])), [projects]);
+  const displayLoras = loras.filter((lora) => !isStepLoraName(lora.name));
   return (
     <div className="lora-apply-panel">
       <div className="tag-builder-header">
@@ -3272,20 +3282,32 @@ function GenerationLoraPanel({
         <span>{selectedLoras.length}件選択</span>
       </div>
       <div className="lora-apply-list">
-        {loras.length ? (
-          loras.map((lora) => {
+        {displayLoras.length ? (
+          displayLoras.map((lora) => {
             const selected = selectedLoras.find((item) => item.name === lora.name);
             const project = projectByOutputName.get(lora.name);
             return (
-              <article className={selected ? "lora-apply-card selected" : "lora-apply-card"} key={lora.name}>
-                <button onClick={() => onToggleLora(lora.name)}>
-                  <strong>{lora.name}</strong>
-                  <small>{lora.sizeLabel}</small>
+              <article className={selected ? "lora-apply-card lora-project-card selected" : "lora-apply-card lora-project-card"} key={lora.name}>
+                <button className="lora-apply-select" onClick={() => onToggleLora(lora.name)}>
+                  <div className="lora-project-thumb">
+                    <ImageIcon className="lora-project-placeholder-icon" size={22} />
+                    {project?.thumbnailDataUrl || project?.thumbnailPath ? (
+                      <img src={project.thumbnailDataUrl || `file://${project.thumbnailPath ?? ""}`} alt="" onError={(event) => { event.currentTarget.remove(); }} />
+                    ) : null}
+                  </div>
+                  <div className="lora-project-body">
+                    <header>
+                      <strong>{project?.name || lora.name}</strong>
+                      <span>{selected ? "使用中" : "未使用"}</span>
+                    </header>
+                    <div className="lora-meta-tags">
+                      <span>Base: {project?.baseCheckpoint || "不明"}</span>
+                      <span>Trigger: {project?.triggerWord || "未設定"}</span>
+                      <span>{lora.sizeLabel}</span>
+                    </div>
+                  </div>
                 </button>
-                <div className="lora-meta-tags">
-                  <span>Base: {project?.baseCheckpoint || "不明"}</span>
-                  <span>Trigger: {project?.triggerWord || "未設定"}</span>
-                </div>
+                {project?.message ? <p>{project.message}</p> : null}
                 {selected ? (
                   <div className="lora-strength-grid">
                     <label>
@@ -3514,6 +3536,11 @@ function removePromptTag(promptText: string, tag: string): string {
   const normalized = tag.trim().toLowerCase();
   if (!normalized) return promptText;
   return splitPromptTags(promptText).filter((part) => part.toLowerCase() !== normalized).join(", ");
+}
+
+function isStepLoraName(name: string): boolean {
+  const fileName = name.split(/[\\/]/).pop() ?? name;
+  return /(?:^|[-_])step\d+/i.test(fileName);
 }
 
 function hexToTagBackground(hex: string): string {
