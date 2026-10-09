@@ -1173,21 +1173,70 @@ function App() {
 
   async function updateSelectedLoraThumbnail(event: DragEvent<HTMLDivElement>): Promise<void> {
     event.preventDefault();
+    event.stopPropagation();
     if (!selectedLoraProject) return;
-    const file = event.dataTransfer.files[0] as (File & { path?: string }) | undefined;
-    if (!file?.path) {
-      appendLog("stderr", "サムネイル画像のパスを取得できませんでした。");
+    const file = event.dataTransfer.files[0];
+    const droppedUrl = extractDroppedImageUrl(event.dataTransfer);
+    let request:
+      | { id: string; dataUrl: string }
+      | { id: string; sourceUrl: string }
+      | null = null;
+    if (file) {
+      if (!isSupportedImageFile(file)) {
+        appendLog("stderr", "PNG / JPEG / WebP の画像をドロップしてください。");
+        return;
+      }
+      request = { id: selectedLoraProject.id, dataUrl: await fileToDataUrl(file) };
+    } else if (droppedUrl) {
+      request = { id: selectedLoraProject.id, sourceUrl: droppedUrl };
+    }
+    if (!request) {
+      appendLog("stderr", "サムネイル画像を取得できませんでした。画像ファイルまたは画像URLをドロップしてください。");
       return;
     }
     const targetProjectId = selectedLoraProject.id;
     await runAction(
       "LoRAサムネイルを更新中",
-      () => window.illustMK.loraProjects.updateThumbnail({ id: targetProjectId, sourcePath: file.path ?? "" }),
+      () => window.illustMK.loraProjects.updateThumbnail(request),
       (projects) => {
         setLoraProjects(projects);
         setSelectedLoraProjectId(targetProjectId);
       }
     );
+  }
+
+  function isSupportedImageFile(file: File): boolean {
+    if (["image/png", "image/jpeg", "image/webp"].includes(file.type)) return true;
+    return /\.(png|jpe?g|webp)$/i.test(file.name);
+  }
+
+  function fileToDataUrl(file: File): Promise<string> {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => {
+        if (typeof reader.result === "string") {
+          resolve(reader.result);
+          return;
+        }
+        reject(new Error("サムネイル画像の読み込みに失敗しました。"));
+      };
+      reader.onerror = () => reject(new Error("サムネイル画像の読み込みに失敗しました。"));
+      reader.readAsDataURL(file);
+    });
+  }
+
+  function extractDroppedImageUrl(dataTransfer: DataTransfer): string {
+    const uriList = dataTransfer
+      .getData("text/uri-list")
+      .split(/\r?\n/)
+      .map((line) => line.trim())
+      .find((line) => line && !line.startsWith("#"));
+    if (uriList) return uriList;
+    const html = dataTransfer.getData("text/html");
+    const imageSource = html.match(/<img[^>]+src=["']([^"']+)["']/i)?.[1];
+    if (imageSource) return imageSource;
+    const plainText = dataTransfer.getData("text/plain").trim();
+    return /^https?:\/\//i.test(plainText) ? plainText : "";
   }
 
   async function deleteSelectedLoraProject(): Promise<void> {

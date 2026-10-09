@@ -360,7 +360,9 @@ export type SaveLoraTrainingProjectRequest = {
 
 export type UpdateLoraThumbnailRequest = {
   id: string;
-  sourcePath: string;
+  sourcePath?: string;
+  sourceUrl?: string;
+  dataUrl?: string;
 };
 
 export type LoraTrainingRunParams = {
@@ -1672,17 +1674,10 @@ export async function saveLoraTrainingProject(request: SaveLoraTrainingProjectRe
     ? projects.map((item) => (item.id === existing.id ? project : item))
     : [project, ...projects];
   await saveLoraTrainingProjects(nextProjects);
-  return nextProjects;
+  return getLoraTrainingProjects();
 }
 
 export async function updateLoraTrainingProjectThumbnail(request: UpdateLoraThumbnailRequest): Promise<LoraTrainingProject[]> {
-  const sourcePath = request.sourcePath.trim();
-  if (!sourcePath) throw new Error("サムネイル画像を指定してください。");
-  const sourceStat = await stat(sourcePath).catch(() => null);
-  if (!sourceStat?.isFile()) throw new Error("サムネイル画像ファイルが見つかりません。");
-  const extension = basename(sourcePath).match(/\.(png|jpe?g|webp)$/i)?.[1]?.toLowerCase();
-  if (!extension) throw new Error("PNG / JPEG / WebP の画像を指定してください。");
-
   const paths = await ensureRuntimeFiles();
   const projects = await getLoraTrainingProjects();
   const project = projects.find((item) => item.id === request.id);
@@ -1692,14 +1687,51 @@ export async function updateLoraTrainingProjectThumbnail(request: UpdateLoraThum
   const assetsDir = join(projectRoot, "assets");
   await mkdir(assetsDir, { recursive: true });
   const stamp = new Date().toISOString().replace(/[-:.TZ]/g, "");
-  const normalizedExtension = extension === "jpeg" ? "jpg" : extension;
-  const thumbnailPath = join(assetsDir, `thumbnail-${stamp}.${normalizedExtension}`);
-  await cp(sourcePath, thumbnailPath);
+  const sourcePath = request.sourcePath?.trim() ?? "";
+  const sourceUrl = request.sourceUrl?.trim() ?? "";
+  const dataUrl = request.dataUrl?.trim() ?? "";
+  const providedSources = [sourcePath, sourceUrl, dataUrl].filter(Boolean).length;
+  if (providedSources !== 1) throw new Error("サムネイル画像を1つだけ指定してください。");
+
+  let normalizedExtension = "jpg";
+  if (sourcePath) {
+    const sourceStat = await stat(sourcePath).catch(() => null);
+    if (!sourceStat?.isFile()) throw new Error("サムネイル画像ファイルが見つかりません。");
+    const extension = basename(sourcePath).match(/\.(png|jpe?g|webp)$/i)?.[1]?.toLowerCase();
+    if (!extension) throw new Error("PNG / JPEG / WebP の画像を指定してください。");
+    normalizedExtension = extension === "jpeg" ? "jpg" : extension;
+    await cp(sourcePath, join(assetsDir, `thumbnail-${stamp}.${normalizedExtension}`));
+  } else if (dataUrl) {
+    const match = dataUrl.match(/^data:(image\/(?:png|jpe?g|webp));base64,(.+)$/i);
+    if (!match) throw new Error("PNG / JPEG / WebP の画像データを指定してください。");
+    normalizedExtension = match[1].toLowerCase().includes("png") ? "png" : match[1].toLowerCase().includes("webp") ? "webp" : "jpg";
+    await writeFile(join(assetsDir, `thumbnail-${stamp}.${normalizedExtension}`), Buffer.from(match[2], "base64"));
+  } else {
+    let parsedUrl: URL;
+    try {
+      parsedUrl = new URL(sourceUrl);
+    } catch {
+      throw new Error("サムネイル画像URLが正しくありません。");
+    }
+    if (!["http:", "https:"].includes(parsedUrl.protocol)) throw new Error("HTTP/HTTPS の画像URLを指定してください。");
+    const response = await fetch(parsedUrl, {
+      headers: {
+        Accept: "image/avif,image/webp,image/png,image/jpeg,*/*",
+        "User-Agent": "illustMK/0.1"
+      },
+      signal: AbortSignal.timeout(30000)
+    });
+    if (!response.ok || !response.body) throw new Error(`サムネイル画像の取得に失敗しました: HTTP ${response.status}`);
+    const contentType = response.headers.get("content-type") ?? "";
+    const urlExtension = parsedUrl.pathname.match(/\.(png|jpe?g|webp)$/i)?.[1]?.toLowerCase();
+    normalizedExtension = contentType.includes("png") ? "png" : contentType.includes("webp") ? "webp" : urlExtension === "png" || urlExtension === "webp" ? urlExtension : "jpg";
+    await pipeline(response.body as unknown as NodeJS.ReadableStream, createWriteStream(join(assetsDir, `thumbnail-${stamp}.${normalizedExtension}`)));
+  }
 
   const nextProject: LoraTrainingProject = {
     ...project,
     projectDir: projectRoot,
-    thumbnailPath,
+    thumbnailPath: join(assetsDir, `thumbnail-${stamp}.${normalizedExtension}`),
     updatedAt: new Date().toISOString()
   };
   await writeFile(join(projectRoot, "config", "lora-training.json"), JSON.stringify(stripLoraTransientFields(nextProject), null, 2), "utf8");
