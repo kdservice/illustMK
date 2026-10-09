@@ -834,6 +834,102 @@ label {
   background: #12335f;
 }
 
+.prompt-field-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 10px;
+}
+
+.prompt-field-header label {
+  margin: 0;
+}
+
+.prompt-field-header button {
+  min-height: 30px;
+  padding: 0 10px;
+}
+
+.applied-option-tags,
+.option-tag-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.applied-option-tags {
+  margin-top: 8px;
+}
+
+.option-tag-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  border: 1px solid #3388ff;
+  border-radius: 999px;
+  color: #eef6ff;
+  padding: 3px 7px 3px 10px;
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.option-tag-chip button {
+  min-height: 22px;
+  border: 0;
+  padding: 0;
+  background: transparent;
+}
+
+.option-tag-chip .option-tag-name {
+  color: inherit;
+}
+
+.option-tag-chip .option-tag-edit,
+.option-tag-chip > button:last-child {
+  width: 22px;
+  color: #dbe7ff;
+}
+
+.option-tag-modal {
+  width: min(1180px, 100%);
+}
+
+.option-tag-editor {
+  width: min(640px, 94vw);
+}
+
+.modal-backdrop.stacked {
+  z-index: 30;
+}
+
+.option-tag-toolbar {
+  display: flex;
+  justify-content: flex-start;
+  margin: 10px 0 14px;
+}
+
+.option-tag-group {
+  display: grid;
+  gap: 10px;
+  margin-top: 12px;
+}
+
+.option-tag-group-title {
+  display: grid;
+  grid-template-columns: auto minmax(40px, 1fr);
+  align-items: center;
+  gap: 10px;
+  color: #91a3c9;
+  font-size: 12px;
+  font-weight: 900;
+}
+
+.option-tag-group-title::after {
+  content: "";
+  height: 1px;
+  background: #1c2d53;
+}
+
 .modal-backdrop {
   position: fixed;
   inset: 0;

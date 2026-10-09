@@ -94,6 +94,14 @@ type CheckpointExternalSelection = {
 };
 type CheckpointRequiredComponents = Record<string, CivitaiRequiredComponent[]>;
 type CheckpointBaseModels = Record<string, string>;
+type PromptKind = "positive" | "negative";
+type OptionPromptTag = {
+  id: string;
+  japanese: string;
+  english: string;
+  color: string;
+  category: string;
+};
 const recommendedLlmModels = [
   { name: "qwen2.5:3b-instruct", source: "Ollama", size: "軽量", note: "まず試す用。日本語もそこそこ。" },
   { name: "qwen2.5:7b-instruct", source: "Ollama", size: "標準", note: "日本語prompt整形の本命寄り。" },
@@ -159,6 +167,14 @@ function App() {
   const [tagPrompt, setTagPrompt] = useState("");
   const [tagJapaneseDescription, setTagJapaneseDescription] = useState("");
   const [tagEnglishDescription, setTagEnglishDescription] = useState("");
+  const [optionPromptTags, setOptionPromptTags] = useState<OptionPromptTag[]>([]);
+  const [optionTagDialogTarget, setOptionTagDialogTarget] = useState<PromptKind | null>(null);
+  const [optionTagEditorOpen, setOptionTagEditorOpen] = useState(false);
+  const [optionTagEditingId, setOptionTagEditingId] = useState<string | null>(null);
+  const [optionTagJapanese, setOptionTagJapanese] = useState("");
+  const [optionTagEnglish, setOptionTagEnglish] = useState("");
+  const [optionTagColor, setOptionTagColor] = useState("#3388ff");
+  const [optionTagCategory, setOptionTagCategory] = useState("品質");
   const [japanesePrompt, setJapanesePrompt] = useState("");
   const [promptEnhanceMode, setPromptEnhanceMode] = useState<PromptEnhanceMode>("balanced-detail");
   const [promptNotes, setPromptNotes] = useState("");
@@ -356,6 +372,12 @@ function App() {
       if (rawBaseModels) setCheckpointBaseModels(JSON.parse(rawBaseModels) as CheckpointBaseModels);
     } catch {
       setCheckpointBaseModels({});
+    }
+    try {
+      const rawOptionTags = localStorage.getItem("illustmk.optionPromptTags");
+      if (rawOptionTags) setOptionPromptTags(normalizeOptionPromptTags(JSON.parse(rawOptionTags)));
+    } catch {
+      setOptionPromptTags([]);
     }
   }, []);
 
@@ -902,6 +924,66 @@ function App() {
 
   function toggleIllustrationTag(id: string): void {
     setSelectedTagIds((current) => (current.includes(id) ? current.filter((tagId) => tagId !== id) : [...current, id]));
+  }
+
+  function persistOptionPromptTags(tags: OptionPromptTag[]): void {
+    setOptionPromptTags(tags);
+    localStorage.setItem("illustmk.optionPromptTags", JSON.stringify(tags));
+  }
+
+  function openOptionTagEditor(tag?: OptionPromptTag): void {
+    setOptionTagEditingId(tag?.id ?? null);
+    setOptionTagJapanese(tag?.japanese ?? "");
+    setOptionTagEnglish(tag?.english ?? "");
+    setOptionTagColor(tag?.color ?? "#3388ff");
+    setOptionTagCategory(tag?.category ?? optionPromptTagCategories(optionPromptTags)[0] ?? "品質");
+    setOptionTagEditorOpen(true);
+  }
+
+  function saveOptionPromptTag(): void {
+    const japanese = optionTagJapanese.trim();
+    const english = optionTagEnglish.trim();
+    if (!japanese || !english) return;
+    const nextTag: OptionPromptTag = {
+      id: optionTagEditingId ?? crypto.randomUUID(),
+      japanese,
+      english,
+      color: optionTagColor || "#3388ff",
+      category: optionTagCategory.trim() || "未分類"
+    };
+    persistOptionPromptTags(
+      optionTagEditingId
+        ? optionPromptTags.map((tag) => (tag.id === optionTagEditingId ? nextTag : tag))
+        : [...optionPromptTags, nextTag]
+    );
+    setOptionTagEditorOpen(false);
+  }
+
+  function deleteOptionPromptTag(): void {
+    if (!optionTagEditingId) return;
+    const target = optionPromptTags.find((tag) => tag.id === optionTagEditingId);
+    persistOptionPromptTags(optionPromptTags.filter((tag) => tag.id !== optionTagEditingId));
+    if (target) {
+      setPrompt((current) => removePromptTag(current, target.english));
+      setNegativePrompt((current) => removePromptTag(current, target.english));
+    }
+    setOptionTagEditorOpen(false);
+  }
+
+  function applyOptionPromptTag(tag: OptionPromptTag): void {
+    if (optionTagDialogTarget === "negative") {
+      setNegativePrompt((current) => appendPromptTag(current, tag.english));
+      return;
+    }
+    setPrompt((current) => appendPromptTag(current, tag.english));
+  }
+
+  function removeOptionPromptTag(target: PromptKind, tag: OptionPromptTag): void {
+    if (target === "negative") {
+      setNegativePrompt((current) => removePromptTag(current, tag.english));
+      return;
+    }
+    setPrompt((current) => removePromptTag(current, tag.english));
   }
 
   function toggleGenerationLora(name: string): void {
@@ -2178,13 +2260,16 @@ function App() {
                   setPrompt={setPrompt}
                   negativePrompt={negativePrompt}
                   setNegativePrompt={setNegativePrompt}
-                  promptNotes={promptNotes}
-                  promptEnhanceMode={promptEnhanceMode}
-                  setPromptEnhanceMode={setPromptEnhanceMode}
-                  canEnhancePrompt={canEnhancePrompt}
-                  disabledReason={enhancePromptDisabledReason}
-                  onEnhance={() => void enhanceJapanesePrompt()}
-                  illustrationTags={illustrationTags}
+                promptNotes={promptNotes}
+                promptEnhanceMode={promptEnhanceMode}
+                setPromptEnhanceMode={setPromptEnhanceMode}
+                optionPromptTags={optionPromptTags}
+                canEnhancePrompt={canEnhancePrompt}
+                disabledReason={enhancePromptDisabledReason}
+                onEnhance={() => void enhanceJapanesePrompt()}
+                onOpenOptionTags={setOptionTagDialogTarget}
+                onRemoveOptionTag={removeOptionPromptTag}
+                illustrationTags={illustrationTags}
                   selectedTagIds={selectedTagIds}
                   onToggleTag={toggleIllustrationTag}
                   onAddTag={openNewTagDialog}
@@ -2283,6 +2368,87 @@ function App() {
           </section>
         </section>
       )}
+      {optionTagDialogTarget ? (
+        <div className="modal-backdrop">
+          <section className="modal-panel option-tag-modal">
+            <div className="modal-header">
+              <PanelTitle icon={<WandSparkles size={18} />} title={`${optionTagDialogTarget === "positive" ? "Positive" : "Negative"} オプションタグ`} />
+              <button className="icon-button" onClick={() => setOptionTagDialogTarget(null)} title="閉じる">
+                <Square size={16} />
+              </button>
+            </div>
+            <div className="option-tag-toolbar">
+              <button onClick={() => openOptionTagEditor()}>
+                <Plus size={17} />
+                タグ追加
+              </button>
+            </div>
+            <OptionPromptTagBrowser
+              tags={optionPromptTags}
+              onApply={applyOptionPromptTag}
+              onEdit={openOptionTagEditor}
+            />
+          </section>
+        </div>
+      ) : null}
+      {optionTagEditorOpen ? (
+        <div className="modal-backdrop stacked">
+          <section className="modal-panel option-tag-editor">
+            <div className="modal-header">
+              <PanelTitle icon={<Pencil size={18} />} title={optionTagEditingId ? "オプションタグ編集" : "オプションタグ追加"} />
+              <button className="icon-button" onClick={() => setOptionTagEditorOpen(false)} title="閉じる">
+                <Square size={16} />
+              </button>
+            </div>
+            <div className="two-columns">
+              <div className="field">
+                <label>日本語</label>
+                <input value={optionTagJapanese} onChange={(event) => setOptionTagJapanese(event.target.value)} placeholder="高品質" />
+              </div>
+              <div className="field">
+                <label>英語</label>
+                <input value={optionTagEnglish} onChange={(event) => setOptionTagEnglish(event.target.value)} placeholder="masterpiece" />
+              </div>
+            </div>
+            <div className="two-columns">
+              <div className="field">
+                <label>色</label>
+                <input type="color" value={optionTagColor} onChange={(event) => setOptionTagColor(event.target.value)} />
+              </div>
+              <div className="field">
+                <label>カテゴリ</label>
+                <input
+                  list="option-tag-categories"
+                  value={optionTagCategory}
+                  onChange={(event) => setOptionTagCategory(event.target.value)}
+                  placeholder="品質"
+                />
+                <datalist id="option-tag-categories">
+                  {optionPromptTagCategories(optionPromptTags).map((category) => (
+                    <option value={category} key={category} />
+                  ))}
+                </datalist>
+              </div>
+            </div>
+            <div className="button-row">
+              <button onClick={() => setOptionTagEditorOpen(false)}>
+                <Square size={17} />
+                閉じる
+              </button>
+              {optionTagEditingId ? (
+                <button className="danger" onClick={deleteOptionPromptTag}>
+                  <Trash2 size={17} />
+                  削除
+                </button>
+              ) : null}
+              <button className="primary" disabled={!optionTagJapanese.trim() || !optionTagEnglish.trim()} onClick={saveOptionPromptTag}>
+                <Save size={17} />
+                更新
+              </button>
+            </div>
+          </section>
+        </div>
+      ) : null}
       {tagDialogOpen ? (
         <div className="modal-backdrop">
           <section className="modal-panel tag-modal">
@@ -2742,9 +2908,12 @@ function PromptTransformPanel({
   promptNotes,
   promptEnhanceMode,
   setPromptEnhanceMode,
+  optionPromptTags,
   canEnhancePrompt,
   disabledReason,
   onEnhance,
+  onOpenOptionTags,
+  onRemoveOptionTag,
   illustrationTags,
   selectedTagIds,
   onToggleTag,
@@ -2761,9 +2930,12 @@ function PromptTransformPanel({
   promptNotes: string;
   promptEnhanceMode: PromptEnhanceMode;
   setPromptEnhanceMode: (value: PromptEnhanceMode) => void;
+  optionPromptTags: OptionPromptTag[];
   canEnhancePrompt: boolean;
   disabledReason: string;
   onEnhance: () => void;
+  onOpenOptionTags: (target: PromptKind) => void;
+  onRemoveOptionTag: (target: PromptKind, tag: OptionPromptTag) => void;
   illustrationTags: IllustrationTag[];
   selectedTagIds: string[];
   onToggleTag: (id: string) => void;
@@ -2805,18 +2977,103 @@ function PromptTransformPanel({
       <p className={canEnhancePrompt ? "result-message ready" : "result-message"}>{disabledReason}</p>
       {promptNotes ? <p className="result-message">{promptNotes}</p> : null}
       <div className="field">
-        <label>Positive Prompt</label>
+        <div className="prompt-field-header">
+          <label>Positive Prompt</label>
+          <button onClick={() => onOpenOptionTags("positive")}>
+            <WandSparkles size={15} />
+            オプションタグ
+          </button>
+        </div>
         <textarea
           value={prompt}
           onChange={(event) => {
             setPrompt(event.target.value);
           }}
         />
+        <AppliedOptionTags
+          target="positive"
+          promptText={prompt}
+          tags={optionPromptTags}
+          onRemove={onRemoveOptionTag}
+        />
       </div>
       <div className="field">
-        <label>Negative Prompt</label>
+        <div className="prompt-field-header">
+          <label>Negative Prompt</label>
+          <button onClick={() => onOpenOptionTags("negative")}>
+            <WandSparkles size={15} />
+            オプションタグ
+          </button>
+        </div>
         <textarea value={negativePrompt} onChange={(event) => setNegativePrompt(event.target.value)} />
+        <AppliedOptionTags
+          target="negative"
+          promptText={negativePrompt}
+          tags={optionPromptTags}
+          onRemove={onRemoveOptionTag}
+        />
       </div>
+    </div>
+  );
+}
+
+function AppliedOptionTags({
+  target,
+  promptText,
+  tags,
+  onRemove
+}: {
+  target: PromptKind;
+  promptText: string;
+  tags: OptionPromptTag[];
+  onRemove: (target: PromptKind, tag: OptionPromptTag) => void;
+}) {
+  const applied = tags.filter((tag) => promptContainsTag(promptText, tag.english));
+  if (!applied.length) return null;
+  return (
+    <div className="applied-option-tags">
+      {applied.map((tag) => (
+        <span className="option-tag-chip" style={{ borderColor: tag.color, backgroundColor: hexToTagBackground(tag.color) }} key={tag.id}>
+          {tag.japanese}
+          <button onClick={() => onRemove(target, tag)} title="Promptから削除">
+            <Trash2 size={13} />
+          </button>
+        </span>
+      ))}
+    </div>
+  );
+}
+
+function OptionPromptTagBrowser({
+  tags,
+  onApply,
+  onEdit
+}: {
+  tags: OptionPromptTag[];
+  onApply: (tag: OptionPromptTag) => void;
+  onEdit: (tag: OptionPromptTag) => void;
+}) {
+  const groups = groupOptionPromptTags(tags);
+  if (!groups.length) return <p className="empty">まだオプションタグがありません。</p>;
+  return (
+    <div className="option-tag-browser">
+      {groups.map(({ category, items }) => (
+        <section className="option-tag-group" key={category}>
+          <div className="option-tag-group-title">
+            <span>{category}</span>
+          </div>
+          <div className="option-tag-list">
+            {items.map((tag) => (
+              <span className="option-tag-chip" style={{ borderColor: tag.color, backgroundColor: hexToTagBackground(tag.color) }} key={tag.id}>
+                <button className="option-tag-name" onClick={() => onApply(tag)}>{tag.japanese}</button>
+                <button className="option-tag-edit" onClick={() => onEdit(tag)} title="編集">
+                  <Pencil size={13} />
+                </button>
+              </span>
+            ))}
+          </div>
+        </section>
+      ))}
     </div>
   );
 }
@@ -3056,6 +3313,65 @@ function inferCheckpointBaseModel(fileName: string): string {
   if (name.includes("sdxl") || name.includes("xl_") || name.includes("_xl")) return "SDXL";
   if (name.includes("sd15") || name.includes("sd1.5") || name.includes("sd_15")) return "SD 1.5";
   return "Base不明";
+}
+
+function normalizeOptionPromptTags(value: unknown): OptionPromptTag[] {
+  if (!Array.isArray(value)) return [];
+  return value.flatMap((item) => {
+    if (!item || typeof item !== "object") return [];
+    const tag = item as Partial<OptionPromptTag>;
+    if (!tag.japanese || !tag.english) return [];
+    return [
+      {
+        id: tag.id || crypto.randomUUID(),
+        japanese: String(tag.japanese),
+        english: String(tag.english),
+        color: /^#[0-9a-f]{6}$/i.test(String(tag.color ?? "")) ? String(tag.color) : "#3388ff",
+        category: String(tag.category || "未分類")
+      }
+    ];
+  });
+}
+
+function optionPromptTagCategories(tags: OptionPromptTag[]): string[] {
+  const defaults = ["品質", "人物", "構図", "視線", "服装", "背景", "画風", "Negative"];
+  return Array.from(new Set([...defaults, ...tags.map((tag) => tag.category).filter(Boolean)]));
+}
+
+function groupOptionPromptTags(tags: OptionPromptTag[]): Array<{ category: string; items: OptionPromptTag[] }> {
+  const groups = new Map<string, OptionPromptTag[]>();
+  tags.forEach((tag) => {
+    const category = tag.category || "未分類";
+    groups.set(category, [...(groups.get(category) ?? []), tag]);
+  });
+  return Array.from(groups.entries()).map(([category, items]) => ({ category, items }));
+}
+
+function splitPromptTags(promptText: string): string[] {
+  return promptText.split(",").map((part) => part.trim()).filter(Boolean);
+}
+
+function promptContainsTag(promptText: string, tag: string): boolean {
+  const normalized = tag.trim().toLowerCase();
+  return splitPromptTags(promptText).some((part) => part.toLowerCase() === normalized);
+}
+
+function appendPromptTag(promptText: string, tag: string): string {
+  const normalized = tag.trim();
+  if (!normalized || promptContainsTag(promptText, normalized)) return promptText;
+  const parts = splitPromptTags(promptText);
+  return [...parts, normalized].join(", ");
+}
+
+function removePromptTag(promptText: string, tag: string): string {
+  const normalized = tag.trim().toLowerCase();
+  if (!normalized) return promptText;
+  return splitPromptTags(promptText).filter((part) => part.toLowerCase() !== normalized).join(", ");
+}
+
+function hexToTagBackground(hex: string): string {
+  const safeHex = /^#[0-9a-f]{6}$/i.test(hex) ? hex : "#3388ff";
+  return `${safeHex}22`;
 }
 
 createRoot(document.getElementById("root") as HTMLElement).render(<App />);
