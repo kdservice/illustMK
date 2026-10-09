@@ -508,16 +508,10 @@ label {
   background: #0c1b35;
 }
 
-.lora-apply-select {
-  display: grid;
-  grid-template-columns: 72px minmax(0, 1fr);
-  gap: 12px;
-  align-items: start;
-  min-height: 0;
-  padding: 0;
-  border: 0;
-  background: transparent;
-  text-align: left;
+.inline-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
 }
 
 .lora-meta-tags {
@@ -891,13 +885,14 @@ label {
 
 .prompt-field-header {
   display: flex;
-  justify-content: space-between;
+  justify-content: flex-start;
   align-items: center;
   gap: 10px;
 }
 
 .prompt-field-header label {
   margin: 0;
+  margin-right: auto;
 }
 
 .prompt-field-header button {
@@ -1334,7 +1329,7 @@ label {
 
 .tag-modal {
   width: min(1440px, calc(100vw - 48px));
-  height: min(920px, calc(100vh - 48px));
+  height: calc(100vh - 48px);
   max-height: calc(100vh - 48px);
   display: grid;
   grid-template-rows: auto minmax(0, 1fr) auto;
@@ -1348,6 +1343,8 @@ label {
 }
 
 .tag-modal .modal-actions {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(0, 1fr));
   border-top: 1px solid #1c2d53;
   padding-top: 12px;
 }

@@ -161,6 +161,8 @@ function App() {
   const [llmChatHistory, setLlmChatHistory] = useState<LlmChatMessage[]>([]);
   const [illustrationTags, setIllustrationTags] = useState<IllustrationTag[]>([]);
   const [selectedTagIds, setSelectedTagIds] = useState<string[]>([]);
+  const [japanesePromptTagIds, setJapanesePromptTagIds] = useState<string[]>([]);
+  const [positivePromptTagIds, setPositivePromptTagIds] = useState<string[]>([]);
   const [tagDialogOpen, setTagDialogOpen] = useState(false);
   const [tagEditingId, setTagEditingId] = useState<string | null>(null);
   const [tagName, setTagName] = useState("");
@@ -172,6 +174,8 @@ function App() {
   const [tagEnglishDescription, setTagEnglishDescription] = useState("");
   const [tagPromptTarget, setTagPromptTarget] = useState<TagPromptTarget | null>(null);
   const [optionPromptTags, setOptionPromptTags] = useState<OptionPromptTag[]>([]);
+  const [positiveOptionTagIds, setPositiveOptionTagIds] = useState<string[]>([]);
+  const [negativeOptionTagIds, setNegativeOptionTagIds] = useState<string[]>([]);
   const [optionTagDialogTarget, setOptionTagDialogTarget] = useState<PromptKind | null>(null);
   const [optionTagEditorOpen, setOptionTagEditorOpen] = useState(false);
   const [optionTagEditingId, setOptionTagEditingId] = useState<string | null>(null);
@@ -248,8 +252,8 @@ function App() {
     [selectedCheckpoint, status?.checkpoints]
   );
   const selectedTags = useMemo(
-    () => illustrationTags.filter((tag) => selectedTagIds.includes(tag.id)),
-    [illustrationTags, selectedTagIds]
+    () => illustrationTags.filter((tag) => new Set([...selectedTagIds, ...japanesePromptTagIds, ...positivePromptTagIds]).has(tag.id)),
+    [illustrationTags, japanesePromptTagIds, positivePromptTagIds, selectedTagIds]
   );
   const selectedLoraProject = useMemo(
     () => loraProjects.find((project) => project.id === selectedLoraProjectId) ?? loraProjects[0] ?? null,
@@ -271,7 +275,27 @@ function App() {
   const selectedProjectOutputExists = Boolean(
     selectedLoraProject && status?.loras.some((file) => file.name === selectedLoraProject.outputName)
   );
-  const effectivePrompt = prompt;
+  const japanesePromptTags = useMemo(
+    () => illustrationTags.filter((tag) => japanesePromptTagIds.includes(tag.id)),
+    [illustrationTags, japanesePromptTagIds]
+  );
+  const positivePromptTags = useMemo(
+    () => illustrationTags.filter((tag) => positivePromptTagIds.includes(tag.id)),
+    [illustrationTags, positivePromptTagIds]
+  );
+  const positiveOptionTags = useMemo(
+    () => optionPromptTags.filter((tag) => positiveOptionTagIds.includes(tag.id)),
+    [optionPromptTags, positiveOptionTagIds]
+  );
+  const negativeOptionTags = useMemo(
+    () => optionPromptTags.filter((tag) => negativeOptionTagIds.includes(tag.id)),
+    [negativeOptionTagIds, optionPromptTags]
+  );
+  const effectivePrompt = composeGenerationPrompt(prompt, [
+    ...positivePromptTags.map((tag) => tag.englishDescription),
+    ...positiveOptionTags.map((tag) => tag.english)
+  ]);
+  const effectiveNegativePrompt = composeGenerationPrompt(negativePrompt, negativeOptionTags.map((tag) => tag.english));
   const selectedCheckpointGenerationReady = Boolean(
     selectedCheckpointInfo && (selectedCheckpointInfo.hasClip || selectedClip) && (selectedCheckpointInfo.hasVae || selectedVae)
   );
@@ -957,6 +981,8 @@ function App() {
     await runAction("タグを削除中", () => window.illustMK.tags.delete(id), (tags) => {
       setIllustrationTags(tags);
       setSelectedTagIds((current) => current.filter((tagId) => tagId !== id));
+      setJapanesePromptTagIds((current) => current.filter((tagId) => tagId !== id));
+      setPositivePromptTagIds((current) => current.filter((tagId) => tagId !== id));
       if (tagEditingId === id) {
         setTagDialogOpen(false);
         setTagEditingId(null);
@@ -970,10 +996,10 @@ function App() {
 
   function applyIllustrationTagToPrompt(tag: IllustrationTag): void {
     if (tagPromptTarget === "positive") {
-      setPrompt((current) => appendPromptFragment(current, tag.englishDescription));
+      setPositivePromptTagIds((current) => (current.includes(tag.id) ? current : [...current, tag.id]));
       return;
     }
-    setJapanesePrompt((current) => appendPromptFragment(current, tag.japaneseDescription));
+    setJapanesePromptTagIds((current) => (current.includes(tag.id) ? current : [...current, tag.id]));
   }
 
   function persistOptionPromptTags(tags: OptionPromptTag[]): void {
@@ -1014,26 +1040,26 @@ function App() {
     const target = optionPromptTags.find((tag) => tag.id === optionTagEditingId);
     persistOptionPromptTags(optionPromptTags.filter((tag) => tag.id !== optionTagEditingId));
     if (target) {
-      setPrompt((current) => removePromptTag(current, target.english));
-      setNegativePrompt((current) => removePromptTag(current, target.english));
+      setPositiveOptionTagIds((current) => current.filter((id) => id !== target.id));
+      setNegativeOptionTagIds((current) => current.filter((id) => id !== target.id));
     }
     setOptionTagEditorOpen(false);
   }
 
   function applyOptionPromptTag(tag: OptionPromptTag): void {
     if (optionTagDialogTarget === "negative") {
-      setNegativePrompt((current) => appendPromptTag(current, tag.english));
+      setNegativeOptionTagIds((current) => (current.includes(tag.id) ? current : [...current, tag.id]));
       return;
     }
-    setPrompt((current) => appendPromptTag(current, tag.english));
+    setPositiveOptionTagIds((current) => (current.includes(tag.id) ? current : [...current, tag.id]));
   }
 
   function removeOptionPromptTag(target: PromptKind, tag: OptionPromptTag): void {
     if (target === "negative") {
-      setNegativePrompt((current) => removePromptTag(current, tag.english));
+      setNegativeOptionTagIds((current) => current.filter((id) => id !== tag.id));
       return;
     }
-    setPrompt((current) => removePromptTag(current, tag.english));
+    setPositiveOptionTagIds((current) => current.filter((id) => id !== tag.id));
   }
 
   function toggleGenerationLora(name: string): void {
@@ -1398,7 +1424,7 @@ function App() {
 
   const testRequest: TestGenerationRequest = {
     prompt: effectivePrompt,
-    negativePrompt,
+    negativePrompt: effectiveNegativePrompt,
     checkpoint: selectedCheckpoint,
     loras: selectedLoras,
     width: generationWidth,
@@ -2319,6 +2345,10 @@ function App() {
                 promptEnhanceMode={promptEnhanceMode}
                 setPromptEnhanceMode={setPromptEnhanceMode}
                 optionPromptTags={optionPromptTags}
+                  japanesePromptTags={japanesePromptTags}
+                  positivePromptTags={positivePromptTags}
+                  positiveOptionTags={positiveOptionTags}
+                  negativeOptionTags={negativeOptionTags}
                 canEnhancePrompt={canEnhancePrompt}
                 disabledReason={enhancePromptDisabledReason}
                 onEnhance={() => void enhanceJapanesePrompt()}
@@ -2326,6 +2356,13 @@ function App() {
                 onRemoveOptionTag={removeOptionPromptTag}
                   onOpenTagBrowser={setTagPromptTarget}
                   onOpenHistory={() => setPromptHistoryOpen(true)}
+                  onRemoveIllustrationTag={(target, tag) => {
+                    if (target === "japanese") {
+                      setJapanesePromptTagIds((current) => current.filter((id) => id !== tag.id));
+                      return;
+                    }
+                    setPositivePromptTagIds((current) => current.filter((id) => id !== tag.id));
+                  }}
                 />
                 <div className="button-row">
                   <button
@@ -2370,6 +2407,7 @@ function App() {
                 selectedLoras={selectedLoras}
                 onToggleLora={toggleGenerationLora}
                 onUpdateLora={updateGenerationLora}
+                onClearLoras={() => setSelectedLoras([])}
               />
             ) : (
               <div className="generation-controls">
@@ -2535,7 +2573,6 @@ function App() {
                   <input placeholder="school_uniform" value={tagEnglishName} onChange={(event) => setTagEnglishName(event.target.value)} />
                 </div>
               </div>
-              <p className="modal-subtitle">使用LLM: {ollamaModel || "未選択"}</p>
               <div className="two-columns">
                 <div className="field">
                   <label>色</label>
@@ -2543,12 +2580,11 @@ function App() {
                 </div>
                 <div className="field">
                   <label>カテゴリ</label>
-                  <input list="illustration-tag-categories" value={tagCategory} onChange={(event) => setTagCategory(event.target.value)} />
-                  <datalist id="illustration-tag-categories">
+                  <select value={tagCategory} onChange={(event) => setTagCategory(event.target.value)}>
                     {Array.from(new Set([...illustrationTagCategories(illustrationTags), ...optionPromptTagCategories(optionPromptTags)])).map((category) => (
                       <option value={category} key={category} />
                     ))}
-                  </datalist>
+                  </select>
                 </div>
               </div>
               <div className="field">
@@ -2995,13 +3031,18 @@ function PromptTransformPanel({
   promptEnhanceMode,
   setPromptEnhanceMode,
   optionPromptTags,
+  japanesePromptTags,
+  positivePromptTags,
+  positiveOptionTags,
+  negativeOptionTags,
   canEnhancePrompt,
   disabledReason,
   onEnhance,
   onOpenOptionTags,
   onRemoveOptionTag,
   onOpenTagBrowser,
-  onOpenHistory
+  onOpenHistory,
+  onRemoveIllustrationTag
 }: {
   japanesePrompt: string;
   setJapanesePrompt: (value: string) => void;
@@ -3013,6 +3054,10 @@ function PromptTransformPanel({
   promptEnhanceMode: PromptEnhanceMode;
   setPromptEnhanceMode: (value: PromptEnhanceMode) => void;
   optionPromptTags: OptionPromptTag[];
+  japanesePromptTags: IllustrationTag[];
+  positivePromptTags: IllustrationTag[];
+  positiveOptionTags: OptionPromptTag[];
+  negativeOptionTags: OptionPromptTag[];
   canEnhancePrompt: boolean;
   disabledReason: string;
   onEnhance: () => void;
@@ -3020,6 +3065,7 @@ function PromptTransformPanel({
   onRemoveOptionTag: (target: PromptKind, tag: OptionPromptTag) => void;
   onOpenTagBrowser: (target: TagPromptTarget) => void;
   onOpenHistory: () => void;
+  onRemoveIllustrationTag: (target: TagPromptTarget, tag: IllustrationTag) => void;
 }) {
   return (
     <div className="prompt-transform">
@@ -3040,6 +3086,7 @@ function PromptTransformPanel({
           value={japanesePrompt}
           onChange={(event) => setJapanesePrompt(event.target.value)}
         />
+        <AppliedIllustrationTags target="japanese" tags={japanesePromptTags} onRemove={onRemoveIllustrationTag} />
       </div>
       <div className="field">
         <label>変換モード</label>
@@ -3058,7 +3105,7 @@ function PromptTransformPanel({
       {promptNotes ? <p className="result-message">{promptNotes}</p> : null}
       <div className="field">
         <div className="prompt-field-header">
-          <label>Final Positive Prompt</label>
+          <label>Positive Prompt</label>
           <button onClick={() => onOpenTagBrowser("positive")}>
             <WandSparkles size={15} />
             タグ
@@ -3076,10 +3123,10 @@ function PromptTransformPanel({
         />
         <AppliedOptionTags
           target="positive"
-          promptText={prompt}
-          tags={optionPromptTags}
+          tags={positiveOptionTags}
           onRemove={onRemoveOptionTag}
         />
+        <AppliedIllustrationTags target="positive" tags={positivePromptTags} onRemove={onRemoveIllustrationTag} />
       </div>
       <div className="field">
         <div className="prompt-field-header">
@@ -3092,8 +3139,7 @@ function PromptTransformPanel({
         <textarea value={negativePrompt} onChange={(event) => setNegativePrompt(event.target.value)} />
         <AppliedOptionTags
           target="negative"
-          promptText={negativePrompt}
-          tags={optionPromptTags}
+          tags={negativeOptionTags}
           onRemove={onRemoveOptionTag}
         />
       </div>
@@ -3103,22 +3149,43 @@ function PromptTransformPanel({
 
 function AppliedOptionTags({
   target,
-  promptText,
   tags,
   onRemove
 }: {
   target: PromptKind;
-  promptText: string;
   tags: OptionPromptTag[];
   onRemove: (target: PromptKind, tag: OptionPromptTag) => void;
 }) {
-  const applied = tags.filter((tag) => promptContainsTag(promptText, tag.english));
-  if (!applied.length) return null;
+  if (!tags.length) return null;
   return (
     <div className="applied-option-tags">
-      {applied.map((tag) => (
+      {tags.map((tag) => (
         <span className="option-tag-chip" style={{ borderColor: tag.color, backgroundColor: hexToTagBackground(tag.color) }} key={tag.id}>
           {tag.japanese}
+          <button onClick={() => onRemove(target, tag)} title="Promptから削除">
+            <Trash2 size={13} />
+          </button>
+        </span>
+      ))}
+    </div>
+  );
+}
+
+function AppliedIllustrationTags({
+  target,
+  tags,
+  onRemove
+}: {
+  target: TagPromptTarget;
+  tags: IllustrationTag[];
+  onRemove: (target: TagPromptTarget, tag: IllustrationTag) => void;
+}) {
+  if (!tags.length) return null;
+  return (
+    <div className="applied-option-tags">
+      {tags.map((tag) => (
+        <span className="option-tag-chip" style={{ borderColor: tag.color, backgroundColor: hexToTagBackground(tag.color) }} key={tag.id}>
+          {tag.name}
           <button onClick={() => onRemove(target, tag)} title="Promptから削除">
             <Trash2 size={13} />
           </button>
@@ -3265,13 +3332,15 @@ function GenerationLoraPanel({
   projects,
   selectedLoras,
   onToggleLora,
-  onUpdateLora
+  onUpdateLora,
+  onClearLoras
 }: {
   loras: RuntimeStatus["loras"];
   projects: LoraTrainingProject[];
   selectedLoras: GenerationLora[];
   onToggleLora: (name: string) => void;
   onUpdateLora: (name: string, field: "modelStrength" | "clipStrength", value: number) => void;
+  onClearLoras: () => void;
 }) {
   const projectByOutputName = useMemo(() => new Map(projects.map((project) => [project.outputName, project])), [projects]);
   const displayLoras = loras.filter((lora) => !isStepLoraName(lora.name));
@@ -3279,7 +3348,10 @@ function GenerationLoraPanel({
     <div className="lora-apply-panel">
       <div className="tag-builder-header">
         <h2>LoRA適用</h2>
-        <span>{selectedLoras.length}件選択</span>
+        <div className="inline-actions">
+          <span>{selectedLoras.length}件選択</span>
+          <button className="tiny-button" disabled={!selectedLoras.length} onClick={onClearLoras}>選択クリア</button>
+        </div>
       </div>
       <div className="lora-apply-list">
         {displayLoras.length ? (
@@ -3288,52 +3360,52 @@ function GenerationLoraPanel({
             const project = projectByOutputName.get(lora.name);
             return (
               <article className={selected ? "lora-apply-card lora-project-card selected" : "lora-apply-card lora-project-card"} key={lora.name}>
-                <button className="lora-apply-select" onClick={() => onToggleLora(lora.name)}>
-                  <div className="lora-project-thumb">
-                    <ImageIcon className="lora-project-placeholder-icon" size={22} />
-                    {project?.thumbnailDataUrl || project?.thumbnailPath ? (
-                      <img src={project.thumbnailDataUrl || `file://${project.thumbnailPath ?? ""}`} alt="" onError={(event) => { event.currentTarget.remove(); }} />
-                    ) : null}
+                <div className="lora-project-thumb">
+                  <ImageIcon className="lora-project-placeholder-icon" size={22} />
+                  {project?.thumbnailDataUrl || project?.thumbnailPath ? (
+                    <img src={project.thumbnailDataUrl || `file://${project.thumbnailPath ?? ""}`} alt="" onError={(event) => { event.currentTarget.remove(); }} />
+                  ) : null}
+                </div>
+                <div className="lora-project-body">
+                  <header>
+                    <strong>{project?.name || lora.name}</strong>
+                    <button className={selected ? "tiny-button active" : "tiny-button"} onClick={() => onToggleLora(lora.name)}>
+                      {selected ? "使用中" : "使用"}
+                    </button>
+                  </header>
+                  <div className="lora-meta-tags">
+                    <span>Base: {project?.baseCheckpoint || "不明"}</span>
+                    <span>Trigger: {project?.triggerWord || "未設定"}</span>
+                    <span>{lora.sizeLabel}</span>
                   </div>
-                  <div className="lora-project-body">
-                    <header>
-                      <strong>{project?.name || lora.name}</strong>
-                      <span>{selected ? "使用中" : "未使用"}</span>
-                    </header>
-                    <div className="lora-meta-tags">
-                      <span>Base: {project?.baseCheckpoint || "不明"}</span>
-                      <span>Trigger: {project?.triggerWord || "未設定"}</span>
-                      <span>{lora.sizeLabel}</span>
+                  {project?.message ? <p>{project.message}</p> : null}
+                  {selected ? (
+                    <div className="lora-strength-grid">
+                      <label>
+                        Model
+                        <input
+                          type="number"
+                          min="-2"
+                          max="2"
+                          step="0.05"
+                          value={selected.modelStrength}
+                          onChange={(event) => onUpdateLora(lora.name, "modelStrength", Number(event.target.value))}
+                        />
+                      </label>
+                      <label>
+                        CLIP
+                        <input
+                          type="number"
+                          min="-2"
+                          max="2"
+                          step="0.05"
+                          value={selected.clipStrength}
+                          onChange={(event) => onUpdateLora(lora.name, "clipStrength", Number(event.target.value))}
+                        />
+                      </label>
                     </div>
-                  </div>
-                </button>
-                {project?.message ? <p>{project.message}</p> : null}
-                {selected ? (
-                  <div className="lora-strength-grid">
-                    <label>
-                      Model
-                      <input
-                        type="number"
-                        min="-2"
-                        max="2"
-                        step="0.05"
-                        value={selected.modelStrength}
-                        onChange={(event) => onUpdateLora(lora.name, "modelStrength", Number(event.target.value))}
-                      />
-                    </label>
-                    <label>
-                      CLIP
-                      <input
-                        type="number"
-                        min="-2"
-                        max="2"
-                        step="0.05"
-                        value={selected.clipStrength}
-                        onChange={(event) => onUpdateLora(lora.name, "clipStrength", Number(event.target.value))}
-                      />
-                    </label>
-                  </div>
-                ) : null}
+                  ) : null}
+                </div>
               </article>
             );
           })
@@ -3530,6 +3602,10 @@ function appendPromptFragment(promptText: string, fragment: string): string {
   const current = promptText.trim();
   if (!current) return normalized;
   return `${current}\n${normalized}`;
+}
+
+function composeGenerationPrompt(promptText: string, fragments: string[]): string {
+  return fragments.reduce((current, fragment) => appendPromptFragment(current, fragment), promptText);
 }
 
 function removePromptTag(promptText: string, tag: string): string {
