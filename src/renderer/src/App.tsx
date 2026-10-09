@@ -2355,6 +2355,7 @@ function App() {
               </button>
               <button className={generateTab === "lora" ? "runtime-tab active" : "runtime-tab"} onClick={() => setGenerateTab("lora")}>
                 LoRA
+                {selectedLoras.length ? <span>{selectedLoras.length}</span> : null}
               </button>
               <button className={generateTab === "options" ? "runtime-tab active" : "runtime-tab"} onClick={() => setGenerateTab("options")}>
                 生成オプション
@@ -2642,7 +2643,7 @@ function App() {
                 <div className="field">
                   <label>カテゴリ</label>
                   <select value={tagCategory} onChange={(event) => setTagCategory(event.target.value)}>
-                    {mergedTagCategories(illustrationTags, optionPromptTags).map((category) => (
+                    {uniqueCategories([...illustrationTagEditCategories(illustrationTags), tagCategory]).map((category) => (
                       <option value={category} key={category} />
                     ))}
                   </select>
@@ -3656,8 +3657,9 @@ function illustrationTagCategories(tags: IllustrationTag[]): string[] {
   return uniqueCategories([...defaults, ...tags.map((tag) => tag.category)]);
 }
 
-function mergedTagCategories(tags: IllustrationTag[], optionTags: OptionPromptTag[]): string[] {
-  return uniqueCategories([...illustrationTagCategories(tags), ...optionPromptTagCategories(optionTags)]);
+function illustrationTagEditCategories(tags: IllustrationTag[]): string[] {
+  const categories = uniqueCategories(tags.map((tag) => tag.category));
+  return categories.length ? categories : ["未分類"];
 }
 
 function uniqueCategories(categories: Array<string | undefined | null>): string[] {
