@@ -68,6 +68,28 @@ const allBaseFilters = [
   { name: "Flux", status: "現在は非対応" },
   { name: "Qwen Image", status: "現在は非対応" }
 ];
+const recommendedVaeModels = [
+  {
+    name: "SDXL VAE fp16 fix",
+    fileName: "sdxl.vae.safetensors",
+    url: "https://huggingface.co/madebyollin/sdxl-vae-fp16-fix/resolve/main/sdxl.vae.safetensors",
+    source: "Hugging Face",
+    note: "SDXL / Illustrious / Pony系で外部VAEが必要な時の基本候補。"
+  }
+];
+const recommendedClipModels = [
+  {
+    name: "CLIP-L",
+    fileName: "clip_l.safetensors",
+    url: "https://huggingface.co/comfyanonymous/flux_text_encoders/resolve/main/clip_l.safetensors",
+    source: "Hugging Face",
+    note: "単体CLIPLoaderで試す候補。専用workflowが必要なモデルでは別CLIPが必要な場合あり。"
+  }
+];
+type CheckpointExternalSelection = {
+  vae: string;
+  clip: string;
+};
 const recommendedLlmModels = [
   { name: "qwen2.5:3b-instruct", source: "Ollama", size: "軽量", note: "まず試す用。日本語もそこそこ。" },
   { name: "qwen2.5:7b-instruct", source: "Ollama", size: "標準", note: "日本語prompt整形の本命寄り。" },
@@ -106,6 +128,7 @@ function App() {
   const [clipUrl, setClipUrl] = useState("");
   const [selectedVae, setSelectedVae] = useState("");
   const [selectedClip, setSelectedClip] = useState("");
+  const [checkpointExternalSelections, setCheckpointExternalSelections] = useState<Record<string, CheckpointExternalSelection>>({});
   const [modelAddMode, setModelAddMode] = useState<"recommend" | "search" | "url">("recommend");
   const [catalogQuery, setCatalogQuery] = useState("");
   const [catalogModels, setCatalogModels] = useState<CivitaiModelCard[]>([]);
@@ -297,6 +320,23 @@ function App() {
       setSelectedCheckpoint(status.checkpoints.find((checkpoint) => checkpoint.simpleWorkflowReady)?.name ?? status.checkpoints[0].name);
     }
   }, [selectedCheckpoint, status?.checkpoints]);
+
+  useEffect(() => {
+    try {
+      const raw = localStorage.getItem("illustmk.checkpointExternalSelections");
+      if (raw) setCheckpointExternalSelections(JSON.parse(raw) as Record<string, CheckpointExternalSelection>);
+    } catch {
+      setCheckpointExternalSelections({});
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!selectedCheckpoint) return;
+    const saved = checkpointExternalSelections[selectedCheckpoint];
+    if (!saved) return;
+    setSelectedVae(saved.vae);
+    setSelectedClip(saved.clip);
+  }, [checkpointExternalSelections, selectedCheckpoint]);
 
   useEffect(() => {
     if (status?.vae.length && !selectedVae) {
@@ -507,49 +547,64 @@ function App() {
   }
 
   async function installVae(): Promise<void> {
-    const fileName = vaeUrl.split("/").pop()?.split("?")[0] || "external.vae.safetensors";
-    await runDownloadAction("VAEをインストール中", {
-      url: vaeUrl.trim(),
-      targetType: "vae",
+    await installModelAsset("vae", vaeUrl, "external.vae.safetensors");
+  }
+
+  async function installModelAsset(targetType: "vae" | "clip", url: string, fallbackFileName: string, explicitFileName?: string): Promise<void> {
+    const fileName = explicitFileName || url.split("/").pop()?.split("?")[0] || fallbackFileName;
+    const label = targetType === "vae" ? "VAE" : "CLIP/text encoder";
+    await runDownloadAction(`${label}をインストール中`, {
+      url: url.trim(),
+      targetType,
       fileName,
-      source: vaeUrl.includes("civitai.com") ? "civitai" : "direct"
+      source: url.includes("civitai.com") ? "civitai" : "direct"
     }, () => {
-      setSelectedVae(fileName);
+      if (targetType === "vae") setSelectedVae(fileName);
+      if (targetType === "clip") setSelectedClip(fileName);
     });
   }
 
   async function deleteSelectedVae(): Promise<void> {
     if (!selectedVae) return;
-    if (!window.confirm(`${selectedVae} を削除します。元に戻せません。`)) return;
-    await runAction(`${selectedVae} を削除中`, () =>
-      window.illustMK.runtime.deleteModel({ targetType: "vae", fileName: selectedVae }), () => {
-        setSelectedVae("");
+    await deleteModelAsset("vae", selectedVae);
+  }
+
+  async function deleteModelAsset(targetType: "vae" | "clip", fileName: string): Promise<void> {
+    if (!fileName) return;
+    if (!window.confirm(`${fileName} を削除します。元に戻せません。`)) return;
+    await runAction(`${fileName} を削除中`, () =>
+      window.illustMK.runtime.deleteModel({ targetType, fileName }), () => {
+        if (targetType === "vae" && selectedVae === fileName) {
+          setSelectedVae("");
+        }
+        if (targetType === "clip" && selectedClip === fileName) {
+          setSelectedClip("");
+        }
       }
     );
     await refreshStatus();
-  }
-
-  async function installClip(): Promise<void> {
-    const fileName = clipUrl.split("/").pop()?.split("?")[0] || "external_clip.safetensors";
-    await runDownloadAction("CLIP/text encoderをインストール中", {
-      url: clipUrl.trim(),
-      targetType: "clip",
-      fileName,
-      source: clipUrl.includes("civitai.com") ? "civitai" : "direct"
-    }, () => {
-      setSelectedClip(fileName);
-    });
   }
 
   async function deleteSelectedClip(): Promise<void> {
     if (!selectedClip) return;
-    if (!window.confirm(`${selectedClip} を削除します。元に戻せません。`)) return;
-    await runAction(`${selectedClip} を削除中`, () =>
-      window.illustMK.runtime.deleteModel({ targetType: "clip", fileName: selectedClip }), () => {
-        setSelectedClip("");
-      }
-    );
-    await refreshStatus();
+    await deleteModelAsset("clip", selectedClip);
+  }
+
+  async function installClip(): Promise<void> {
+    await installModelAsset("clip", clipUrl, "external_clip.safetensors");
+  }
+
+  function saveCheckpointExternalSelection(checkpoint: string, value: CheckpointExternalSelection): void {
+    if (!checkpoint) return;
+    setCheckpointExternalSelections((current) => {
+      const next = { ...current, [checkpoint]: value };
+      localStorage.setItem("illustmk.checkpointExternalSelections", JSON.stringify(next));
+      return next;
+    });
+    if (checkpoint === selectedCheckpoint) {
+      setSelectedVae(value.vae);
+      setSelectedClip(value.clip);
+    }
   }
 
   function appendLog(level: LogLine["level"], line: string, id = currentOperationId.current ?? "manual"): void {
@@ -1292,7 +1347,22 @@ function App() {
             </section>
 
             <section className="panel model-runtime-panel">
-              <PanelTitle icon={<Download size={18} />} title="外部CLIP / VAE" />
+              <PanelTitle icon={<Download size={18} />} title="VAE" />
+              <div className="asset-catalog-list">
+                {recommendedVaeModels.map((item) => (
+                  <article className="llm-catalog-card" key={item.fileName}>
+                    <button className="llm-select-button" onClick={() => setVaeUrl(item.url)}>
+                      <span>{item.name}</span>
+                      <small>{item.source}</small>
+                    </button>
+                    <p>{item.note}</p>
+                    <button disabled={action.busy} onClick={() => void installModelAsset("vae", item.url, item.fileName, item.fileName)}>
+                      <Download size={15} />
+                      Download
+                    </button>
+                  </article>
+                ))}
+              </div>
               <div className="field">
                 <label>VAE URL</label>
                 <div className="inline">
@@ -1301,6 +1371,43 @@ function App() {
                     <Download size={17} />
                   </button>
                 </div>
+              </div>
+              <div className="model-list">
+                <h2>インストール済みVAE</h2>
+                {status?.vae.length ? (
+                  status.vae.map((file) => (
+                    <div className="model-row" key={file.name}>
+                      <button className={selectedVae === file.name ? "model selected" : "model"} onClick={() => setSelectedVae(file.name)}>
+                        <span>{file.name}</span>
+                        <small>{file.sizeLabel}</small>
+                      </button>
+                      <button className="icon-button danger" disabled={action.busy} onClick={() => void deleteModelAsset("vae", file.name)} title="削除">
+                        <Trash2 size={16} />
+                      </button>
+                    </div>
+                  ))
+                ) : (
+                  <p className="empty">まだVAEがありません。</p>
+                )}
+              </div>
+            </section>
+
+            <section className="panel model-runtime-panel">
+              <PanelTitle icon={<Download size={18} />} title="CLIP" />
+              <div className="asset-catalog-list">
+                {recommendedClipModels.map((item) => (
+                  <article className="llm-catalog-card" key={item.fileName}>
+                    <button className="llm-select-button" onClick={() => setClipUrl(item.url)}>
+                      <span>{item.name}</span>
+                      <small>{item.source}</small>
+                    </button>
+                    <p>{item.note}</p>
+                    <button disabled={action.busy} onClick={() => void installModelAsset("clip", item.url, item.fileName, item.fileName)}>
+                      <Download size={15} />
+                      Download
+                    </button>
+                  </article>
+                ))}
               </div>
               <div className="field">
                 <label>CLIP / text encoder URL</label>
@@ -1311,39 +1418,23 @@ function App() {
                   </button>
                 </div>
               </div>
-              <div className="two-columns">
-                <div className="field">
-                  <label>選択VAE</label>
-                  <select value={selectedVae} onChange={(event) => setSelectedVae(event.target.value)}>
-                    <option value="">未選択</option>
-                    {status?.vae.map((file) => (
-                      <option key={file.name} value={file.name}>
-                        {file.name}
-                      </option>
-                    ))}
-                  </select>
-                </div>
-                <div className="field">
-                  <label>選択CLIP</label>
-                  <select value={selectedClip} onChange={(event) => setSelectedClip(event.target.value)}>
-                    <option value="">未選択</option>
-                    {status?.clip.map((file) => (
-                      <option key={file.name} value={file.name}>
-                        {file.name}
-                      </option>
-                    ))}
-                  </select>
-                </div>
-              </div>
-              <div className="button-row">
-                <button className="danger" disabled={action.busy || !selectedVae} onClick={() => void deleteSelectedVae()}>
-                  <Trash2 size={15} />
-                  VAE削除
-                </button>
-                <button className="danger" disabled={action.busy || !selectedClip} onClick={() => void deleteSelectedClip()}>
-                  <Trash2 size={15} />
-                  CLIP削除
-                </button>
+              <div className="model-list">
+                <h2>インストール済みCLIP</h2>
+                {status?.clip.length ? (
+                  status.clip.map((file) => (
+                    <div className="model-row" key={file.name}>
+                      <button className={selectedClip === file.name ? "model selected" : "model"} onClick={() => setSelectedClip(file.name)}>
+                        <span>{file.name}</span>
+                        <small>{file.sizeLabel}</small>
+                      </button>
+                      <button className="icon-button danger" disabled={action.busy} onClick={() => void deleteModelAsset("clip", file.name)} title="削除">
+                        <Trash2 size={16} />
+                      </button>
+                    </div>
+                  ))
+                ) : (
+                  <p className="empty">まだCLIPがありません。</p>
+                )}
               </div>
             </section>
           </div>
@@ -1631,25 +1722,73 @@ function App() {
             <div className="model-list">
               <h2>検出済みCheckpoint</h2>
               {status?.checkpoints.length ? (
-                status.checkpoints.map((file) => (
-                  <div className="model-row" key={file.name}>
-                    <button
-                      className={selectedCheckpoint === file.name ? "model selected" : "model"}
-                      onClick={() => setSelectedCheckpoint(file.name)}
-                    >
-                      <span>{file.name}</span>
-                      <small>{file.sizeLabel} / {file.compatibilityLabel}</small>
-                    </button>
-                    <button
-                      className="icon-button danger"
-                      disabled={action.busy}
-                      onClick={() => void deleteCheckpoint(file.name)}
-                      title="削除"
-                    >
-                      <Trash2 size={16} />
-                    </button>
-                  </div>
-                ))
+                status.checkpoints.map((file) => {
+                  const external = checkpointExternalSelections[file.name] ?? { vae: "", clip: "" };
+                  const needsVae = !file.hasVae;
+                  const needsClip = !file.hasClip;
+                  const suggestedVae = needsVae ? status.vae.find((item) => item.hasVae)?.name ?? status.vae[0]?.name ?? "" : "";
+                  const suggestedClip = needsClip ? status.clip.find((item) => item.hasClip)?.name ?? status.clip[0]?.name ?? "" : "";
+                  const ready = (!needsVae || external.vae) && (!needsClip || external.clip);
+                  return (
+                    <div className={needsVae || needsClip ? "model-row checkpoint-row expanded" : "model-row checkpoint-row"} key={file.name}>
+                      <button
+                        className={selectedCheckpoint === file.name ? "model selected" : "model"}
+                        onClick={() => setSelectedCheckpoint(file.name)}
+                      >
+                        <span>{file.name}</span>
+                        <small>{file.sizeLabel} / {needsVae || needsClip ? (ready ? "外部設定OK" : "追加ファイル必要") : file.compatibilityLabel}</small>
+                      </button>
+                      <button
+                        className="icon-button danger"
+                        disabled={action.busy}
+                        onClick={() => void deleteCheckpoint(file.name)}
+                        title="削除"
+                      >
+                        <Trash2 size={16} />
+                      </button>
+                      {needsVae || needsClip ? (
+                        <div className="checkpoint-external-settings">
+                          <div className="field">
+                            <label>VAE</label>
+                            <select
+                              value={external.vae}
+                              disabled={!needsVae}
+                              onChange={(event) => saveCheckpointExternalSelection(file.name, { ...external, vae: event.target.value })}
+                            >
+                              <option value="">{needsVae ? "未選択" : "内蔵"}</option>
+                              {status.vae.map((item) => (
+                                <option key={item.name} value={item.name}>
+                                  {item.name}
+                                </option>
+                              ))}
+                            </select>
+                          </div>
+                          <div className="field">
+                            <label>CLIP</label>
+                            <select
+                              value={external.clip}
+                              disabled={!needsClip}
+                              onChange={(event) => saveCheckpointExternalSelection(file.name, { ...external, clip: event.target.value })}
+                            >
+                              <option value="">{needsClip ? "未選択" : "内蔵"}</option>
+                              {status.clip.map((item) => (
+                                <option key={item.name} value={item.name}>
+                                  {item.name}
+                                </option>
+                              ))}
+                            </select>
+                          </div>
+                          <button
+                            disabled={action.busy || (!suggestedVae && needsVae) || (!suggestedClip && needsClip)}
+                            onClick={() => saveCheckpointExternalSelection(file.name, { vae: needsVae ? suggestedVae : "", clip: needsClip ? suggestedClip : "" })}
+                          >
+                            推奨を設定
+                          </button>
+                        </div>
+                      ) : null}
+                    </div>
+                  );
+                })
               ) : (
                 <p className="empty">まだ checkpoint がありません。</p>
               )}
@@ -1938,7 +2077,14 @@ function App() {
             <div className="two-columns">
               <div className="field">
                 <label>外部VAE</label>
-                <select value={selectedVae} onChange={(event) => setSelectedVae(event.target.value)}>
+                <select
+                  value={selectedVae}
+                  onChange={(event) => {
+                    const value = event.target.value;
+                    setSelectedVae(value);
+                    saveCheckpointExternalSelection(selectedCheckpoint, { vae: value, clip: selectedClip });
+                  }}
+                >
                   <option value="">未選択</option>
                   {status?.vae.map((file) => (
                     <option key={file.name} value={file.name}>
@@ -1949,7 +2095,14 @@ function App() {
               </div>
               <div className="field">
                 <label>外部CLIP</label>
-                <select value={selectedClip} onChange={(event) => setSelectedClip(event.target.value)}>
+                <select
+                  value={selectedClip}
+                  onChange={(event) => {
+                    const value = event.target.value;
+                    setSelectedClip(value);
+                    saveCheckpointExternalSelection(selectedCheckpoint, { vae: selectedVae, clip: value });
+                  }}
+                >
                   <option value="">未選択</option>
                   {status?.clip.map((file) => (
                     <option key={file.name} value={file.name}>

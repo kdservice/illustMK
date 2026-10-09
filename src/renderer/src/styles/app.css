@@ -1267,6 +1267,25 @@ label {
   margin-bottom: 8px;
 }
 
+.checkpoint-row.expanded {
+  border: 1px solid #29406f;
+  border-radius: 8px;
+  background: #071020;
+  padding: 8px;
+}
+
+.checkpoint-external-settings {
+  grid-column: 1 / -1;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) auto;
+  gap: 8px;
+  align-items: end;
+}
+
+.checkpoint-external-settings button {
+  min-height: 38px;
+}
+
 .model-row .model {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
@@ -1447,6 +1466,12 @@ label {
   color: #91a3c9;
   font-size: 12px;
   line-height: 1.45;
+}
+
+.asset-catalog-list {
+  display: grid;
+  gap: 8px;
+  margin-bottom: 12px;
 }
 
 .llm-search-card {
