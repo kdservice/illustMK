@@ -1310,7 +1310,13 @@ function App() {
       </header>
 
       <section className="panel global-status-panel">
-        <StatusGrid status={status} ollamaStatus={ollamaStatus} runtimeTab={runtimeTab} ollamaModel={ollamaModel} />
+        <StatusGrid
+          status={status}
+          ollamaStatus={ollamaStatus}
+          runtimeTab={runtimeTab}
+          ollamaModel={ollamaModel}
+          selectedCheckpoint={selectedCheckpointInfo}
+        />
       </section>
 
       <nav className="main-tabs">
@@ -1643,6 +1649,7 @@ function App() {
                       }}
                     >
                       <span>{model.name}</span>
+                      {ollamaModel === model.name ? <em>ACTIVE</em> : null}
                       <small>{model.sizeLabel}</small>
                     </button>
                     <button
@@ -2211,6 +2218,7 @@ function App() {
             ) : generateTab === "lora" ? (
               <GenerationLoraPanel
                 loras={status?.loras ?? []}
+                projects={loraProjects}
                 selectedLoras={selectedLoras}
                 onToggleLora={toggleGenerationLora}
                 onUpdateLora={updateGenerationLora}
@@ -2847,15 +2855,18 @@ function TagSelector({
 
 function GenerationLoraPanel({
   loras,
+  projects,
   selectedLoras,
   onToggleLora,
   onUpdateLora
 }: {
   loras: RuntimeStatus["loras"];
+  projects: LoraTrainingProject[];
   selectedLoras: GenerationLora[];
   onToggleLora: (name: string) => void;
   onUpdateLora: (name: string, field: "modelStrength" | "clipStrength", value: number) => void;
 }) {
+  const projectByOutputName = useMemo(() => new Map(projects.map((project) => [project.outputName, project])), [projects]);
   return (
     <div className="lora-apply-panel">
       <div className="tag-builder-header">
@@ -2866,12 +2877,17 @@ function GenerationLoraPanel({
         {loras.length ? (
           loras.map((lora) => {
             const selected = selectedLoras.find((item) => item.name === lora.name);
+            const project = projectByOutputName.get(lora.name);
             return (
               <article className={selected ? "lora-apply-card selected" : "lora-apply-card"} key={lora.name}>
                 <button onClick={() => onToggleLora(lora.name)}>
                   <strong>{lora.name}</strong>
                   <small>{lora.sizeLabel}</small>
                 </button>
+                <div className="lora-meta-tags">
+                  <span>Base: {project?.baseCheckpoint || "不明"}</span>
+                  <span>Trigger: {project?.triggerWord || "未設定"}</span>
+                </div>
                 {selected ? (
                   <div className="lora-strength-grid">
                     <label>
@@ -2967,12 +2983,14 @@ function StatusGrid({
   status,
   ollamaStatus,
   runtimeTab,
-  ollamaModel
+  ollamaModel,
+  selectedCheckpoint
 }: {
   status: RuntimeStatus | null;
   ollamaStatus?: OllamaStatus | null;
   runtimeTab: "macos" | "docker";
   ollamaModel: string;
+  selectedCheckpoint: RuntimeStatus["checkpoints"][number] | null;
 }) {
   const runtimeItems: Array<{ label: string; value: string; tone: StatusTone }> =
     runtimeTab === "docker"
@@ -2981,28 +2999,25 @@ function StatusGrid({
           { label: "Docker API", value: status?.dockerDaemonReady ? "接続OK" : "未起動", tone: status?.dockerDaemonReady ? "ok" : "warn" },
           { label: "Compose", value: status?.composeCommand ? "OK" : "未検出", tone: status?.composeCommand ? "ok" : "error" }
         ]
-      : [
-          { label: "macOS Runtime", value: status?.nativeInstalled ? "OK" : "未インストール", tone: status?.nativeInstalled ? "ok" : "error" },
-          { label: "ComfyUI", value: status?.comfyReachable ? "接続中" : status?.nativeRunning ? "起動中" : "未接続", tone: status?.comfyReachable ? "ok" : status?.nativeRunning ? "warn" : "error" }
-        ];
+      : [{ label: "ComfyUI", value: status?.comfyReachable ? "接続中" : status?.nativeRunning ? "起動中" : "未接続", tone: status?.comfyReachable ? "ok" : status?.nativeRunning ? "warn" : "error" }];
 
   const ollamaValue = ollamaStatus?.reachable && ollamaStatus.dataLinked ? "接続OK" : ollamaStatus?.reachable ? "保存先NG" : ollamaStatus?.installed ? "未起動" : "未検出";
   const ollamaTone: StatusTone = ollamaStatus?.reachable && ollamaStatus.dataLinked ? "ok" : ollamaStatus?.installed ? "warn" : "error";
-  const dataTone: StatusTone = ollamaStatus?.dataLinked ? "ok" : ollamaStatus?.installed ? "warn" : "error";
+  const checkpointTone: StatusTone = selectedCheckpoint?.simpleWorkflowReady ? "ok" : selectedCheckpoint ? "warn" : "error";
   const items = [
     ...runtimeItems,
-    { label: "Runtime Path", value: status?.pathsReady ? "OK" : "未初期化", tone: status?.pathsReady ? "ok" : "error" },
+    { label: "選択モデル", value: selectedCheckpoint?.name ?? "未選択", tone: checkpointTone, tag: selectedCheckpoint?.compatibilityLabel ?? "" },
     { label: "Ollama", value: ollamaValue, tone: ollamaTone },
-    { label: "DataPath", value: ollamaStatus?.dataLinked ? "OK" : "未切替", tone: dataTone },
     { label: "LLM", value: ollamaModel || "未選択", tone: ollamaModel ? "ok" : "warn" }
   ];
 
   return (
     <div className="status-grid">
-      {items.map(({ label, value, tone }) => (
+      {items.map(({ label, value, tone, tag }) => (
         <div className={`status-card ${tone}`} key={label}>
           <span>{label}</span>
           <strong>{value}</strong>
+          {tag ? <em>{tag}</em> : null}
         </div>
       ))}
     </div>

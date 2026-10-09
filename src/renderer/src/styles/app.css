@@ -465,6 +465,23 @@ label {
   align-items: center;
 }
 
+.lora-meta-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.lora-meta-tags span {
+  border: 1px solid #263d6b;
+  border-radius: 999px;
+  background: #0d1a33;
+  color: #b9c8ea;
+  padding: 3px 8px;
+  font-size: 11px;
+  font-weight: 800;
+  overflow-wrap: anywhere;
+}
+
 .lora-strength-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -651,6 +668,29 @@ label {
   text-overflow: ellipsis;
   white-space: nowrap;
   font-size: 12px;
+}
+
+.status-card em,
+.model em {
+  display: inline-flex;
+  width: fit-content;
+  border: 1px solid #44bcff;
+  border-radius: 999px;
+  padding: 1px 7px;
+  background: #12335f;
+  color: #dff4ff;
+  font-size: 10px;
+  font-style: normal;
+  font-weight: 900;
+  line-height: 1.5;
+}
+
+.status-card em {
+  max-width: 100%;
+  margin-top: 3px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .field {
