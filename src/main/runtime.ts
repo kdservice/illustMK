@@ -287,8 +287,10 @@ export type LoraTrainingProject = {
   triggerWord: string;
   sourceLora: string;
   baseCheckpoint: string;
+  projectDir: string;
   datasetPath: string;
   outputName: string;
+  thumbnailPath?: string;
   resolution: number;
   repeats: number;
   epochs: number;
@@ -1534,7 +1536,7 @@ export async function getLoraTrainingProjects(): Promise<LoraTrainingProject[]> 
     const parsed = JSON.parse(text) as LoraTrainingProject[];
     if (Array.isArray(parsed)) {
       for (const project of parsed.filter(isLoraTrainingProject)) {
-        byId.set(project.id, { ...project, sourceLora: project.sourceLora ?? "" });
+        byId.set(project.id, normalizeLoraTrainingProject(project, paths));
       }
     }
   } catch {
@@ -1547,7 +1549,7 @@ export async function getLoraTrainingProjects(): Promise<LoraTrainingProject[]> 
     try {
       const project = JSON.parse(await readFile(configPath, "utf8")) as unknown;
       if (isLoraTrainingProject(project)) {
-        byId.set(project.id, { ...project, sourceLora: project.sourceLora ?? "" });
+        byId.set(project.id, normalizeLoraTrainingProject(project, paths, join(paths.loraProjects, entry.name)));
       }
     } catch {
       // Ignore directories that are not LoRA projects yet.
@@ -1563,13 +1565,48 @@ export async function clearLoraTrainingProjects(): Promise<LoraTrainingProject[]
   return [];
 }
 
+function normalizeLoraTrainingProject(project: LoraTrainingProject, paths: RuntimePaths, projectDir?: string): LoraTrainingProject {
+  const resolvedProjectDir = projectDir ?? inferLoraProjectDir(project, paths);
+  return {
+    ...project,
+    sourceLora: project.sourceLora ?? "",
+    projectDir: resolvedProjectDir,
+    datasetPath: project.datasetPath && basename(project.datasetPath) === "dataset" ? project.datasetPath : join(resolvedProjectDir, "dataset"),
+    thumbnailPath: project.thumbnailPath
+  };
+}
+
+function inferLoraProjectDir(project: LoraTrainingProject, paths: RuntimePaths): string {
+  if (project.projectDir && resolve(project.projectDir).startsWith(resolve(paths.loraProjects))) return project.projectDir;
+  if (project.datasetPath && basename(project.datasetPath) === "dataset") {
+    const parent = dirname(project.datasetPath);
+    if (resolve(parent).startsWith(resolve(paths.loraProjects))) return parent;
+  }
+  return join(paths.loraProjects, safeFileName(project.name));
+}
+
+async function resolveExistingLoraProjectDir(project: LoraTrainingProject, paths: RuntimePaths): Promise<string> {
+  const candidates = [
+    project.projectDir,
+    project.datasetPath && basename(project.datasetPath) === "dataset" ? dirname(project.datasetPath) : "",
+    join(paths.loraProjects, safeFileName(project.name))
+  ].filter(Boolean);
+  for (const candidate of candidates) {
+    const resolved = resolve(candidate);
+    if (resolved === resolve(paths.loraProjects)) continue;
+    if (!resolved.startsWith(resolve(paths.loraProjects))) continue;
+    if (await exists(resolved)) return resolved;
+  }
+  return join(paths.loraProjects, safeFileName(project.name));
+}
+
 export async function deleteLoraTrainingProject(id: string): Promise<LoraTrainingProject[]> {
   const paths = await ensureRuntimeFiles();
   const projects = await getLoraTrainingProjects();
   const project = projects.find((item) => item.id === id);
   if (!project) throw new Error("LoRAプロジェクトが見つかりません。");
   if (project.status === "running") throw new Error("実行中のLoRAプロジェクトは削除できません。先に停止してください。");
-  await rm(join(paths.loraProjects, safeFileName(project.name)), { recursive: true, force: true });
+  await rm(await resolveExistingLoraProjectDir(project, paths), { recursive: true, force: true });
   const nextProjects = projects.filter((item) => item.id !== id);
   await saveLoraTrainingProjects(nextProjects);
   return nextProjects;
@@ -1585,15 +1622,7 @@ export async function saveLoraTrainingProject(request: SaveLoraTrainingProjectRe
   const existing = request.id ? projects.find((project) => project.id === request.id) : null;
   const id = existing?.id ?? randomUUID();
   const safeName = safeFileName(name);
-  const projectRoot = join(paths.loraProjects, safeName);
-  if (existing) {
-    const existingRoot = dirname(dirname(existing.datasetPath));
-    const sameRoot = resolve(existingRoot) === resolve(projectRoot);
-    if (!sameRoot) {
-      if (await exists(projectRoot)) throw new Error(`移動先のLoRAプロジェクトが既に存在します: ${projectRoot}`);
-      if (await exists(existingRoot)) await rename(existingRoot, projectRoot);
-    }
-  }
+  const projectRoot = existing ? await resolveExistingLoraProjectDir(existing, paths) : join(paths.loraProjects, safeName);
   const datasetPath = join(projectRoot, "dataset");
   const outputName = existing?.outputName ?? normalizeSafetensorsName(`${safeName}.safetensors`);
   const project: LoraTrainingProject = {
@@ -1602,8 +1631,10 @@ export async function saveLoraTrainingProject(request: SaveLoraTrainingProjectRe
     triggerWord: request.triggerWord.trim(),
     sourceLora: existing?.sourceLora ?? "",
     baseCheckpoint: request.baseCheckpoint.trim(),
+    projectDir: projectRoot,
     datasetPath,
     outputName,
+    thumbnailPath: existing?.thumbnailPath,
     resolution: request.resolution ?? existing?.resolution ?? defaultLoraRunParams.resolution,
     repeats: request.repeats ?? existing?.repeats ?? defaultLoraRunParams.repeats,
     epochs: request.epochs ?? existing?.epochs ?? defaultLoraRunParams.epochs,
@@ -1611,8 +1642,8 @@ export async function saveLoraTrainingProject(request: SaveLoraTrainingProjectRe
     learningRate: request.learningRate?.trim() || existing?.learningRate || defaultLoraRunParams.learningRate,
     createdAt: existing?.createdAt ?? now,
     updatedAt: now,
-    status: "draft",
-    message: "プロジェクトを作成しました。キャプション編集で画像ごとのタグを設定してください。"
+    status: existing?.status ?? "draft",
+    message: existing?.message ?? "プロジェクトを作成しました。キャプション編集で画像ごとのタグを設定してください。"
   };
   await mkdir(datasetPath, { recursive: true });
   await mkdir(loraTrainingImageDir(project), { recursive: true });
@@ -1664,12 +1695,17 @@ export async function downloadCivitaiLoraProject(
   const projects = await getLoraTrainingProjects();
   const existing = projects.find((project) => project.outputName === fileName || project.sourceLora === fileName);
   if (existing) {
+    const projectRoot = await resolveExistingLoraProjectDir(existing, paths);
+    const thumbnailPath = existing.thumbnailPath ?? await saveCivitaiLoraThumbnail(model, projectRoot);
     const nextProjects: LoraTrainingProject[] = projects.map((project) =>
       project.id === existing.id
         ? {
             ...project,
             sourceLora: fileName,
             outputName: fileName,
+            projectDir: projectRoot,
+            datasetPath: join(projectRoot, "dataset"),
+            thumbnailPath,
             updatedAt: now,
             status: "complete" as const,
             message: "Civitaiから取得済みのLoRAです。生成タブで選択できます。"
@@ -1696,8 +1732,10 @@ export async function downloadCivitaiLoraProject(
     triggerWord: "",
     sourceLora: fileName,
     baseCheckpoint: model.baseModel || "unknown",
+    projectDir: projectRoot,
     datasetPath,
     outputName: fileName,
+    thumbnailPath: await saveCivitaiLoraThumbnail(model, projectRoot),
     resolution: defaultLoraRunParams.resolution,
     repeats: defaultLoraRunParams.repeats,
     epochs: defaultLoraRunParams.epochs,
@@ -1716,6 +1754,25 @@ export async function downloadCivitaiLoraProject(
   const nextProjects = [project, ...projects];
   await saveLoraTrainingProjects(nextProjects);
   return nextProjects;
+}
+
+async function saveCivitaiLoraThumbnail(model: CivitaiModelCard, projectRoot: string): Promise<string | undefined> {
+  if (!model.imageUrl) return undefined;
+  try {
+    await mkdir(join(projectRoot, "assets"), { recursive: true });
+    const response = await fetch(model.imageUrl, {
+      headers: { "User-Agent": "illustMK/0.1" },
+      signal: AbortSignal.timeout(30000)
+    });
+    if (!response.ok || !response.body) return undefined;
+    const contentType = response.headers.get("content-type") ?? "";
+    const extension = contentType.includes("png") ? "png" : contentType.includes("webp") ? "webp" : "jpg";
+    const path = join(projectRoot, "assets", `thumbnail.${extension}`);
+    await pipeline(response.body as unknown as NodeJS.ReadableStream, createWriteStream(path));
+    return path;
+  } catch {
+    return undefined;
+  }
 }
 
 export async function startLoraTrainingProject(id: string): Promise<LoraTrainingProject[]> {
@@ -2090,7 +2147,7 @@ async function findLoraTrainingProject(id: string): Promise<LoraTrainingProject>
 }
 
 function loraProjectConfigDir(project: LoraTrainingProject): string {
-  return join(getRuntimePaths().loraProjects, safeFileName(project.name), "config");
+  return join(project.projectDir || join(getRuntimePaths().loraProjects, safeFileName(project.name)), "config");
 }
 
 function loraCaptionTagsPath(project: LoraTrainingProject): string {

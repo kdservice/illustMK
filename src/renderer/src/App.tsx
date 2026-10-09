@@ -2110,16 +2110,21 @@ function App() {
                       if (event.key === "Enter" || event.key === " ") setSelectedLoraProjectId(project.id);
                     }}
                   >
-                    <header>
-                      <strong>{project.name}</strong>
-                      <span>{project.status}</span>
-                    </header>
-                    <div className="lora-project-meta">
-                      <span>Trigger: {project.triggerWord || "なし"}</span>
-                      <span>Base: {project.baseCheckpoint}</span>
-                      <span>Output: {project.outputName}</span>
+                    <div className="lora-project-thumb">
+                      {project.thumbnailPath ? <img src={imageUrl(project.thumbnailPath)} alt="" /> : <ImageIcon size={22} />}
                     </div>
-                    <p>{project.message}</p>
+                    <div className="lora-project-body">
+                      <header>
+                        <strong>{project.name}</strong>
+                        <span>{project.status}</span>
+                      </header>
+                      <div className="lora-project-meta">
+                        <span>Trigger: {project.triggerWord || "なし"}</span>
+                        <span>Base: {project.baseCheckpoint}</span>
+                        <span>Output: {project.outputName}</span>
+                      </div>
+                      <p>{project.message}</p>
+                    </div>
                   </article>
                 ))
               ) : (

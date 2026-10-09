@@ -432,11 +432,37 @@ label {
 
 .lora-project-card {
   cursor: pointer;
+  grid-template-columns: 72px minmax(0, 1fr);
+  align-items: start;
 }
 
 .lora-project-card.selected {
   border-color: #44bcff;
   background: #0c1b35;
+}
+
+.lora-project-thumb {
+  width: 72px;
+  aspect-ratio: 1;
+  border: 1px solid #263d6b;
+  border-radius: 8px;
+  background: #050b18;
+  display: grid;
+  place-items: center;
+  color: #647391;
+  overflow: hidden;
+}
+
+.lora-project-thumb img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.lora-project-body {
+  display: grid;
+  gap: 8px;
+  min-width: 0;
 }
 
 .lora-project-card header {
