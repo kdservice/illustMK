@@ -361,13 +361,19 @@ label {
   display: flex;
   flex-wrap: wrap;
   gap: 6px;
+  align-items: flex-start;
+  align-content: flex-start;
 }
 
 .base-filter-row button {
+  flex: 0 0 auto;
   width: auto;
+  height: 30px;
   min-height: 30px;
+  max-height: 30px;
   padding: 6px 10px;
   font-size: 12px;
+  line-height: 1;
 }
 
 .base-filter-row button.active {
