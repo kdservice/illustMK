@@ -240,7 +240,6 @@ function App() {
   const [loraCatalogOpen, setLoraCatalogOpen] = useState(false);
   const [loraCatalogQuery, setLoraCatalogQuery] = useState("");
   const [loraCatalogModels, setLoraCatalogModels] = useState<CivitaiModelCard[]>([]);
-  const [loraCatalogSearched, setLoraCatalogSearched] = useState(false);
   const [loraCatalogPeriod, setLoraCatalogPeriod] = useState<"Month" | "AllTime">("Month");
   const [loraCatalogPage, setLoraCatalogPage] = useState(1);
   const [loraCatalogCursor, setLoraCatalogCursor] = useState<string | null>(null);
@@ -699,7 +698,6 @@ function App() {
   async function searchLoraCatalog(page = 1): Promise<void> {
     const append = page > 1;
     if (append) setLoraCatalogLoadingMore(true);
-    if (!append) setLoraCatalogSearched(true);
     await runAction(
       append ? "Civitai LoRAを追加取得中" : "Civitai LoRAを検索中",
       () =>
@@ -2761,13 +2759,6 @@ function App() {
                     </div>
                   </div>
                   <div className="lora-detail-actions">
-                    <button
-                      disabled={!selectedLoraProject.sourcePageUrl}
-                      onClick={() => selectedLoraProject.sourcePageUrl && void window.illustMK.app.openExternal(selectedLoraProject.sourcePageUrl)}
-                    >
-                      <ExternalLink size={17} />
-                      Webページ
-                    </button>
                     <button className="primary" disabled={action.busy || !loraDetailName.trim()} onClick={() => void saveSelectedLoraDetails()}>
                       <Save size={17} />
                       更新
@@ -3636,8 +3627,6 @@ function App() {
                     </div>
                   </article>
                 ))
-              ) : loraCatalogSearched ? (
-                <p className="empty">{action.error ? "検索に失敗しました。ログのエラー内容を確認してください。" : "該当するLoRAがありません。"}</p>
               ) : (
                 <p className="empty">検索語を入れて検索してください。</p>
               )}

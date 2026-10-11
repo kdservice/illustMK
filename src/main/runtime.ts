@@ -332,7 +332,6 @@ export type LoraTrainingProject = {
   outputName: string;
   thumbnailPath?: string;
   thumbnailDataUrl?: string;
-  sourcePageUrl?: string;
   resolution: number;
   repeats: number;
   epochs: number;
@@ -553,7 +552,6 @@ const dockerCommandPath = [
   "/usr/sbin",
   "/sbin"
 ].join(":");
-const civitaiUserAgent = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) illustMK/0.1 Safari/537.36";
 
 let activeRuntimeRoot = loadActiveRuntimeRoot();
 
@@ -1211,18 +1209,11 @@ export async function downloadModel(request: DownloadRequest, onLog?: RuntimeLog
   }
 
   const targetPath = join(targetDir, fileName);
-  const isCivitaiDownload = request.source === "civitai" || url.hostname.includes("civitai.com");
-  const requestUrl = await withCivitaiToken(url);
   const headers: Record<string, string> = {
-    "User-Agent": isCivitaiDownload ? civitaiUserAgent : "illustMK/0.1",
-    ...(isCivitaiDownload ? await civitaiAuthHeader() : {})
+    "User-Agent": "illustMK/0.1",
+    ...(request.source === "civitai" || url.hostname.includes("civitai.com") ? await civitaiAuthHeader() : {})
   };
-  let response: Response;
-  try {
-    response = await fetch(requestUrl, { headers });
-  } catch (error) {
-    throw new Error(`ダウンロードURLへ接続できませんでした: ${fetchFailureMessage(error)} / ${requestUrl.toString()}`);
-  }
+  const response = await fetch(await withCivitaiToken(url), { headers });
   if (!response.ok || !response.body) {
     throw new Error(downloadErrorMessage(response.status, url));
   }
@@ -1342,23 +1333,15 @@ export async function searchCivitaiModelPage(options: {
     params.set("page", String(options.page ?? 1));
   }
 
-  const url = `https://civitai.com/api/v1/models?${params.toString()}`;
-  let response: Response;
-  try {
-    response = await fetch(url, {
-      headers: {
-        Accept: "application/json",
-        "User-Agent": civitaiUserAgent,
-        ...(await civitaiAuthHeader())
-      },
-      signal: AbortSignal.timeout(30000)
-    });
-  } catch (error) {
-    throw new Error(`Civitai APIへ接続できませんでした: ${fetchFailureMessage(error)} / ${url}`);
-  }
+  const response = await fetch(`https://civitai.com/api/v1/models?${params.toString()}`, {
+    headers: {
+      Accept: "application/json",
+      "User-Agent": "illustMK/0.1",
+      ...(await civitaiAuthHeader())
+    }
+  });
   if (!response.ok) {
-    const body = await response.text().catch(() => "");
-    throw new Error(`Civitai API取得に失敗しました: HTTP ${response.status}${body ? ` / ${body.slice(0, 180)}` : ""}`);
+    throw new Error(`Civitai API取得に失敗しました: HTTP ${response.status}`);
   }
 
   const json = (await response.json()) as { items?: unknown[]; metadata?: { nextCursor?: string | number | null } };
@@ -1907,7 +1890,6 @@ function normalizeLoraTrainingProject(project: LoraTrainingProject, paths: Runti
     triggerWord: triggerWords[0] ?? "",
     triggerWords,
     sourceLora: project.sourceLora ?? "",
-    sourcePageUrl: project.sourcePageUrl ?? "",
     projectDir: resolvedProjectDir,
     datasetPath: project.datasetPath && basename(project.datasetPath) === "dataset" ? project.datasetPath : join(resolvedProjectDir, "dataset"),
     thumbnailPath: project.thumbnailPath
@@ -1970,7 +1952,6 @@ export async function saveLoraTrainingProject(request: SaveLoraTrainingProjectRe
     triggerWord: triggerWords[0] ?? "",
     triggerWords,
     sourceLora: existing?.sourceLora ?? "",
-    sourcePageUrl: existing?.sourcePageUrl,
     baseCheckpoint: request.baseCheckpoint.trim(),
     projectDir: projectRoot,
     datasetPath,
@@ -2038,7 +2019,7 @@ export async function updateLoraTrainingProjectThumbnail(request: UpdateLoraThum
     const response = await fetch(parsedUrl, {
       headers: {
         Accept: "image/avif,image/webp,image/png,image/jpeg,*/*",
-        "User-Agent": civitaiUserAgent
+        "User-Agent": "illustMK/0.1"
       },
       signal: AbortSignal.timeout(30000)
     });
@@ -2104,25 +2085,23 @@ export async function downloadCivitaiLoraProject(
     const thumbnailPath = existing.thumbnailPath && thumbnailExists
       ? existing.thumbnailPath
       : await saveCivitaiLoraThumbnail(model, projectRoot);
-    const updatedProject: LoraTrainingProject = {
-      ...existing,
-      sourceLora: fileName,
-      outputName: fileName,
-      projectDir: projectRoot,
-      datasetPath: join(projectRoot, "dataset"),
-      thumbnailPath,
-      sourcePageUrl: model.pageUrl,
-      updatedAt: now,
-      status: "complete",
-      message: "Civitaiから取得済みのLoRAです。生成タブで選択できます。"
-    };
     const nextProjects: LoraTrainingProject[] = projects.map((project) =>
-      project.id === existing.id ? updatedProject : project
+      project.id === existing.id
+        ? {
+            ...project,
+            sourceLora: fileName,
+            outputName: fileName,
+            projectDir: projectRoot,
+            datasetPath: join(projectRoot, "dataset"),
+            thumbnailPath,
+            updatedAt: now,
+            status: "complete" as const,
+            message: "Civitaiから取得済みのLoRAです。生成タブで選択できます。"
+          }
+        : project
     );
-    await mkdir(join(projectRoot, "config"), { recursive: true });
-    await writeFile(join(projectRoot, "config", "lora-training.json"), JSON.stringify(stripLoraTransientFields(updatedProject), null, 2), "utf8");
     await saveLoraTrainingProjects(nextProjects);
-    return getLoraTrainingProjects();
+    return nextProjects;
   }
 
   const nameBase = safeFileName(model.name || fileName.replace(/\.safetensors$/i, ""));
@@ -2140,7 +2119,6 @@ export async function downloadCivitaiLoraProject(
     name: projectName,
     triggerWord: "",
     sourceLora: fileName,
-    sourcePageUrl: model.pageUrl,
     baseCheckpoint: model.baseModel || "unknown",
     projectDir: projectRoot,
     datasetPath,
@@ -2163,7 +2141,7 @@ export async function downloadCivitaiLoraProject(
   await writeFile(join(projectRoot, "config", "lora-training.json"), JSON.stringify(stripLoraTransientFields(project), null, 2), "utf8");
   const nextProjects = [project, ...projects];
   await saveLoraTrainingProjects(nextProjects);
-  return getLoraTrainingProjects();
+  return nextProjects;
 }
 
 async function saveCivitaiLoraThumbnail(model: CivitaiModelCard, projectRoot: string): Promise<string | undefined> {
@@ -2174,7 +2152,7 @@ async function saveCivitaiLoraThumbnail(model: CivitaiModelCard, projectRoot: st
       headers: {
         Accept: "image/avif,image/webp,image/png,image/jpeg,*/*",
         Referer: "https://civitai.com/",
-        "User-Agent": civitaiUserAgent
+        "User-Agent": "illustMK/0.1"
       },
       signal: AbortSignal.timeout(30000)
     });
@@ -3184,14 +3162,6 @@ function downloadErrorMessage(status: number, url: URL): string {
     ].join("\n");
   }
   return `ダウンロードに失敗しました: HTTP ${status}`;
-}
-
-function fetchFailureMessage(error: unknown): string {
-  if (error instanceof Error) {
-    if (error.name === "TimeoutError" || error.name === "AbortError") return "タイムアウトしました";
-    return error.message;
-  }
-  return String(error);
 }
 
 export async function runTestGeneration(request: TestGenerationRequest): Promise<TestGenerationResult> {
