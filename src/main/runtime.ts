@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
-import { closeSync, createReadStream, createWriteStream, openSync } from "node:fs";
+import { closeSync, createReadStream, createWriteStream, openSync, readFileSync } from "node:fs";
 import { access, cp, lstat, mkdir, readFile, readlink, readdir, rename, rm, stat, symlink, unlink, writeFile } from "node:fs/promises";
 import { basename, dirname, join, relative, resolve } from "node:path";
 import { cpus, homedir } from "node:os";
@@ -50,6 +50,33 @@ export type RuntimePaths = {
   logs: string;
   downloads: string;
   composeFile: string;
+};
+
+export type DataPathStatus = "未インストール" | "インストール済み" | "エラー";
+
+export type DataPathEntry = {
+  id: string;
+  path: string;
+  memo: string;
+  active: boolean;
+  status: DataPathStatus;
+  diskUsageBytes: number;
+  diskUsageLabel: string;
+  createdAt: string;
+  updatedAt: string;
+};
+
+type StoredDataPathEntry = {
+  id: string;
+  path: string;
+  memo?: string;
+  createdAt?: string;
+  updatedAt?: string;
+};
+
+type DataPathConfig = {
+  activeId: string;
+  entries: StoredDataPathEntry[];
 };
 
 export type RuntimeStatus = {
@@ -427,6 +454,7 @@ export type SavePromptHistoryRequest = TestGenerationRequest & {
 };
 
 export type PromptGenerationSettings = {
+  generationRequest?: TestGenerationRequest;
   japanesePrompt: string;
   prompt: string;
   effectivePrompt: string;
@@ -478,9 +506,10 @@ export type RuntimeLogEvent = {
 
 export type RuntimeLogSink = (event: RuntimeLogEvent) => void;
 
-const runtimeRoot = process.env.ILLUSTMK_RUNTIME_ROOT ?? "/Volumes/ARC-8050T2/illustMK";
 const appDataRoot = process.env.ILLUSTMK_APP_DATA_ROOT ?? join(process.cwd(), ".illustmk");
+const defaultRuntimeRoot = process.env.ILLUSTMK_RUNTIME_ROOT ?? "/Volumes/ARC-8050T2/illustMK";
 const settingsPath = join(appDataRoot, "settings.json");
+const dataPathsPath = join(appDataRoot, "data-paths.json");
 const llmChatHistoryPath = join(appDataRoot, "llm-chat-history.json");
 const illustrationTagsPath = join(appDataRoot, "illustration-tags.json");
 const promptHistoryPath = join(appDataRoot, "prompt-history.json");
@@ -525,8 +554,24 @@ const dockerCommandPath = [
   "/sbin"
 ].join(":");
 
+let activeRuntimeRoot = loadActiveRuntimeRoot();
+
+function loadActiveRuntimeRoot(): string {
+  try {
+    const config = JSON.parse(readFileSync(dataPathsPath, "utf8")) as Partial<DataPathConfig>;
+    const active = config.entries?.find((entry) => entry.id === config.activeId);
+    return active?.path ? resolve(active.path) : resolve(defaultRuntimeRoot);
+  } catch {
+    return resolve(defaultRuntimeRoot);
+  }
+}
+
 export function getRuntimePaths(): RuntimePaths {
-  const root = runtimeRoot;
+  return getRuntimePathsForRoot(activeRuntimeRoot);
+}
+
+function getRuntimePathsForRoot(runtimeRootPath: string): RuntimePaths {
+  const root = resolve(runtimeRootPath);
   const native = join(root, "native");
   const docker = join(root, "docker", "comfyui");
   const ollama = join(root, "llm", "ollama");
@@ -562,6 +607,145 @@ export function getRuntimePaths(): RuntimePaths {
     downloads: join(root, "downloads"),
     composeFile: join(docker, "docker-compose.yml")
   };
+}
+
+async function readDataPathConfig(): Promise<DataPathConfig> {
+  try {
+    const parsed = JSON.parse(await readFile(dataPathsPath, "utf8")) as Partial<DataPathConfig>;
+    const entries = normalizeStoredDataPaths(parsed.entries ?? []);
+    const activeId = entries.some((entry) => entry.id === parsed.activeId) ? String(parsed.activeId) : entries[0].id;
+    return { activeId, entries };
+  } catch {
+    const now = new Date().toISOString();
+    return {
+      activeId: "default",
+      entries: [{ id: "default", path: resolve(defaultRuntimeRoot), memo: "既定DataPath", createdAt: now, updatedAt: now }]
+    };
+  }
+}
+
+function normalizeStoredDataPaths(entries: StoredDataPathEntry[]): StoredDataPathEntry[] {
+  const now = new Date().toISOString();
+  const byPath = new Map<string, StoredDataPathEntry>();
+  for (const entry of entries) {
+    if (!entry?.path) continue;
+    const path = resolve(entry.path);
+    byPath.set(path, {
+      id: entry.id || randomUUID(),
+      path,
+      memo: entry.memo ?? "",
+      createdAt: entry.createdAt ?? now,
+      updatedAt: entry.updatedAt ?? now
+    });
+  }
+  if (!byPath.size) {
+    byPath.set(resolve(defaultRuntimeRoot), {
+      id: "default",
+      path: resolve(defaultRuntimeRoot),
+      memo: "既定DataPath",
+      createdAt: now,
+      updatedAt: now
+    });
+  }
+  return [...byPath.values()];
+}
+
+async function writeDataPathConfig(config: DataPathConfig): Promise<void> {
+  await mkdir(appDataRoot, { recursive: true });
+  await writeFile(dataPathsPath, JSON.stringify(config, null, 2), "utf8");
+  const active = config.entries.find((entry) => entry.id === config.activeId);
+  activeRuntimeRoot = resolve(active?.path ?? defaultRuntimeRoot);
+}
+
+export async function getDataPaths(): Promise<DataPathEntry[]> {
+  const config = await readDataPathConfig();
+  await writeDataPathConfig(config);
+  return Promise.all(
+    config.entries.map(async (entry) => {
+      const status = await inspectDataPathStatus(entry.path);
+      const diskUsageBytes = status === "エラー" ? 0 : await diskUsage(entry.path);
+      return {
+        id: entry.id,
+        path: entry.path,
+        memo: entry.memo ?? "",
+        active: entry.id === config.activeId,
+        status,
+        diskUsageBytes,
+        diskUsageLabel: formatBytes(diskUsageBytes),
+        createdAt: entry.createdAt ?? new Date().toISOString(),
+        updatedAt: entry.updatedAt ?? new Date().toISOString()
+      };
+    })
+  );
+}
+
+export async function addDataPath(path: string, options: { memo?: string; activate?: boolean } = {}): Promise<DataPathEntry[]> {
+  const config = await readDataPathConfig();
+  const targetPath = resolve(path);
+  const now = new Date().toISOString();
+  let entry = config.entries.find((item) => resolve(item.path) === targetPath);
+  if (!entry) {
+    entry = { id: randomUUID(), path: targetPath, memo: options.memo ?? "", createdAt: now, updatedAt: now };
+    config.entries.push(entry);
+  } else {
+    entry.memo = options.memo ?? entry.memo ?? "";
+    entry.updatedAt = now;
+  }
+  if (options.activate) config.activeId = entry.id;
+  await writeDataPathConfig(config);
+  return getDataPaths();
+}
+
+export async function switchDataPath(id: string): Promise<DataPathEntry[]> {
+  const config = await readDataPathConfig();
+  if (!config.entries.some((entry) => entry.id === id)) throw new Error("指定されたDataPathが見つかりません。");
+  config.activeId = id;
+  await writeDataPathConfig(config);
+  return getDataPaths();
+}
+
+export async function deleteDataPath(id: string): Promise<DataPathEntry[]> {
+  const config = await readDataPathConfig();
+  if (config.entries.length <= 1) throw new Error("DataPathは最低1件必要です。");
+  const nextEntries = config.entries.filter((entry) => entry.id !== id);
+  if (nextEntries.length === config.entries.length) throw new Error("指定されたDataPathが見つかりません。");
+  config.entries = nextEntries;
+  if (config.activeId === id) config.activeId = nextEntries[0].id;
+  await writeDataPathConfig(config);
+  return getDataPaths();
+}
+
+export async function updateDataPathMemo(id: string, memo: string): Promise<DataPathEntry[]> {
+  const config = await readDataPathConfig();
+  const entry = config.entries.find((item) => item.id === id);
+  if (!entry) throw new Error("指定されたDataPathが見つかりません。");
+  entry.memo = memo;
+  entry.updatedAt = new Date().toISOString();
+  await writeDataPathConfig(config);
+  return getDataPaths();
+}
+
+async function inspectDataPathStatus(path: string): Promise<DataPathStatus> {
+  try {
+    const pathStat = await stat(path);
+    if (!pathStat.isDirectory()) return "エラー";
+    const paths = getRuntimePathsForRoot(path);
+    return (await exists(join(paths.nativeComfy, "main.py"))) || (await exists(paths.nativePython)) ? "インストール済み" : "未インストール";
+  } catch {
+    return "エラー";
+  }
+}
+
+async function diskUsage(path: string): Promise<number> {
+  try {
+    const pathStat = await stat(path);
+    if (!pathStat.isDirectory()) return 0;
+    const { stdout } = await execFileAsync("du", ["-sk", path], { maxBuffer: 1024 * 1024 });
+    const sizeKb = Number(stdout.trim().split(/\s+/)[0]);
+    return Number.isFinite(sizeKb) ? sizeKb * 1024 : 0;
+  } catch {
+    return 0;
+  }
 }
 
 export async function ensureRuntimeFiles(): Promise<RuntimePaths> {

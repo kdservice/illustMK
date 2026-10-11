@@ -25,6 +25,7 @@ import {
 import type {
   CivitaiModelCard,
   CivitaiRequiredComponent,
+  DataPathEntry,
   DownloadRequest,
   GenerationLora,
   HuggingFaceLlmModelCard,
@@ -143,6 +144,10 @@ const loraPresetLabels: Record<LoraTrainingPreset, string> = {
 
 function App() {
   const [paths, setPaths] = useState<RuntimePaths | null>(null);
+  const [dataPaths, setDataPaths] = useState<DataPathEntry[]>([]);
+  const [selectedDataPathId, setSelectedDataPathId] = useState<string | null>(null);
+  const [editingDataPath, setEditingDataPath] = useState<DataPathEntry | null>(null);
+  const [dataPathMemo, setDataPathMemo] = useState("");
   const [status, setStatus] = useState<RuntimeStatus | null>(null);
   const [comfyUrl, setComfyUrl] = useState(defaultComfyUrl);
   const [downloadUrl, setDownloadUrl] = useState("");
@@ -217,6 +222,7 @@ function App() {
   const [seedValue, setSeedValue] = useState(-1);
   const [promptHistory, setPromptHistory] = useState<PromptHistoryEntry[]>([]);
   const [promptHistoryOpen, setPromptHistoryOpen] = useState(false);
+  const [restoredGenerationSettings, setRestoredGenerationSettings] = useState<PromptGenerationSettings | null>(null);
   const [imagePreviewOpen, setImagePreviewOpen] = useState(false);
   const [loraProjects, setLoraProjects] = useState<LoraTrainingProject[]>([]);
   const [selectedLoraProjectId, setSelectedLoraProjectId] = useState<string | null>(null);
@@ -281,6 +287,10 @@ function App() {
   const selectedLoraProject = useMemo(
     () => loraProjects.find((project) => project.id === selectedLoraProjectId) ?? loraProjects[0] ?? null,
     [loraProjects, selectedLoraProjectId]
+  );
+  const selectedDataPath = useMemo(
+    () => dataPaths.find((entry) => entry.id === selectedDataPathId) ?? dataPaths.find((entry) => entry.active) ?? dataPaths[0] ?? null,
+    [dataPaths, selectedDataPathId]
   );
   const loraProjectBaseOptions = useMemo(
     () => uniqueCategories(loraProjects.map((project) => inferCheckpointBaseModel(project.baseCheckpoint))),
@@ -513,12 +523,22 @@ function App() {
   }, [loraProjects, selectedLoraProjectId]);
 
   useEffect(() => {
+    if (!dataPaths.length) {
+      setSelectedDataPathId(null);
+      return;
+    }
+    if (!selectedDataPathId || !dataPaths.some((entry) => entry.id === selectedDataPathId)) {
+      setSelectedDataPathId(dataPaths.find((entry) => entry.active)?.id ?? dataPaths[0].id);
+    }
+  }, [dataPaths, selectedDataPathId]);
+
+  useEffect(() => {
     setLoraDetailName(selectedLoraProject?.name ?? "");
     setLoraDetailTriggerWord(selectedLoraProject?.triggerWord ?? "");
     setLoraDetailTriggerWords(getLoraTriggerWords(selectedLoraProject).length ? getLoraTriggerWords(selectedLoraProject) : [""]);
   }, [selectedLoraProject?.id, selectedLoraProject?.name, selectedLoraProject?.triggerWord, selectedLoraProject?.triggerWords]);
 
-  async function runAction<T>(message: string, task: () => Promise<T>, after?: (value: T) => void): Promise<void> {
+  async function runAction<T>(message: string, task: () => Promise<T>, after?: (value: T) => void | Promise<void>): Promise<void> {
     const id = crypto.randomUUID();
     currentOperationId.current = id;
     appendLog("info", message, id);
@@ -526,7 +546,7 @@ function App() {
     setDownloadProgress(null);
     try {
       const value = await task();
-      after?.(value);
+      await after?.(value);
       appendLog("info", "完了しました。", id);
       setAction({ busy: false, message: "完了しました", error: null });
       await refreshStatus();
@@ -871,15 +891,69 @@ function App() {
   }
 
   async function refreshStatus(): Promise<void> {
-    const [nextPaths, nextStatus] = await Promise.all([
+    const [nextPaths, nextStatus, nextDataPaths] = await Promise.all([
       window.illustMK.runtime.paths(),
-      window.illustMK.runtime.status(comfyUrl)
+      window.illustMK.runtime.status(comfyUrl),
+      window.illustMK.runtime.dataPaths()
     ]);
     setPaths(nextPaths);
     setStatus(nextStatus);
+    setDataPaths(nextDataPaths);
     setUsageHistory((current) =>
       [...current, { cpu: nextStatus.systemUsage.cpuPercent, gpu: nextStatus.systemUsage.gpuPercent }].slice(-36)
     );
+  }
+
+  async function reloadDataPaths(): Promise<void> {
+    setDataPaths(await window.illustMK.runtime.dataPaths());
+  }
+
+  async function addDataPath(): Promise<void> {
+    await runAction("DataPathを追加中", () => window.illustMK.runtime.addDataPath(), async (entries) => {
+      setDataPaths(entries);
+      await refreshAfterDataPathChange();
+    });
+  }
+
+  async function importDataPath(): Promise<void> {
+    await runAction("DataPathをインポート中", () => window.illustMK.runtime.importDataPath(), (entries) => {
+      setDataPaths(entries);
+    });
+  }
+
+  async function switchActiveDataPath(id: string): Promise<void> {
+    await runAction("DataPathを切替中", () => window.illustMK.runtime.switchDataPath(id), async (entries) => {
+      setDataPaths(entries);
+      await refreshAfterDataPathChange();
+    });
+  }
+
+  async function deleteDataPathEntry(id: string): Promise<void> {
+    await runAction("DataPath登録を削除中", () => window.illustMK.runtime.deleteDataPath(id), async (entries) => {
+      setDataPaths(entries);
+      await refreshAfterDataPathChange();
+    });
+  }
+
+  function openDataPathMemoEditor(entry: DataPathEntry): void {
+    setEditingDataPath(entry);
+    setDataPathMemo(entry.memo);
+  }
+
+  async function saveDataPathMemo(): Promise<void> {
+    if (!editingDataPath) return;
+    await runAction(
+      "DataPathメモを保存中",
+      () => window.illustMK.runtime.updateDataPathMemo({ id: editingDataPath.id, memo: dataPathMemo }),
+      (entries) => {
+        setDataPaths(entries);
+        setEditingDataPath(null);
+      }
+    );
+  }
+
+  async function refreshAfterDataPathChange(): Promise<void> {
+    await Promise.all([refreshStatus(), refreshOllamaStatus(), loadLoraProjects()]);
   }
 
   async function refreshOllamaStatus(): Promise<void> {
@@ -958,6 +1032,7 @@ function App() {
 
   function applyPromptHistory(entry: PromptHistoryEntry): void {
     const settings = entry.generationSettings;
+    setRestoredGenerationSettings(settings ?? null);
     setJapanesePrompt(settings?.japanesePrompt ?? entry.japanesePrompt ?? "");
     setPrompt(settings?.prompt ?? entry.prompt);
     setNegativePrompt(settings?.negativePrompt ?? entry.negativePrompt);
@@ -1647,7 +1722,7 @@ function App() {
     sha256: downloadSha.trim() || undefined
   };
 
-  const testRequest: TestGenerationRequest = {
+  const currentTestRequest: TestGenerationRequest = {
     prompt: effectivePrompt,
     negativePrompt: effectiveNegativePrompt,
     checkpoint: selectedCheckpoint,
@@ -1661,14 +1736,39 @@ function App() {
     vae: selectedVae || undefined,
     clip: selectedClip || undefined
   };
+  const restoredRequestApplies = Boolean(
+    restoredGenerationSettings?.generationRequest &&
+    restoredGenerationSettings.prompt === prompt &&
+    restoredGenerationSettings.negativePrompt === negativePrompt &&
+    restoredGenerationSettings.checkpoint === selectedCheckpoint &&
+    restoredGenerationSettings.vae === selectedVae &&
+    restoredGenerationSettings.clip === selectedClip &&
+    restoredGenerationSettings.width === generationWidth &&
+    restoredGenerationSettings.height === generationHeight &&
+    restoredGenerationSettings.steps === generationSteps &&
+    restoredGenerationSettings.cfg === generationCfg &&
+    restoredGenerationSettings.seedMode === seedMode &&
+    restoredGenerationSettings.seedValue === seedValue &&
+    restoredGenerationSettings.comfyUrl === comfyUrl &&
+    sameGenerationLoras(restoredGenerationSettings.loras, selectedLoras) &&
+    sameStringArray(restoredGenerationSettings.japanesePromptTagIds, japanesePromptTagIds) &&
+    sameStringArray(restoredGenerationSettings.positivePromptTagIds, positivePromptTagIds) &&
+    sameStringArray(restoredGenerationSettings.positiveOptionTagIds, positiveOptionTagIds) &&
+    sameStringArray(restoredGenerationSettings.negativeOptionTagIds, negativeOptionTagIds) &&
+    sameStringArray(restoredGenerationSettings.positiveLoraTriggerIds, positiveLoraTriggerIds)
+  );
+  const testRequest: TestGenerationRequest = restoredRequestApplies && restoredGenerationSettings?.generationRequest
+    ? restoredGenerationSettings.generationRequest
+    : currentTestRequest;
 
-  function buildGenerationHistorySettings(): PromptGenerationSettings {
+  function buildGenerationHistorySettings(request: TestGenerationRequest): PromptGenerationSettings {
     return {
+      generationRequest: request,
       japanesePrompt,
       prompt,
-      effectivePrompt,
+      effectivePrompt: request.prompt,
       negativePrompt,
-      effectiveNegativePrompt,
+      effectiveNegativePrompt: request.negativePrompt,
       promptEnhanceMode,
       checkpoint: selectedCheckpoint,
       vae: selectedVae,
@@ -1682,11 +1782,11 @@ function App() {
       width: generationWidth,
       height: generationHeight,
       imageSizePreset,
-      steps: testRequest.steps,
-      cfg: testRequest.cfg,
+      steps: request.steps,
+      cfg: request.cfg,
       seedMode,
       seedValue,
-      requestSeed: testRequest.seed,
+      requestSeed: request.seed,
       comfyUrl,
       ollamaUrl,
       ollamaModel,
@@ -1771,6 +1871,74 @@ function App() {
       {mainTab === "environment" ? (
         <section className="environment-layout">
           <div className="environment-stack setup-stack">
+            <section className="panel data-path-panel">
+              <PanelTitle icon={<FolderOpen size={18} />} title="PATH" />
+              <div className="data-path-list">
+                {dataPaths.map((entry) => (
+                  <article
+                    className={[
+                      "data-path-card",
+                      entry.active ? "active" : "",
+                      selectedDataPath?.id === entry.id ? "selected" : ""
+                    ].filter(Boolean).join(" ")}
+                    key={entry.id}
+                    onClick={() => setSelectedDataPathId(entry.id)}
+                  >
+                    <header>
+                      <strong>{entry.path}</strong>
+                      <div className="lora-project-meta">
+                        <span className={entry.status === "インストール済み" ? "meta-tag ok" : entry.status === "エラー" ? "meta-tag error" : "meta-tag warn"}>
+                          {entry.status}
+                        </span>
+                        {entry.active ? <span className="meta-tag active">ACTIVE</span> : null}
+                      </div>
+                    </header>
+                    <p>{entry.memo || "メモなし"}</p>
+                    <small>使用量: {entry.diskUsageLabel}</small>
+                  </article>
+                ))}
+                {!dataPaths.length ? <p className="empty">DataPathが未登録です。</p> : null}
+              </div>
+              <div className="button-grid">
+                <button disabled={action.busy} onClick={() => void addDataPath()}>
+                  <Plus size={17} />
+                  新規
+                </button>
+                <button disabled={action.busy || dataPaths.length <= 1 || !selectedDataPath} onClick={() => {
+                  if (selectedDataPath) void deleteDataPathEntry(selectedDataPath.id);
+                }}>
+                  <Trash2 size={17} />
+                  削除
+                </button>
+                <button disabled={action.busy} onClick={() => void importDataPath()}>
+                  <Download size={17} />
+                  インポート
+                </button>
+                <button
+                  disabled={action.busy || !selectedDataPath || selectedDataPath.active}
+                  onClick={() => {
+                    if (selectedDataPath) void switchActiveDataPath(selectedDataPath.id);
+                  }}
+                >
+                  <RefreshCw size={17} />
+                  切替
+                </button>
+                <button
+                  disabled={action.busy || !selectedDataPath}
+                  onClick={() => {
+                    if (selectedDataPath) openDataPathMemoEditor(selectedDataPath);
+                  }}
+                >
+                  <Pencil size={17} />
+                  編集
+                </button>
+                <button disabled={action.busy} onClick={() => void reloadDataPaths()}>
+                  <RefreshCw size={17} />
+                  更新
+                </button>
+              </div>
+            </section>
+
             <section className="panel setup-panel">
               <PanelTitle icon={<Server size={18} />} title="ComfyUI" />
               <div className="runtime-tabs">
@@ -2715,9 +2883,10 @@ function App() {
                         "ComfyUIでテスト生成中",
                         async () => {
                           const startedAt = performance.now();
+                          const requestLoras = testRequest.loras ?? [];
                           appendLog("info", `ComfyUI Positive Prompt: ${testRequest.prompt}`);
                           appendLog("info", `ComfyUI Negative Prompt: ${testRequest.negativePrompt}`);
-                          appendLog("info", `ComfyUI LoRA: ${activeGenerationLoras.length ? activeGenerationLoras.map((lora) => `${lora.name} model=${lora.modelStrength} clip=${lora.clipStrength}`).join(", ") : "なし"}`);
+                          appendLog("info", `ComfyUI LoRA: ${requestLoras.length ? requestLoras.map((lora) => `${lora.name} model=${lora.modelStrength} clip=${lora.clipStrength}`).join(", ") : "なし"}`);
                           appendLog("info", `ComfyUI Size/Steps/CFG/Seed: ${testRequest.width}x${testRequest.height} / ${testRequest.steps} / ${testRequest.cfg} / ${testRequest.seed}`);
                           const result = await window.illustMK.runtime.testGenerate(testRequest);
                           appendLog("info", `ComfyUI Prompt ID: ${result.promptId ?? "なし"}`);
@@ -2739,7 +2908,7 @@ function App() {
                             negativeOptionTagIds,
                             positiveLoraTriggerIds,
                             memo: imageMemo,
-                            generationSettings: buildGenerationHistorySettings(),
+                            generationSettings: buildGenerationHistorySettings(testRequest),
                             imagePath: result.imagePath,
                             imageDataUrl: result.imageDataUrl
                           });
@@ -3414,6 +3583,33 @@ function App() {
           </section>
         </div>
       ) : null}
+      {editingDataPath ? (
+        <div className="modal-backdrop">
+          <section className="modal-panel data-path-edit-modal">
+            <div className="modal-header">
+              <PanelTitle icon={<FolderOpen size={18} />} title="DataPathメモ編集" />
+              <button className="icon-button" onClick={() => setEditingDataPath(null)} title="閉じる">
+                <X size={17} />
+              </button>
+            </div>
+            <div className="field">
+              <label>PATH</label>
+              <input value={editingDataPath.path} readOnly />
+            </div>
+            <div className="field">
+              <label>メモ</label>
+              <textarea value={dataPathMemo} onChange={(event) => setDataPathMemo(event.target.value)} />
+            </div>
+            <div className="modal-actions">
+              <button onClick={() => setEditingDataPath(null)}>キャンセル</button>
+              <button className="primary" disabled={action.busy} onClick={() => void saveDataPathMemo()}>
+                <Save size={17} />
+                保存
+              </button>
+            </div>
+          </section>
+        </div>
+      ) : null}
       <section className="log-dock global-log">
         <LogPanel
           action={action}
@@ -4037,6 +4233,17 @@ function getLoraTriggerWords(project?: LoraTrainingProject | null): string[] {
 
 function normalizedTriggerWords(words: string[], fallback = ""): string[] {
   return Array.from(new Set([...words, fallback].map((word) => word.trim()).filter(Boolean)));
+}
+
+function sameStringArray(left: string[], right: string[]): boolean {
+  return left.length === right.length && left.every((value, index) => value === right[index]);
+}
+
+function sameGenerationLoras(left: GenerationLora[], right: GenerationLora[]): boolean {
+  return left.length === right.length && left.every((value, index) => {
+    const other = right[index];
+    return Boolean(other) && value.name === other.name && value.modelStrength === other.modelStrength && value.clipStrength === other.clipStrength;
+  });
 }
 
 function formatGenerationDuration(milliseconds: number): string {

@@ -3,6 +3,7 @@ import type {
   AppSettings,
   CivitaiModelCard,
   CivitaiSearchResult,
+  DataPathEntry,
   DeleteModelRequest,
   DownloadCivitaiLoraProjectRequest,
   DownloadRequest,
@@ -45,6 +46,13 @@ const api = {
   },
   runtime: {
     paths: (): Promise<RuntimePaths> => ipcRenderer.invoke("runtime:paths"),
+    dataPaths: (): Promise<DataPathEntry[]> => ipcRenderer.invoke("runtime:data-paths"),
+    addDataPath: (): Promise<DataPathEntry[]> => ipcRenderer.invoke("runtime:add-data-path"),
+    importDataPath: (): Promise<DataPathEntry[]> => ipcRenderer.invoke("runtime:import-data-path"),
+    switchDataPath: (id: string): Promise<DataPathEntry[]> => ipcRenderer.invoke("runtime:switch-data-path", id),
+    deleteDataPath: (id: string): Promise<DataPathEntry[]> => ipcRenderer.invoke("runtime:delete-data-path", id),
+    updateDataPathMemo: (request: { id: string; memo: string }): Promise<DataPathEntry[]> =>
+      ipcRenderer.invoke("runtime:update-data-path-memo", request),
     ensure: (): Promise<RuntimePaths> => ipcRenderer.invoke("runtime:ensure"),
     status: (comfyUrl?: string): Promise<RuntimeStatus> => ipcRenderer.invoke("runtime:status", comfyUrl),
     startDockerEngine: (): Promise<string> => ipcRenderer.invoke("runtime:start-docker-engine"),
