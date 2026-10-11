@@ -127,7 +127,8 @@ const api = {
     start: (id: string): Promise<LoraTrainingProject[]> => ipcRenderer.invoke("lora-projects:start", id),
     pause: (id: string): Promise<LoraTrainingProject[]> => ipcRenderer.invoke("lora-projects:pause", id),
     stop: (id: string): Promise<LoraTrainingProject[]> => ipcRenderer.invoke("lora-projects:stop", id),
-    delete: (id: string): Promise<LoraTrainingProject[]> => ipcRenderer.invoke("lora-projects:delete", id),
+    delete: (request: string | { id: string; deleteOutputFile?: boolean }): Promise<LoraTrainingProject[]> =>
+      ipcRenderer.invoke("lora-projects:delete", request),
     importFile: (): Promise<LoraTrainingProject[]> => ipcRenderer.invoke("lora-projects:import"),
     downloadCivitai: (request: DownloadCivitaiLoraProjectRequest): Promise<LoraTrainingProject[]> =>
       ipcRenderer.invoke("lora-projects:download-civitai", request),

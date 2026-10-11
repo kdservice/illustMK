@@ -1442,11 +1442,14 @@ function App() {
 
   async function deleteSelectedLoraProject(): Promise<void> {
     if (!selectedLoraProject) return;
-    if (!window.confirm(`${selectedLoraProject.name} を削除します。Datasetを含むプロジェクトディレクトリを削除します。出力済みLoRAファイルは削除しません。`)) return;
-    await runAction("LoRAプロジェクトを削除中", () => window.illustMK.loraProjects.delete(selectedLoraProject.id), (projects) => {
+    if (!window.confirm(`${selectedLoraProject.name} を削除します。\nDatasetを含むプロジェクトディレクトリと、生成タブに表示される出力LoRAファイルも削除します。元に戻せません。`)) return;
+    const deletedOutputName = selectedLoraProject.outputName;
+    await runAction("LoRAを削除中", () => window.illustMK.loraProjects.delete({ id: selectedLoraProject.id, deleteOutputFile: true }), (projects) => {
       setLoraProjects(projects);
       setSelectedLoraProjectId(projects[0]?.id ?? null);
+      setSelectedLoras((current) => current.filter((lora) => lora.name !== deletedOutputName));
     });
+    await refreshStatus();
   }
 
   async function startLoraProject(id: string): Promise<void> {

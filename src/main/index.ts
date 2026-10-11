@@ -350,7 +350,11 @@ function registerIpc(): void {
   ipcMain.handle("lora-projects:start", (_event, id: string) => startLoraTrainingProject(id));
   ipcMain.handle("lora-projects:pause", (_event, id: string) => pauseLoraTrainingProject(id));
   ipcMain.handle("lora-projects:stop", (_event, id: string) => stopLoraTrainingProject(id));
-  ipcMain.handle("lora-projects:delete", (_event, id: string) => deleteLoraTrainingProject(id));
+  ipcMain.handle("lora-projects:delete", (_event, request: string | { id: string; deleteOutputFile?: boolean }) =>
+    typeof request === "string"
+      ? deleteLoraTrainingProject(request)
+      : deleteLoraTrainingProject(request.id, { deleteOutputFile: request.deleteOutputFile })
+  );
   ipcMain.handle("lora-projects:clear", () => clearLoraTrainingProjects());
   ipcMain.handle("lora-projects:import", async () => {
     const options: OpenDialogOptions = {

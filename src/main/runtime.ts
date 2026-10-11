@@ -1951,13 +1951,22 @@ async function resolveExistingLoraProjectDir(project: LoraTrainingProject, paths
   return join(paths.loraProjects, safeFileName(project.name));
 }
 
-export async function deleteLoraTrainingProject(id: string): Promise<LoraTrainingProject[]> {
+export async function deleteLoraTrainingProject(
+  id: string,
+  options: { deleteOutputFile?: boolean } = {}
+): Promise<LoraTrainingProject[]> {
   const paths = await ensureRuntimeFiles();
   const projects = await getLoraTrainingProjects();
   const project = projects.find((item) => item.id === id);
   if (!project) throw new Error("LoRAプロジェクトが見つかりません。");
   if (project.status === "running") throw new Error("実行中のLoRAプロジェクトは削除できません。先に停止してください。");
   await rm(await resolveExistingLoraProjectDir(project, paths), { recursive: true, force: true });
+  if (options.deleteOutputFile && project.outputName) {
+    const fileName = sanitizeFileName(project.outputName);
+    if (fileName && fileName === project.outputName) {
+      await rm(join(paths.loras, fileName), { force: true });
+    }
+  }
   const nextProjects = projects.filter((item) => item.id !== id);
   await saveLoraTrainingProjects(nextProjects);
   return nextProjects;
