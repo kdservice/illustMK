@@ -1803,6 +1803,130 @@ function App() {
     return request.seed >= 0 ? request : { ...request, seed: nextGenerationSeed() };
   }
 
+  function generationDiagnosticsJson(value: unknown): string {
+    return JSON.stringify(value, null, 2);
+  }
+
+  function appendGenerationDiagnostics(
+    route: "manual-ui" | "history-restored",
+    rawRequest: TestGenerationRequest,
+    finalRequest: TestGenerationRequest,
+    seedSource: string,
+    historySettings: PromptGenerationSettings
+  ): void {
+    const sourceMap = {
+      route,
+      prompt: route === "history-restored" ? "history.generationSettings.generationRequest.prompt" : "ui.effectivePrompt",
+      negativePrompt: route === "history-restored" ? "history.generationSettings.generationRequest.negativePrompt" : "ui.effectiveNegativePrompt",
+      checkpoint: route === "history-restored" ? "history.generationSettings.generationRequest.checkpoint" : "ui.selectedCheckpoint",
+      vae: route === "history-restored" ? "history.generationSettings.generationRequest.vae" : "ui.selectedVae",
+      clip: route === "history-restored" ? "history.generationSettings.generationRequest.clip" : "ui.selectedClip",
+      loras: route === "history-restored" ? "history.generationSettings.generationRequest.loras" : "ui.activeGenerationLoras",
+      width: route === "history-restored" ? "history.generationSettings.generationRequest.width" : "ui.generationWidth",
+      height: route === "history-restored" ? "history.generationSettings.generationRequest.height" : "ui.generationHeight",
+      steps: route === "history-restored" ? "history.generationSettings.generationRequest.steps" : "ui.generationSteps",
+      cfg: route === "history-restored" ? "history.generationSettings.generationRequest.cfg" : "ui.generationCfg",
+      seed: seedSource,
+      comfyUrl: route === "history-restored" ? "history.generationSettings.generationRequest.comfyUrl" : "ui.comfyUrl"
+    };
+    const loraProjectByOutput = new Map(loraProjects.map((project) => [project.outputName, project]));
+    const diagnostics = {
+      route,
+      restored: {
+        restoredRequestApplies,
+        hasRestoredGenerationSettings: Boolean(restoredGenerationSettings),
+        restoredGenerationSettings,
+        lastHistoryId
+      },
+      sourceMap,
+      rawRequestBeforeSeedFix: rawRequest,
+      finalComfyRequest: finalRequest,
+      historySettingsToSave: historySettings,
+      uiState: {
+        japanesePrompt,
+        prompt,
+        negativePrompt,
+        promptEnhanceMode,
+        selectedCheckpoint,
+        selectedVae,
+        selectedClip,
+        generationWidth,
+        generationHeight,
+        imageSizePreset,
+        generationSteps,
+        generationCfg,
+        seedMode,
+        seedValue,
+        comfyUrl,
+        ollamaUrl,
+        ollamaModel,
+        generateTab,
+        modelAddMode,
+        baseFilters
+      },
+      promptComposition: {
+        basePositivePrompt: prompt,
+        baseNegativePrompt: negativePrompt,
+        effectivePositivePrompt: effectivePrompt,
+        effectiveNegativePrompt,
+        japanesePromptTags: japanesePromptTags.map((tag) => ({
+          id: tag.id,
+          name: tag.name,
+          englishName: tag.englishName,
+          insertedJapaneseDescription: tag.japaneseDescription,
+          insertedEnglishDescription: tag.englishDescription
+        })),
+        positivePromptTags: positivePromptTags.map((tag) => ({
+          id: tag.id,
+          name: tag.name,
+          englishName: tag.englishName,
+          insertedEnglishDescription: tag.englishDescription
+        })),
+        positiveOptionTags: positiveOptionTags.map((tag) => ({
+          id: tag.id,
+          japanese: tag.japanese,
+          english: tag.english,
+          category: tag.category
+        })),
+        negativeOptionTags: negativeOptionTags.map((tag) => ({
+          id: tag.id,
+          japanese: tag.japanese,
+          english: tag.english,
+          category: tag.category
+        })),
+        positiveLoraTriggers
+      },
+      loraState: {
+        selectedLoras,
+        activeGenerationLoras,
+        availableLoraNames: [...availableLoraNames],
+        requestLoras: finalRequest.loras ?? [],
+        selectedLoraProjects: (finalRequest.loras ?? []).map((lora) => {
+          const project = loraProjectByOutput.get(lora.name);
+          return {
+            loraName: lora.name,
+            projectId: project?.id,
+            projectName: project?.name,
+            outputName: project?.outputName,
+            sourceLora: project?.sourceLora,
+            triggerWords: getLoraTriggerWords(project),
+            baseCheckpoint: project?.baseCheckpoint,
+            status: project?.status
+          };
+        })
+      },
+      availableAssets: {
+        checkpoints: status?.checkpoints.map((file) => file.name) ?? [],
+        loras: status?.loras.map((file) => file.name) ?? [],
+        vae: status?.vae.map((file) => file.name) ?? [],
+        clip: status?.clip.map((file) => file.name) ?? []
+      }
+    };
+    appendLog("info", "=== GENERATION DIAGNOSTICS START ===");
+    appendLog("info", generationDiagnosticsJson(diagnostics));
+    appendLog("info", "=== GENERATION DIAGNOSTICS END ===");
+  }
+
   const downloadRequest: DownloadRequest = {
     url: downloadUrl.trim(),
     targetType: "checkpoints",
@@ -2965,11 +3089,18 @@ function App() {
                         "ComfyUIでテスト生成中",
                         async () => {
                           const startedAt = performance.now();
-                          const request = requestWithConcreteSeed(
-                            restoredRequestApplies && restoredGenerationSettings?.generationRequest
-                              ? testRequest
-                              : createGenerationRequest(nextGenerationSeed())
-                          );
+                          const usesRestoredRequest = Boolean(restoredRequestApplies && restoredGenerationSettings?.generationRequest);
+                          const rawRequest = usesRestoredRequest ? testRequest : createGenerationRequest(nextGenerationSeed());
+                          const request = requestWithConcreteSeed(rawRequest);
+                          const seedSource = usesRestoredRequest
+                            ? rawRequest.seed >= 0
+                              ? "history.generationSettings.generationRequest.seed"
+                              : "history.generationSettings.generationRequest.seed was negative; app generated concrete seed"
+                            : seedMode === "fixed" && seedValue >= 0
+                              ? "ui.seedValue"
+                              : "app generated random seed";
+                          const historySettings = buildGenerationHistorySettings(request);
+                          appendGenerationDiagnostics(usesRestoredRequest ? "history-restored" : "manual-ui", rawRequest, request, seedSource, historySettings);
                           const requestLoras = request.loras ?? [];
                           appendLog("info", `ComfyUI Positive Prompt: ${request.prompt}`);
                           appendLog("info", `ComfyUI Negative Prompt: ${request.negativePrompt}`);
@@ -2995,7 +3126,7 @@ function App() {
                             negativeOptionTagIds,
                             positiveLoraTriggerIds,
                             memo: imageMemo,
-                            generationSettings: buildGenerationHistorySettings(request),
+                            generationSettings: historySettings,
                             imagePath: result.imagePath,
                             imageDataUrl: result.imageDataUrl
                           });
