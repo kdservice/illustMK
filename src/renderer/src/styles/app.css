@@ -1267,6 +1267,11 @@ label {
   align-items: center;
 }
 
+.button-row .generate {
+  flex: 1 1 calc(50% - 4px);
+  width: auto;
+}
+
 .caption-modal {
   width: min(98vw, 1680px);
   height: min(94vh, 1120px);
@@ -1665,6 +1670,122 @@ label {
 
 .secondary-generate {
   background: linear-gradient(135deg, #10234a, #173864);
+}
+
+.repeat-modal {
+  width: calc(100vw - 36px);
+  height: calc(100vh - 36px);
+  max-height: none;
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr) auto;
+  overflow: hidden;
+}
+
+.repeat-status {
+  border: 1px solid #1c2d53;
+  border-radius: 999px;
+  background: #07142a;
+  color: #9ed7ff;
+  font-size: 12px;
+  font-weight: 900;
+  padding: 6px 12px;
+}
+
+.repeat-grid {
+  min-height: 0;
+  overflow: auto;
+  display: grid;
+  grid-template-columns: repeat(5, minmax(160px, 1fr));
+  align-content: start;
+  gap: 12px;
+  padding: 14px 0;
+}
+
+.repeat-tile {
+  border: 1px solid #1c2d53;
+  border-radius: 8px;
+  background: #071126;
+  overflow: hidden;
+  display: grid;
+  grid-template-rows: minmax(0, 1fr) auto;
+  min-height: 220px;
+}
+
+.repeat-tile.error {
+  border-color: #7a2636;
+  background: #1c0811;
+}
+
+.repeat-tile button {
+  width: 100%;
+  min-height: 0;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: #030712;
+  cursor: zoom-in;
+}
+
+.repeat-tile img {
+  width: 100%;
+  height: 100%;
+  min-height: 180px;
+  object-fit: cover;
+  display: block;
+}
+
+.repeat-placeholder,
+.repeat-empty {
+  display: grid;
+  place-items: center;
+  gap: 8px;
+  color: #8293b8;
+  text-align: center;
+}
+
+.repeat-tile footer {
+  display: grid;
+  gap: 4px;
+  padding: 8px;
+  border-top: 1px solid #1c2d53;
+}
+
+.repeat-tile strong,
+.repeat-tile span,
+.repeat-tile small {
+  overflow-wrap: anywhere;
+  font-size: 12px;
+}
+
+.repeat-tile strong {
+  color: #dbe7ff;
+}
+
+.repeat-tile span {
+  color: #7fe4ff;
+}
+
+.repeat-tile small {
+  color: #ff9aa8;
+}
+
+.repeat-empty {
+  grid-column: 1 / -1;
+  min-height: 320px;
+}
+
+.repeat-actions {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+  border-top: 1px solid #1c2d53;
+  padding-top: 14px;
+}
+
+.repeat-actions button {
+  min-height: 62px;
+  font-size: 17px;
+  font-weight: 900;
 }
 
 .lora-compare-grid {

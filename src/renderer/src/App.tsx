@@ -60,6 +60,16 @@ type LogLine = {
   time: string;
 };
 
+type RepeatGenerationItem = {
+  id: string;
+  seed: number;
+  startedAt: string;
+  durationText?: string;
+  result?: TestGenerationResult;
+  historyId?: string;
+  error?: string;
+};
+
 const defaultComfyUrl = "http://127.0.0.1:8188";
 const defaultBaseFilters = ["SDXL", "Pony", "Illustrious", "Animagine", "Anima"];
 const allBaseFilters = [
@@ -213,6 +223,11 @@ function App() {
   const [imageMemo, setImageMemo] = useState("");
   const [generationResult, setGenerationResult] = useState<TestGenerationResult | null>(null);
   const [loraCompareResult, setLoraCompareResult] = useState<{ seed: number; withoutLora: TestGenerationResult; withLora: TestGenerationResult } | null>(null);
+  const [repeatDialogOpen, setRepeatDialogOpen] = useState(false);
+  const [repeatItems, setRepeatItems] = useState<RepeatGenerationItem[]>([]);
+  const [repeatRunning, setRepeatRunning] = useState(false);
+  const [repeatPaused, setRepeatPaused] = useState(false);
+  const [repeatPreviewImage, setRepeatPreviewImage] = useState<string | null>(null);
   const [imageSizePreset, setImageSizePreset] = useState("768x1024");
   const [generationWidth, setGenerationWidth] = useState(768);
   const [generationHeight, setGenerationHeight] = useState(1024);
@@ -275,6 +290,8 @@ function App() {
   const [generateTab, setGenerateTab] = useState<"prompt" | "lora" | "options">("prompt");
   const logViewRef = useRef<HTMLDivElement | null>(null);
   const currentOperationId = useRef<string | null>(null);
+  const repeatStopRequested = useRef(false);
+  const repeatPausedRef = useRef(false);
 
   const selectedCheckpointInfo = useMemo(
     () => status?.checkpoints.find((checkpoint) => checkpoint.name === selectedCheckpoint) ?? null,
@@ -572,6 +589,10 @@ function App() {
     setLoraDetailTriggerWord(selectedLoraProject?.triggerWord ?? "");
     setLoraDetailTriggerWords(getLoraTriggerWords(selectedLoraProject).length ? getLoraTriggerWords(selectedLoraProject) : [""]);
   }, [selectedLoraProject?.id, selectedLoraProject?.name, selectedLoraProject?.triggerWord, selectedLoraProject?.triggerWords]);
+
+  useEffect(() => {
+    repeatPausedRef.current = repeatPaused;
+  }, [repeatPaused]);
 
   async function runAction<T>(message: string, task: () => Promise<T>, after?: (value: T) => void | Promise<void>): Promise<void> {
     const id = crypto.randomUUID();
@@ -1801,6 +1822,90 @@ function App() {
 
   function requestWithConcreteSeed(request: TestGenerationRequest): TestGenerationRequest {
     return request.seed >= 0 ? request : { ...request, seed: nextGenerationSeed() };
+  }
+
+  async function generateAndSave(request: TestGenerationRequest, startedAt: number): Promise<{ result: TestGenerationResult; history: PromptHistoryEntry[]; durationText: string }> {
+    const result = await window.illustMK.runtime.testGenerate(request);
+    appendLog("info", `ComfyUI Prompt ID: ${result.promptId ?? "なし"}`);
+    const durationText = formatGenerationDuration(performance.now() - startedAt);
+    const resultWithDuration = {
+      ...result,
+      message: result.message ? `${result.message} (生成時間 ${durationText})` : `(生成時間 ${durationText})`
+    };
+    const history = await window.illustMK.promptHistory.save({
+      ...request,
+      prompt,
+      negativePrompt,
+      japanesePrompt,
+      llmModel: ollamaModel,
+      llmUrl: ollamaUrl,
+      japanesePromptTagIds,
+      positivePromptTagIds,
+      positiveOptionTagIds,
+      negativeOptionTagIds,
+      positiveLoraTriggerIds,
+      memo: imageMemo,
+      generationSettings: buildGenerationHistorySettings(request),
+      imagePath: result.imagePath,
+      imageDataUrl: result.imageDataUrl
+    });
+    return { result: resultWithDuration, history, durationText };
+  }
+
+  async function waitWhileRepeatPaused(): Promise<void> {
+    while (repeatPausedRef.current && !repeatStopRequested.current) {
+      await new Promise((resolve) => window.setTimeout(resolve, 300));
+    }
+  }
+
+  async function runRepeatGenerate(): Promise<void> {
+    if (repeatRunning || !canGenerate) return;
+    setRepeatDialogOpen(true);
+    setRepeatRunning(true);
+    setRepeatPaused(false);
+    repeatStopRequested.current = false;
+    repeatPausedRef.current = false;
+    appendLog("info", "Repeat Generateを開始しました。");
+    try {
+      while (!repeatStopRequested.current) {
+        await waitWhileRepeatPaused();
+        if (repeatStopRequested.current) break;
+        const seed = nextGenerationSeed();
+        const request = createGenerationRequest(seed);
+        const itemId = crypto.randomUUID();
+        setRepeatItems((current) => [{ id: itemId, seed, startedAt: new Date().toISOString() }, ...current]);
+        try {
+          const startedAt = performance.now();
+          appendLog("info", `Repeat Generate Seed: ${seed}`);
+          appendGenerationDiagnostics("manual-ui", request, request, "repeat generated random seed", buildGenerationHistorySettings(request));
+          const requestLoras = request.loras ?? [];
+          appendLog("info", `ComfyUI Positive Prompt: ${request.prompt}`);
+          appendLog("info", `ComfyUI Negative Prompt: ${request.negativePrompt}`);
+          appendLog("info", `ComfyUI LoRA: ${requestLoras.length ? requestLoras.map((lora) => `${lora.name} model=${lora.modelStrength} clip=${lora.clipStrength}`).join(", ") : "なし"}`);
+          appendLog("info", `ComfyUI Size/Steps/CFG/Seed: ${request.width}x${request.height} / ${request.steps} / ${request.cfg} / ${request.seed}`);
+          const { result, history, durationText } = await generateAndSave(request, startedAt);
+          setGenerationResult(result);
+          setPromptHistory(history);
+          setLastHistoryId(history[0]?.id ?? null);
+          if (result.imageDataUrl || result.imagePath) {
+            setLastImage(result.imageDataUrl ?? result.imagePath ?? null);
+          }
+          setRepeatItems((current) =>
+            current.map((item) => (item.id === itemId ? { ...item, result, durationText, historyId: history[0]?.id } : item))
+          );
+        } catch (error) {
+          const errorText = error instanceof Error ? error.message : String(error);
+          appendLog("stderr", errorText);
+          setRepeatItems((current) => current.map((item) => (item.id === itemId ? { ...item, error: errorText } : item)));
+        }
+      }
+    } finally {
+      setRepeatRunning(false);
+      setRepeatPaused(false);
+      repeatStopRequested.current = false;
+      repeatPausedRef.current = false;
+      appendLog("info", "Repeat Generateを停止しました。");
+    }
   }
 
   function generationDiagnosticsJson(value: unknown): string {
@@ -3106,31 +3211,7 @@ function App() {
                           appendLog("info", `ComfyUI Negative Prompt: ${request.negativePrompt}`);
                           appendLog("info", `ComfyUI LoRA: ${requestLoras.length ? requestLoras.map((lora) => `${lora.name} model=${lora.modelStrength} clip=${lora.clipStrength}`).join(", ") : "なし"}`);
                           appendLog("info", `ComfyUI Size/Steps/CFG/Seed: ${request.width}x${request.height} / ${request.steps} / ${request.cfg} / ${request.seed}`);
-                          const result = await window.illustMK.runtime.testGenerate(request);
-                          appendLog("info", `ComfyUI Prompt ID: ${result.promptId ?? "なし"}`);
-                          const durationText = formatGenerationDuration(performance.now() - startedAt);
-                          const resultWithDuration = {
-                            ...result,
-                            message: result.message ? `${result.message} (生成時間 ${durationText})` : `(生成時間 ${durationText})`
-                          };
-                          const history = await window.illustMK.promptHistory.save({
-                            ...request,
-                            prompt,
-                            negativePrompt,
-                            japanesePrompt,
-                            llmModel: ollamaModel,
-                            llmUrl: ollamaUrl,
-                            japanesePromptTagIds,
-                            positivePromptTagIds,
-                            positiveOptionTagIds,
-                            negativeOptionTagIds,
-                            positiveLoraTriggerIds,
-                            memo: imageMemo,
-                            generationSettings: historySettings,
-                            imagePath: result.imagePath,
-                            imageDataUrl: result.imageDataUrl
-                          });
-                          return { result: resultWithDuration, history };
+                          return generateAndSave(request, startedAt);
                         },
                         ({ result, history }) => {
                           setGenerationResult(result);
@@ -3145,6 +3226,10 @@ function App() {
                   >
                     <WandSparkles size={18} />
                     GENERATE TEST
+                  </button>
+                  <button className="generate secondary-generate" disabled={!canGenerate || repeatRunning} onClick={() => void runRepeatGenerate()}>
+                    <RefreshCw size={18} />
+                    Repeat Generate
                   </button>
                 </div>
               </>
@@ -3211,6 +3296,96 @@ function App() {
           </section>
         </section>
       )}
+      {repeatDialogOpen ? (
+        <div className="modal-backdrop">
+          <section className="modal-panel repeat-modal">
+            <div className="modal-header">
+              <PanelTitle icon={<RefreshCw size={18} />} title="Repeat Generate" />
+              <div className="repeat-status">
+                {repeatRunning ? (repeatPaused ? "PAUSED" : "RUNNING") : "STOPPED"} / {repeatItems.length}枚
+              </div>
+            </div>
+            <div className="repeat-grid">
+              {repeatItems.length ? (
+                repeatItems.map((item) => {
+                  const image = item.result?.imageDataUrl ?? item.result?.imagePath ?? null;
+                  return (
+                    <article className={item.error ? "repeat-tile error" : "repeat-tile"} key={item.id}>
+                      {image ? (
+                        <button type="button" onClick={() => setRepeatPreviewImage(image)} title="拡大表示">
+                          <img src={imageUrl(image)} alt={`Repeat seed ${item.seed}`} />
+                        </button>
+                      ) : (
+                        <div className="repeat-placeholder">
+                          {item.error ? <CircleAlert size={24} /> : <RefreshCw size={24} />}
+                          <span>{item.error ? "失敗" : "生成中"}</span>
+                        </div>
+                      )}
+                      <footer>
+                        <strong>Seed {item.seed}</strong>
+                        {item.durationText ? <span>{item.durationText}</span> : null}
+                        {item.error ? <small>{item.error}</small> : null}
+                      </footer>
+                    </article>
+                  );
+                })
+              ) : (
+                <div className="repeat-empty">
+                  <ImageIcon size={42} />
+                  <p>生成結果がここに追加されます。</p>
+                </div>
+              )}
+            </div>
+            <div className="repeat-actions">
+              <button
+                disabled={!repeatRunning}
+                onClick={() => {
+                  setRepeatPaused((current) => !current);
+                }}
+              >
+                <Pause size={20} />
+                {repeatPaused ? "RESUME" : "PAUSE"}
+              </button>
+              <button
+                className="danger"
+                disabled={!repeatRunning}
+                onClick={() => {
+                  repeatStopRequested.current = true;
+                  setRepeatPaused(false);
+                }}
+              >
+                <Square size={20} />
+                STOP
+              </button>
+              <button
+                onClick={() => {
+                  repeatStopRequested.current = true;
+                  setRepeatPaused(false);
+                  setRepeatDialogOpen(false);
+                }}
+              >
+                <X size={20} />
+                CLOSE
+              </button>
+            </div>
+          </section>
+        </div>
+      ) : null}
+      {repeatPreviewImage ? (
+        <div className="modal-backdrop stacked" onClick={() => setRepeatPreviewImage(null)}>
+          <section className="modal-panel image-preview-modal" onClick={(event) => event.stopPropagation()}>
+            <div className="modal-header">
+              <PanelTitle icon={<ImageIcon size={18} />} title="Repeat Preview" />
+              <button className="icon-button" onClick={() => setRepeatPreviewImage(null)} title="閉じる">
+                <Square size={16} />
+              </button>
+            </div>
+            <div className="image-preview-frame">
+              <img src={imageUrl(repeatPreviewImage)} alt="Repeat generated preview enlarged" />
+            </div>
+          </section>
+        </div>
+      ) : null}
       {optionTagDialogTarget ? (
         <div className="modal-backdrop">
           <section className="modal-panel option-tag-modal">
