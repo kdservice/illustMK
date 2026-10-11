@@ -1799,6 +1799,10 @@ function App() {
     return Math.floor(Math.random() * Number.MAX_SAFE_INTEGER);
   }
 
+  function requestWithConcreteSeed(request: TestGenerationRequest): TestGenerationRequest {
+    return request.seed >= 0 ? request : { ...request, seed: nextGenerationSeed() };
+  }
+
   const downloadRequest: DownloadRequest = {
     url: downloadUrl.trim(),
     targetType: "checkpoints",
@@ -1856,7 +1860,7 @@ function App() {
       steps: request.steps,
       cfg: request.cfg,
       seedMode,
-      seedValue,
+      seedValue: request.seed,
       requestSeed: request.seed,
       comfyUrl,
       ollamaUrl,
@@ -2961,9 +2965,11 @@ function App() {
                         "ComfyUIでテスト生成中",
                         async () => {
                           const startedAt = performance.now();
-                          const request = restoredRequestApplies && restoredGenerationSettings?.generationRequest
-                            ? testRequest
-                            : createGenerationRequest(nextGenerationSeed());
+                          const request = requestWithConcreteSeed(
+                            restoredRequestApplies && restoredGenerationSettings?.generationRequest
+                              ? testRequest
+                              : createGenerationRequest(nextGenerationSeed())
+                          );
                           const requestLoras = request.loras ?? [];
                           appendLog("info", `ComfyUI Positive Prompt: ${request.prompt}`);
                           appendLog("info", `ComfyUI Negative Prompt: ${request.negativePrompt}`);
