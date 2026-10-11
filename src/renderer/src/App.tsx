@@ -1146,6 +1146,38 @@ function App() {
     setPromptHistoryOpen(false);
   }
 
+  function resetGenerationParameters(): void {
+    setRestoredGenerationSettings(null);
+    setJapanesePrompt("");
+    setPromptNotes("");
+    setPromptEnhanceMode("balanced-detail");
+    setPrompt("masterpiece, best quality, 1girl, anime style, soft light");
+    setNegativePrompt("low quality, worst quality, blurry, bad anatomy");
+    setJapanesePromptTagIds([]);
+    setPositivePromptTagIds([]);
+    setPositiveOptionTagIds([]);
+    setNegativeOptionTagIds([]);
+    setPositiveLoraTriggerIds([]);
+    setSelectedLoras([]);
+    setImageSizePreset("768x1024");
+    setGenerationWidth(768);
+    setGenerationHeight(1024);
+    setGenerationSteps(20);
+    setGenerationCfg(7);
+    setSeedMode("random");
+    setSeedValue(-1);
+    setGenerationResult(null);
+    setLastImage(null);
+    setLastHistoryId(null);
+    setImageMemo("");
+    setRepeatItems([]);
+    setRepeatPreviewImage(null);
+    setGenerateTab("prompt");
+    setSelectedCheckpoint(status?.checkpoints[0]?.name ?? "");
+    setSelectedVae("");
+    setSelectedClip("");
+  }
+
   function updateImageSizePreset(value: string): void {
     setImageSizePreset(value);
     if (value === "custom") return;
@@ -1869,6 +1901,8 @@ function App() {
   async function runRepeatGenerate(): Promise<void> {
     if (repeatRunning || !canGenerate) return;
     setRepeatDialogOpen(true);
+    setRepeatItems([]);
+    setRepeatPreviewImage(null);
     setRepeatRunning(true);
     setRepeatPaused(false);
     repeatStopRequested.current = false;
@@ -3184,6 +3218,7 @@ function App() {
                 onOpenOptionTags={setOptionTagDialogTarget}
                 onRemoveOptionTag={removeOptionPromptTag}
                   onOpenTagBrowser={setTagPromptTarget}
+                  onReset={resetGenerationParameters}
                   onOpenHistory={() => setPromptHistoryOpen(true)}
                   onOpenLoraTriggers={() => setLoraTriggerDialogOpen(true)}
                   onRemoveIllustrationTag={(target, tag) => {
@@ -4065,6 +4100,7 @@ function PromptTransformPanel({
   onOpenOptionTags,
   onRemoveOptionTag,
   onOpenTagBrowser,
+  onReset,
   onOpenHistory,
   onOpenLoraTriggers,
   onRemoveIllustrationTag,
@@ -4091,6 +4127,7 @@ function PromptTransformPanel({
   onOpenOptionTags: (target: PromptKind) => void;
   onRemoveOptionTag: (target: PromptKind, tag: OptionPromptTag) => void;
   onOpenTagBrowser: (target: TagPromptTarget) => void;
+  onReset: () => void;
   onOpenHistory: () => void;
   onOpenLoraTriggers: () => void;
   onRemoveIllustrationTag: (target: TagPromptTarget, tag: IllustrationTag) => void;
@@ -4101,6 +4138,10 @@ function PromptTransformPanel({
       <div className="field">
         <div className="prompt-field-header">
           <label>Japanese Prompt</label>
+          <button onClick={onReset}>
+            <X size={15} />
+            リセット
+          </button>
           <button onClick={onOpenHistory}>
             <RefreshCw size={15} />
             履歴
