@@ -84,14 +84,23 @@ label {
 }
 
 .topbar {
-  min-height: 64px;
-  display: flex;
+  min-height: 86px;
+  display: grid;
+  grid-template-columns: 190px minmax(0, 1fr);
   align-items: center;
   gap: 14px;
-  padding: 0 16px;
+  padding: 10px 16px;
   border: 1px solid #18294d;
   border-radius: 8px;
   background: rgba(8, 17, 37, 0.86);
+}
+
+.topbar-brand {
+  display: grid;
+  grid-template-columns: 42px minmax(0, 1fr);
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
 }
 
 .brand-mark {
@@ -118,79 +127,6 @@ label {
 .topbar p {
   color: #91a3c9;
   font-size: 12px;
-}
-
-.header-action {
-  min-width: 260px;
-  max-width: 460px;
-  margin-left: auto;
-  display: grid;
-  grid-template-columns: 18px minmax(0, 1fr);
-  align-items: center;
-  gap: 10px;
-  border: 1px solid #243b69;
-  border-radius: 8px;
-  padding: 8px 10px;
-  background: #0d1930;
-}
-
-.header-action svg {
-  color: #2cff8f;
-}
-
-.header-action.error {
-  border-color: #7f3448;
-  background: #1d1020;
-}
-
-.header-action.error svg {
-  color: #ff7894;
-}
-
-.header-action strong,
-.header-action span {
-  display: block;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.header-action strong {
-  color: #dbe7ff;
-  font-size: 13px;
-}
-
-.header-action span {
-  color: #91a3c9;
-  font-size: 12px;
-  margin-top: 2px;
-}
-
-.connection-pill {
-  min-height: 34px;
-  flex: 0 0 auto;
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-  border: 1px solid #243b69;
-  border-radius: 999px;
-  padding: 0 14px;
-  color: #b9c8e8;
-  background: #0d1930;
-  font-size: 13px;
-  font-weight: 800;
-}
-
-.dot {
-  width: 9px;
-  height: 9px;
-  border-radius: 50%;
-  background: #758098;
-}
-
-.dot.ready {
-  background: #2cff8f;
-  box-shadow: 0 0 16px rgba(44, 255, 143, 0.62);
 }
 
 .layout {
@@ -869,17 +805,9 @@ label {
   display: flex;
   flex-wrap: nowrap;
   gap: 8px;
-  margin-bottom: 14px;
-  overflow: hidden;
-}
-
-.global-status-panel {
-  margin-top: 14px;
-  padding: 8px 10px;
-}
-
-.global-status-panel .status-grid {
   margin-bottom: 0;
+  overflow: hidden;
+  min-width: 0;
 }
 
 .status-grid div {
@@ -890,6 +818,10 @@ label {
   background: #081125;
   flex: 1 1 0;
   min-width: 0;
+}
+
+.status-grid .status-card.compact {
+  flex: 0.5 1 0;
 }
 
 .status-grid .status-card.ok {

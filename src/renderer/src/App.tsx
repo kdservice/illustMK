@@ -430,14 +430,6 @@ function App() {
     [captionImageEditFileName, captionImages]
   );
 
-  const stateLabel = useMemo(() => {
-    if (!status) return "未確認";
-    if (!status.nativeInstalled) return "macOS未インストール";
-    if (!status.comfyReachable) return "ComfyUI未接続";
-    if (!status.checkpoints.length) return "モデル未追加";
-    return "生成準備OK";
-  }, [status]);
-
   useEffect(() => {
     void refreshStatus();
     void loadSettings();
@@ -2171,25 +2163,13 @@ function App() {
   return (
     <main className="app-shell">
       <header className="topbar">
-        <div className="brand-mark">IM</div>
-        <div>
-          <h1>illustMK</h1>
-          <p>AI Illustration Studio</p>
-        </div>
-        <div className={action.error ? "header-action error" : "header-action"}>
-          {action.error ? <CircleAlert size={16} /> : <CheckCircle2 size={16} />}
+        <div className="topbar-brand">
+          <div className="brand-mark">IM</div>
           <div>
-            <strong>{action.message}</strong>
-            <span>{action.error ?? "ログは下段に集約"}</span>
+            <h1>illustMK</h1>
+            <p>AI Illustration Studio</p>
           </div>
         </div>
-        <div className="connection-pill">
-          <span className={status?.comfyReachable ? "dot ready" : "dot"} />
-          {stateLabel}
-        </div>
-      </header>
-
-      <section className="panel global-status-panel">
         <StatusGrid
           status={status}
           ollamaStatus={ollamaStatus}
@@ -2199,7 +2179,7 @@ function App() {
           checkpointBaseModel={selectedCheckpoint ? checkpointBaseModels[selectedCheckpoint] : ""}
           usageHistory={usageHistory}
         />
-      </section>
+      </header>
 
       <nav className="main-tabs">
         <button className={mainTab === "environment" ? "tab active" : "tab"} onClick={() => setMainTab("environment")}>
@@ -4606,15 +4586,15 @@ function StatusGrid({
   const baseModelLabel = checkpointBaseModel || inferCheckpointBaseModel(selectedCheckpoint?.name ?? "");
   const items = [
     ...runtimeItems,
-    { label: "選択モデル", value: selectedCheckpoint?.name ?? "未選択", tone: checkpointTone, tag: baseModelLabel },
     { label: "Ollama", value: ollamaValue, tone: ollamaTone },
+    { label: "選択モデル", value: selectedCheckpoint?.name ?? "未選択", tone: checkpointTone, tag: baseModelLabel },
     { label: "LLM", value: ollamaModel || "未選択", tone: ollamaModel ? "ok" : "warn" }
   ];
 
   return (
     <div className="status-grid">
       {items.map(({ label, value, tone, tag }) => (
-        <div className={`status-card ${tone}`} key={label}>
+        <div className={`status-card ${tone} ${label === "ComfyUI" || label === "Ollama" ? "compact" : ""}`} key={label}>
           <span>{label}</span>
           <strong>{value}</strong>
           {tag ? <em>{tag}</em> : null}
