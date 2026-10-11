@@ -989,7 +989,7 @@ function App() {
   }
 
   async function refreshAfterDataPathChange(): Promise<void> {
-    await Promise.all([refreshStatus(), refreshOllamaStatus(), loadLoraProjects()]);
+    await Promise.all([refreshStatus(), refreshOllamaStatus(), loadLoraProjects(), loadPromptHistory()]);
   }
 
   function resetDataPathDependentState(): void {
@@ -1084,6 +1084,10 @@ function App() {
   }
 
   function applyPromptHistory(entry: PromptHistoryEntry): void {
+    if (entry.restorable === false) {
+      window.alert(`この履歴は現在のDataPathで不足があります。\n${(entry.missingAssets ?? []).join("\n")}`);
+      return;
+    }
     const settings = entry.generationSettings;
     setRestoredGenerationSettings(settings ?? null);
     setJapanesePrompt(settings?.japanesePrompt ?? entry.japanesePrompt ?? "");
@@ -3299,11 +3303,16 @@ function App() {
                         <span>{entry.width} x {entry.height} / seed {entry.seed}</span>
                         <time>{new Date(entry.createdAt).toLocaleString("ja-JP", { hour12: false })}</time>
                       </header>
+                      <div className="history-tags">
+                        {entry.runtimeRootMatches === false ? <span>別DataPath: {entry.runtimeRootLabel ?? "不明"}</span> : <span>現在DataPath</span>}
+                        {entry.restorable === false ? <span className="history-warning">不足あり</span> : null}
+                      </div>
                       {entry.japanesePrompt ? <p className="history-japanese">{entry.japanesePrompt}</p> : null}
                       <p>{entry.prompt}</p>
                       {entry.memo ? <p className="history-memo">{entry.memo}</p> : null}
+                      {entry.missingAssets?.length ? <small>不足: {entry.missingAssets.join(" / ")}</small> : null}
                       <small>{entry.negativePrompt}</small>
-                      <button onClick={() => applyPromptHistory(entry)}>
+                      <button disabled={entry.restorable === false} onClick={() => applyPromptHistory(entry)}>
                         <CheckCircle2 size={17} />
                         流用
                       </button>

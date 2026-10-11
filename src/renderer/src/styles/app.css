@@ -1753,6 +1753,28 @@ label {
   font-size: 12px;
 }
 
+.history-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 0 0 8px;
+}
+
+.history-tags span {
+  border: 1px solid #285ea8;
+  border-radius: 999px;
+  background: #10274d;
+  color: #9ed7ff;
+  font-size: 11px;
+  padding: 2px 8px;
+}
+
+.history-tags .history-warning {
+  border-color: #d59b32;
+  background: #3b2808;
+  color: #ffd166;
+}
+
 .prompt-history-card p {
   margin: 0 0 8px;
   color: #dbe7ff;

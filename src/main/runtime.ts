@@ -413,6 +413,11 @@ export type LoraTrainingRunParams = {
 
 export type PromptHistoryEntry = {
   id: string;
+  runtimeRoot?: string;
+  runtimeRootLabel?: string;
+  runtimeRootMatches?: boolean;
+  restorable?: boolean;
+  missingAssets?: string[];
   japanesePrompt: string;
   prompt: string;
   negativePrompt: string;
@@ -491,6 +496,8 @@ export type UpdatePromptHistoryMemoRequest = {
   id: string;
   memo: string;
 };
+
+type FetchContext = "Civitai検索" | "Civitaiダウンロード" | "Civitaiサムネイル";
 
 export type TestGenerationResult = {
   ok: boolean;
@@ -1214,7 +1221,13 @@ export async function downloadModel(request: DownloadRequest, onLog?: RuntimeLog
     "User-Agent": "illustMK/0.1",
     ...(request.source === "civitai" || url.hostname.includes("civitai.com") ? await civitaiAuthHeader() : {})
   };
-  const response = await fetch(await withCivitaiToken(url), { headers });
+  const requestUrl = await withCivitaiToken(url);
+  let response: Response;
+  try {
+    response = await fetch(requestUrl, { headers });
+  } catch (error) {
+    throw new Error(formatFetchFailure("Civitaiダウンロード", requestUrl.toString(), error));
+  }
   if (!response.ok || !response.body) {
     throw new Error(downloadErrorMessage(response.status, url));
   }
@@ -1334,13 +1347,19 @@ export async function searchCivitaiModelPage(options: {
     params.set("page", String(options.page ?? 1));
   }
 
-  const response = await fetch(`https://civitai.com/api/v1/models?${params.toString()}`, {
-    headers: {
-      Accept: "application/json",
-      "User-Agent": "illustMK/0.1",
-      ...(await civitaiAuthHeader())
-    }
-  });
+  const url = `https://civitai.com/api/v1/models?${params.toString()}`;
+  let response: Response;
+  try {
+    response = await fetch(url, {
+      headers: {
+        Accept: "application/json",
+        "User-Agent": "illustMK/0.1",
+        ...(await civitaiAuthHeader())
+      }
+    });
+  } catch (error) {
+    throw new Error(formatFetchFailure("Civitai検索", url, error));
+  }
   if (!response.ok) {
     throw new Error(`Civitai API取得に失敗しました: HTTP ${response.status}`);
   }
@@ -1824,6 +1843,10 @@ export async function deleteIllustrationTag(id: string): Promise<IllustrationTag
 }
 
 export async function getSavedPromptHistory(): Promise<PromptHistoryEntry[]> {
+  return getVisiblePromptHistory();
+}
+
+async function readPromptHistoryRaw(): Promise<PromptHistoryEntry[]> {
   try {
     const text = await readFile(promptHistoryPath, "utf8");
     const parsed = JSON.parse(text) as PromptHistoryEntry[];
@@ -1833,6 +1856,12 @@ export async function getSavedPromptHistory(): Promise<PromptHistoryEntry[]> {
   } catch {
     return [];
   }
+}
+
+async function getVisiblePromptHistory(): Promise<PromptHistoryEntry[]> {
+  const history = await readPromptHistoryRaw();
+  const enriched = await Promise.all(history.map((entry) => enrichPromptHistoryEntry(entry)));
+  return enriched.filter((entry) => entry.runtimeRootMatches || entry.restorable);
 }
 
 export async function clearPromptHistory(): Promise<PromptHistoryEntry[]> {
@@ -2087,7 +2116,7 @@ export async function downloadCivitaiLoraProject(
     const thumbnailExists = existing.thumbnailPath ? await exists(existing.thumbnailPath) : false;
     const thumbnailPath = existing.thumbnailPath && thumbnailExists
       ? existing.thumbnailPath
-      : await saveCivitaiLoraThumbnail(model, projectRoot);
+      : await saveCivitaiLoraThumbnail(model, projectRoot, onLog);
     const updatedProject: LoraTrainingProject = {
       ...existing,
       sourceLora: fileName,
@@ -2129,7 +2158,7 @@ export async function downloadCivitaiLoraProject(
     projectDir: projectRoot,
     datasetPath,
     outputName: fileName,
-    thumbnailPath: await saveCivitaiLoraThumbnail(model, projectRoot),
+    thumbnailPath: await saveCivitaiLoraThumbnail(model, projectRoot, onLog),
     resolution: defaultLoraRunParams.resolution,
     repeats: defaultLoraRunParams.repeats,
     epochs: defaultLoraRunParams.epochs,
@@ -2150,7 +2179,11 @@ export async function downloadCivitaiLoraProject(
   return getLoraTrainingProjects();
 }
 
-async function saveCivitaiLoraThumbnail(model: CivitaiModelCard, projectRoot: string): Promise<string | undefined> {
+async function saveCivitaiLoraThumbnail(
+  model: CivitaiModelCard,
+  projectRoot: string,
+  onLog?: RuntimeLogSink
+): Promise<string | undefined> {
   if (!model.imageUrl) return undefined;
   try {
     await mkdir(join(projectRoot, "assets"), { recursive: true });
@@ -2170,7 +2203,8 @@ async function saveCivitaiLoraThumbnail(model: CivitaiModelCard, projectRoot: st
     const path = join(projectRoot, "assets", `thumbnail-${stamp}.${extension}`);
     await pipeline(response.body as unknown as NodeJS.ReadableStream, createWriteStream(path));
     return path;
-  } catch {
+  } catch (error) {
+    onLog?.({ level: "stderr", line: formatFetchFailure("Civitaiサムネイル", model.imageUrl, error) });
     return undefined;
   }
 }
@@ -2478,8 +2512,14 @@ export async function stopAllLoraTrainingProcesses(): Promise<void> {
 }
 
 export async function savePromptHistoryEntry(request: SavePromptHistoryRequest): Promise<PromptHistoryEntry[]> {
+  const paths = getRuntimePaths();
   const entry: PromptHistoryEntry = {
     id: randomUUID(),
+    runtimeRoot: paths.root,
+    runtimeRootLabel: basename(paths.root) || paths.root,
+    runtimeRootMatches: true,
+    restorable: true,
+    missingAssets: [],
     japanesePrompt: request.japanesePrompt,
     prompt: request.prompt,
     negativePrompt: request.negativePrompt,
@@ -2505,16 +2545,16 @@ export async function savePromptHistoryEntry(request: SavePromptHistoryRequest):
     imageDataUrl: request.imageDataUrl,
     createdAt: new Date().toISOString()
   };
-  const history = [entry, ...(await getSavedPromptHistory())].slice(0, 100);
+  const history = [entry, ...(await readPromptHistoryRaw())].slice(0, 100);
   await savePromptHistory(history);
-  return history;
+  return getVisiblePromptHistory();
 }
 
 export async function updatePromptHistoryMemo(request: UpdatePromptHistoryMemoRequest): Promise<PromptHistoryEntry[]> {
-  const history = await getSavedPromptHistory();
+  const history = await readPromptHistoryRaw();
   const nextHistory = history.map((entry) => (entry.id === request.id ? { ...entry, memo: request.memo } : entry));
   await savePromptHistory(nextHistory);
-  return nextHistory;
+  return getVisiblePromptHistory();
 }
 
 async function civitaiAuthHeader(): Promise<Record<string, string>> {
@@ -2525,6 +2565,49 @@ async function civitaiAuthHeader(): Promise<Record<string, string>> {
 async function savePromptHistory(history: PromptHistoryEntry[]): Promise<void> {
   await mkdir(appDataRoot, { recursive: true });
   await writeFile(promptHistoryPath, JSON.stringify(history, null, 2), "utf8");
+}
+
+async function enrichPromptHistoryEntry(entry: PromptHistoryEntry): Promise<PromptHistoryEntry> {
+  const paths = getRuntimePaths();
+  const missingAssets = await promptHistoryMissingAssets(entry, paths);
+  const runtimeRootMatches = entry.runtimeRoot ? resolve(entry.runtimeRoot) === resolve(paths.root) : false;
+  return {
+    ...entry,
+    runtimeRootLabel: entry.runtimeRootLabel ?? (entry.runtimeRoot ? basename(entry.runtimeRoot) || entry.runtimeRoot : "DataPath未記録"),
+    runtimeRootMatches,
+    restorable: missingAssets.length === 0,
+    missingAssets
+  };
+}
+
+async function promptHistoryMissingAssets(entry: PromptHistoryEntry, paths: RuntimePaths): Promise<string[]> {
+  const checks: Array<[string, string | undefined, string]> = [
+    ["Checkpoint", entry.checkpoint, paths.checkpoints],
+    ["VAE", entry.vae, paths.vae],
+    ["CLIP", entry.clip, paths.clip]
+  ];
+  const settings = entry.generationSettings;
+  if (settings) {
+    checks.push(
+      ["Checkpoint", settings.checkpoint, paths.checkpoints],
+      ["VAE", settings.vae, paths.vae],
+      ["CLIP", settings.clip, paths.clip]
+    );
+  }
+  for (const lora of entry.loras ?? []) checks.push(["LoRA", lora.name, paths.loras]);
+  for (const lora of settings?.loras ?? []) checks.push(["LoRA", lora.name, paths.loras]);
+
+  const missing: string[] = [];
+  const seen = new Set<string>();
+  for (const [kind, name, dir] of checks) {
+    const fileName = name?.trim();
+    if (!fileName || fileName === "なし") continue;
+    const key = `${kind}:${fileName}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    if (!(await exists(join(dir, fileName)))) missing.push(`${kind}: ${fileName}`);
+  }
+  return missing;
 }
 
 async function saveLoraTrainingProjects(projects: LoraTrainingProject[]): Promise<void> {
@@ -3168,6 +3251,39 @@ function downloadErrorMessage(status: number, url: URL): string {
     ].join("\n");
   }
   return `ダウンロードに失敗しました: HTTP ${status}`;
+}
+
+function formatFetchFailure(context: FetchContext, url: string, error: unknown): string {
+  const errorRecord = error instanceof Error ? error : null;
+  const cause = errorRecord?.cause as { code?: string } | undefined;
+  const code = cause?.code ?? "";
+  const message = errorRecord?.message ?? String(error);
+  const reason = fetchFailureReason(errorRecord?.name ?? "", code, message);
+  return [
+    `${context}に接続できませんでした。`,
+    `理由: ${reason}`,
+    `詳細: ${message}${code ? ` (${code})` : ""}`,
+    `URL: ${url}`
+  ].join("\n");
+}
+
+function fetchFailureReason(name: string, code: string, message: string): string {
+  if (name === "TimeoutError" || code === "UND_ERR_CONNECT_TIMEOUT" || message.includes("timeout")) {
+    return "接続タイムアウトです。ホテル/外出先Wi-Fi、DNS、Civitai/Cloudflareへの到達性を確認してください。";
+  }
+  if (code === "ENOTFOUND" || code === "EAI_AGAIN") {
+    return "DNS解決に失敗しました。ネットワーク接続またはDNS設定を確認してください。";
+  }
+  if (code === "ECONNRESET") {
+    return "接続が途中で切断されました。回線、プロキシ、VPN、Civitai側の制限を確認してください。";
+  }
+  if (code === "ECONNREFUSED") {
+    return "接続が拒否されました。ネットワーク制限または相手先の状態を確認してください。";
+  }
+  if (code.includes("CERT") || code.includes("TLS")) {
+    return "TLS/証明書の検証に失敗しました。プロキシやネットワークフィルタを確認してください。";
+  }
+  return "通信処理が失敗しました。ネットワーク環境とCivitai側の状態を確認してください。";
 }
 
 export async function runTestGeneration(request: TestGenerationRequest): Promise<TestGenerationResult> {
