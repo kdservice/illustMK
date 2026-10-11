@@ -1820,6 +1820,14 @@ function App() {
     return Math.floor(Math.random() * Number.MAX_SAFE_INTEGER);
   }
 
+  function nextRandomSeed(excludes = new Set<number>()): number {
+    let seed = Math.floor(Math.random() * Number.MAX_SAFE_INTEGER);
+    while (excludes.has(seed)) {
+      seed = Math.floor(Math.random() * Number.MAX_SAFE_INTEGER);
+    }
+    return seed;
+  }
+
   function requestWithConcreteSeed(request: TestGenerationRequest): TestGenerationRequest {
     return request.seed >= 0 ? request : { ...request, seed: nextGenerationSeed() };
   }
@@ -1866,11 +1874,13 @@ function App() {
     repeatStopRequested.current = false;
     repeatPausedRef.current = false;
     appendLog("info", "Repeat Generateを開始しました。");
+    const usedSeeds = new Set<number>();
     try {
       while (!repeatStopRequested.current) {
         await waitWhileRepeatPaused();
         if (repeatStopRequested.current) break;
-        const seed = nextGenerationSeed();
+        const seed = nextRandomSeed(usedSeeds);
+        usedSeeds.add(seed);
         const request = createGenerationRequest(seed);
         const itemId = crypto.randomUUID();
         setRepeatItems((current) => [{ id: itemId, seed, startedAt: new Date().toISOString() }, ...current]);
