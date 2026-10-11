@@ -355,8 +355,11 @@ function App() {
     [negativeOptionTagIds, optionPromptTags]
   );
   const availableLoraNames = useMemo(
-    () => new Set((status?.loras ?? []).filter((lora) => !isStepLoraName(lora.name)).map((lora) => lora.name)),
-    [status?.loras]
+    () => {
+      const existingFiles = new Set((status?.loras ?? []).filter((lora) => !isStepLoraName(lora.name)).map((lora) => lora.name));
+      return new Set(loraProjects.filter((project) => existingFiles.has(project.outputName)).map((project) => project.outputName));
+    },
+    [loraProjects, status?.loras]
   );
   const activeGenerationLoras = useMemo(
     () => selectedLoras.filter((lora) => availableLoraNames.has(lora.name)),
@@ -529,12 +532,11 @@ function App() {
 
   useEffect(() => {
     if (!status) return;
-    const availableNames = new Set(status.loras.filter((lora) => !isStepLoraName(lora.name)).map((lora) => lora.name));
     setSelectedLoras((current) => {
-      const next = current.filter((lora) => availableNames.has(lora.name));
+      const next = current.filter((lora) => availableLoraNames.has(lora.name));
       return sameGenerationLoras(current, next) ? current : next;
     });
-  }, [status?.loras]);
+  }, [availableLoraNames, status]);
 
   useEffect(() => {
     if (!positiveLoraTriggerIds.length) return;
@@ -4062,8 +4064,11 @@ function GenerationLoraPanel({
   onUpdateLora: (name: string, field: "modelStrength" | "clipStrength", value: number) => void;
   onClearLoras: () => void;
 }) {
-  const projectByOutputName = useMemo(() => new Map(projects.map((project) => [project.outputName, project])), [projects]);
-  const displayLoras = loras.filter((lora) => !isStepLoraName(lora.name));
+  const loraFileByName = useMemo(
+    () => new Map(loras.filter((lora) => !isStepLoraName(lora.name)).map((lora) => [lora.name, lora])),
+    [loras]
+  );
+  const displayProjects = projects.filter((project) => loraFileByName.has(project.outputName));
   return (
     <div className="lora-apply-panel">
       <div className="tag-builder-header">
@@ -4077,12 +4082,12 @@ function GenerationLoraPanel({
         </div>
       </div>
       <div className="lora-apply-list">
-        {displayLoras.length ? (
-          displayLoras.map((lora) => {
-            const selected = selectedLoras.find((item) => item.name === lora.name);
-            const project = projectByOutputName.get(lora.name);
+        {displayProjects.length ? (
+          displayProjects.map((project) => {
+            const lora = loraFileByName.get(project.outputName);
+            const selected = selectedLoras.find((item) => item.name === project.outputName);
             return (
-              <article className={selected ? "lora-apply-card lora-project-card selected" : "lora-apply-card lora-project-card"} key={lora.name}>
+              <article className={selected ? "lora-apply-card lora-project-card selected" : "lora-apply-card lora-project-card"} key={project.id}>
                 <div className="lora-project-thumb">
                   <ImageIcon className="lora-project-placeholder-icon" size={22} />
                   {project?.thumbnailDataUrl || project?.thumbnailPath ? (
@@ -4091,17 +4096,17 @@ function GenerationLoraPanel({
                 </div>
                 <div className="lora-project-body">
                   <header>
-                    <strong>{project?.name || lora.name}</strong>
-                    <button className={selected ? "tiny-button active" : "tiny-button"} onClick={() => onToggleLora(lora.name)}>
+                    <strong>{project.name || project.outputName}</strong>
+                    <button className={selected ? "tiny-button active" : "tiny-button"} onClick={() => onToggleLora(project.outputName)}>
                       {selected ? "使用中" : "使用"}
                     </button>
                   </header>
                   <div className="lora-meta-tags">
-                    <span className="meta-tag base">{project?.baseCheckpoint ? inferCheckpointBaseModel(project.baseCheckpoint) : "Base不明"}</span>
+                    <span className="meta-tag base">{project.baseCheckpoint ? inferCheckpointBaseModel(project.baseCheckpoint) : "Base不明"}</span>
                     {getLoraTriggerWords(project).map((word) => <span className="meta-tag trigger" key={word}>{word}</span>)}
-                    <span className="meta-tag size">{lora.sizeLabel}</span>
+                    {lora?.sizeLabel ? <span className="meta-tag size">{lora.sizeLabel}</span> : null}
                   </div>
-                  {project?.message ? <p>{project.message}</p> : null}
+                  {project.message ? <p>{project.message}</p> : null}
                   {selected ? (
                     <div className="lora-strength-grid">
                       <label>
@@ -4112,7 +4117,7 @@ function GenerationLoraPanel({
                           max="2"
                           step="0.05"
                           value={selected.modelStrength}
-                          onChange={(event) => onUpdateLora(lora.name, "modelStrength", Number(event.target.value))}
+                          onChange={(event) => onUpdateLora(project.outputName, "modelStrength", Number(event.target.value))}
                         />
                       </label>
                       <label>
@@ -4123,7 +4128,7 @@ function GenerationLoraPanel({
                           max="2"
                           step="0.05"
                           value={selected.clipStrength}
-                          onChange={(event) => onUpdateLora(lora.name, "clipStrength", Number(event.target.value))}
+                          onChange={(event) => onUpdateLora(project.outputName, "clipStrength", Number(event.target.value))}
                         />
                       </label>
                     </div>
