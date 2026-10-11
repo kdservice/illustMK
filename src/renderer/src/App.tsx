@@ -460,7 +460,12 @@ function App() {
   }, [ollamaUrl, settingsLoaded]);
 
   useEffect(() => {
-    if (status?.checkpoints.length && !selectedCheckpoint) {
+    if (!status) return;
+    if (!status.checkpoints.length) {
+      if (selectedCheckpoint) setSelectedCheckpoint("");
+      return;
+    }
+    if (!selectedCheckpoint || !status.checkpoints.some((checkpoint) => checkpoint.name === selectedCheckpoint)) {
       setSelectedCheckpoint(status.checkpoints.find((checkpoint) => checkpoint.simpleWorkflowReady)?.name ?? status.checkpoints[0].name);
     }
   }, [selectedCheckpoint, status?.checkpoints]);
@@ -501,16 +506,44 @@ function App() {
   }, [checkpointExternalSelections, selectedCheckpoint]);
 
   useEffect(() => {
-    if (status?.vae.length && !selectedVae) {
+    if (!status) return;
+    if (!status.vae.length) {
+      if (selectedVae) setSelectedVae("");
+      return;
+    }
+    if (!selectedVae || !status.vae.some((file) => file.name === selectedVae)) {
       setSelectedVae(status.vae.find((file) => file.hasVae)?.name ?? status.vae[0].name);
     }
   }, [selectedVae, status?.vae]);
 
   useEffect(() => {
-    if (status?.clip.length && !selectedClip) {
+    if (!status) return;
+    if (!status.clip.length) {
+      if (selectedClip) setSelectedClip("");
+      return;
+    }
+    if (!selectedClip || !status.clip.some((file) => file.name === selectedClip)) {
       setSelectedClip(status.clip.find((file) => file.hasClip)?.name ?? status.clip[0].name);
     }
   }, [selectedClip, status?.clip]);
+
+  useEffect(() => {
+    if (!status) return;
+    const availableNames = new Set(status.loras.filter((lora) => !isStepLoraName(lora.name)).map((lora) => lora.name));
+    setSelectedLoras((current) => {
+      const next = current.filter((lora) => availableNames.has(lora.name));
+      return sameGenerationLoras(current, next) ? current : next;
+    });
+  }, [status?.loras]);
+
+  useEffect(() => {
+    if (!positiveLoraTriggerIds.length) return;
+    const availableTriggerIds = new Set(selectedLoraTriggers.map((trigger) => trigger.triggerId));
+    setPositiveLoraTriggerIds((current) => {
+      const next = current.filter((id) => availableTriggerIds.has(id));
+      return sameStringArray(current, next) ? current : next;
+    });
+  }, [positiveLoraTriggerIds.length, selectedLoraTriggers]);
 
   useEffect(() => {
     if (!loraProjects.length) {
@@ -911,6 +944,7 @@ function App() {
   async function addDataPath(): Promise<void> {
     await runAction("DataPathを追加中", () => window.illustMK.runtime.addDataPath(), async (entries) => {
       setDataPaths(entries);
+      resetDataPathDependentState();
       await refreshAfterDataPathChange();
     });
   }
@@ -924,6 +958,7 @@ function App() {
   async function switchActiveDataPath(id: string): Promise<void> {
     await runAction("DataPathを切替中", () => window.illustMK.runtime.switchDataPath(id), async (entries) => {
       setDataPaths(entries);
+      resetDataPathDependentState();
       await refreshAfterDataPathChange();
     });
   }
@@ -931,6 +966,7 @@ function App() {
   async function deleteDataPathEntry(id: string): Promise<void> {
     await runAction("DataPath登録を削除中", () => window.illustMK.runtime.deleteDataPath(id), async (entries) => {
       setDataPaths(entries);
+      resetDataPathDependentState();
       await refreshAfterDataPathChange();
     });
   }
@@ -954,6 +990,23 @@ function App() {
 
   async function refreshAfterDataPathChange(): Promise<void> {
     await Promise.all([refreshStatus(), refreshOllamaStatus(), loadLoraProjects()]);
+  }
+
+  function resetDataPathDependentState(): void {
+    setStatus(null);
+    setPaths(null);
+    setSelectedCheckpoint("");
+    setSelectedVae("");
+    setSelectedClip("");
+    setSelectedLoras([]);
+    setPositiveLoraTriggerIds([]);
+    setSelectedLoraProjectId(null);
+    setLoraProjects([]);
+    setGenerationResult(null);
+    setLoraCompareResult(null);
+    setLastImage(null);
+    setLastHistoryId(null);
+    setRestoredGenerationSettings(null);
   }
 
   async function refreshOllamaStatus(): Promise<void> {

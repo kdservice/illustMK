@@ -513,7 +513,6 @@ const dataPathsPath = join(appDataRoot, "data-paths.json");
 const llmChatHistoryPath = join(appDataRoot, "llm-chat-history.json");
 const illustrationTagsPath = join(appDataRoot, "illustration-tags.json");
 const promptHistoryPath = join(appDataRoot, "prompt-history.json");
-const loraTrainingProjectsPath = join(appDataRoot, "lora-training-projects.json");
 const comfyPort = Number(process.env.ILLUSTMK_COMFY_PORT ?? "8188");
 let nativeProcess: ChildProcess | null = null;
 let ollamaProcess: ChildProcess | null = null;
@@ -1843,9 +1842,10 @@ export async function clearPromptHistory(): Promise<PromptHistoryEntry[]> {
 
 export async function getLoraTrainingProjects(): Promise<LoraTrainingProject[]> {
   const paths = await ensureRuntimeFiles();
+  const projectsPath = loraTrainingProjectsPath(paths);
   const byId = new Map<string, LoraTrainingProject>();
   try {
-    const text = await readFile(loraTrainingProjectsPath, "utf8");
+    const text = await readFile(projectsPath, "utf8");
     const parsed = JSON.parse(text) as LoraTrainingProject[];
     if (Array.isArray(parsed)) {
       for (const project of parsed.filter(isLoraTrainingProject)) {
@@ -2522,8 +2522,13 @@ async function savePromptHistory(history: PromptHistoryEntry[]): Promise<void> {
 }
 
 async function saveLoraTrainingProjects(projects: LoraTrainingProject[]): Promise<void> {
-  await mkdir(appDataRoot, { recursive: true });
-  await writeFile(loraTrainingProjectsPath, JSON.stringify(projects.map(stripLoraTransientFields), null, 2), "utf8");
+  const projectsPath = loraTrainingProjectsPath(getRuntimePaths());
+  await mkdir(dirname(projectsPath), { recursive: true });
+  await writeFile(projectsPath, JSON.stringify(projects.map(stripLoraTransientFields), null, 2), "utf8");
+}
+
+function loraTrainingProjectsPath(paths: RuntimePaths): string {
+  return join(paths.root, ".illustmk", "lora-training-projects.json");
 }
 
 async function attachLoraThumbnailDataUrl(project: LoraTrainingProject): Promise<LoraTrainingProject> {
