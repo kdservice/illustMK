@@ -821,7 +821,7 @@ label {
 }
 
 .status-grid .status-card.compact {
-  flex: 0.5 1 0;
+  flex: 0.25 1 0;
 }
 
 .status-grid .status-card.ok {
@@ -1648,7 +1648,7 @@ label {
   background: #1c0811;
 }
 
-.repeat-tile button {
+.repeat-image-button {
   width: 100%;
   min-height: 0;
   padding: 0;
@@ -1682,6 +1682,19 @@ label {
   border-top: 1px solid #1c2d53;
 }
 
+.repeat-seed-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 34px;
+  gap: 6px;
+  align-items: center;
+}
+
+.repeat-seed-row .icon-button {
+  min-width: 34px;
+  min-height: 30px;
+  padding: 0;
+}
+
 .repeat-tile strong,
 .repeat-tile span,
 .repeat-tile small {
@@ -1699,6 +1712,18 @@ label {
 
 .repeat-tile small {
   color: #ff9aa8;
+}
+
+.repeat-tile .repeat-memo {
+  color: #ffd166;
+}
+
+.repeat-memo-modal {
+  width: min(720px, calc(100vw - 48px));
+}
+
+.repeat-memo-modal textarea {
+  min-height: 180px;
 }
 
 .repeat-empty {
@@ -1846,6 +1871,23 @@ label {
 .prompt-history-card button {
   width: 100%;
   margin-top: 10px;
+}
+
+.history-card-actions {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 42px;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.prompt-history-card .history-card-actions button {
+  margin-top: 0;
+}
+
+.prompt-history-card .history-card-actions .icon-button {
+  width: 42px;
+  min-width: 42px;
+  padding: 0;
 }
 
 .model-list {

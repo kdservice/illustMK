@@ -8,6 +8,7 @@ import {
   deleteLoraTrainingProject,
   deleteModelFile,
   deleteIllustrationTag,
+  deletePromptHistoryEntry,
   deleteOllamaModelStorage,
   deleteOllamaModel,
   deleteDataPath,
@@ -338,6 +339,7 @@ function registerIpc(): void {
   ipcMain.handle("prompt-history:list", () => getSavedPromptHistory());
   ipcMain.handle("prompt-history:save", (_event, request: SavePromptHistoryRequest) => savePromptHistoryEntry(request));
   ipcMain.handle("prompt-history:update-memo", (_event, request: UpdatePromptHistoryMemoRequest) => updatePromptHistoryMemo(request));
+  ipcMain.handle("prompt-history:delete", (_event, request: { id: string }) => deletePromptHistoryEntry(request));
   ipcMain.handle("prompt-history:clear", () => clearPromptHistory());
   ipcMain.handle("tags:list", () => getIllustrationTags());
   ipcMain.handle("tags:generate-ja", (_event, request: TagDescriptionRequest) => generateTagJapaneseDescription(request));

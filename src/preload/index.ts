@@ -143,6 +143,7 @@ const api = {
     save: (request: SavePromptHistoryRequest): Promise<PromptHistoryEntry[]> => ipcRenderer.invoke("prompt-history:save", request),
     updateMemo: (request: UpdatePromptHistoryMemoRequest): Promise<PromptHistoryEntry[]> =>
       ipcRenderer.invoke("prompt-history:update-memo", request),
+    delete: (request: { id: string }): Promise<PromptHistoryEntry[]> => ipcRenderer.invoke("prompt-history:delete", request),
     clear: (): Promise<PromptHistoryEntry[]> => ipcRenderer.invoke("prompt-history:clear")
   },
   app: {

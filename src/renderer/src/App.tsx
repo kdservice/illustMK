@@ -67,6 +67,7 @@ type RepeatGenerationItem = {
   durationText?: string;
   result?: TestGenerationResult;
   historyId?: string;
+  memo?: string;
   error?: string;
 };
 
@@ -228,6 +229,8 @@ function App() {
   const [repeatRunning, setRepeatRunning] = useState(false);
   const [repeatPaused, setRepeatPaused] = useState(false);
   const [repeatPreviewImage, setRepeatPreviewImage] = useState<string | null>(null);
+  const [repeatMemoEditingItemId, setRepeatMemoEditingItemId] = useState<string | null>(null);
+  const [repeatMemoText, setRepeatMemoText] = useState("");
   const [imageSizePreset, setImageSizePreset] = useState("768x1024");
   const [generationWidth, setGenerationWidth] = useState(768);
   const [generationHeight, setGenerationHeight] = useState(1024);
@@ -1818,6 +1821,37 @@ function App() {
     });
   }
 
+  function openRepeatMemoEditor(item: RepeatGenerationItem): void {
+    if (!item.historyId) return;
+    setRepeatMemoEditingItemId(item.id);
+    setRepeatMemoText(item.memo ?? "");
+  }
+
+  async function saveRepeatHistoryMemo(): Promise<void> {
+    const item = repeatItems.find((current) => current.id === repeatMemoEditingItemId);
+    if (!item?.historyId) return;
+    const memo = repeatMemoText;
+    await runAction("Repeat生成メモを更新中", () => window.illustMK.promptHistory.updateMemo({ id: item.historyId!, memo }), (history) => {
+      setPromptHistory(history);
+      setRepeatItems((current) => current.map((repeatItem) => (repeatItem.id === item.id ? { ...repeatItem, memo } : repeatItem)));
+      if (lastHistoryId === item.historyId) setImageMemo(memo);
+      setRepeatMemoEditingItemId(null);
+      setRepeatMemoText("");
+    });
+  }
+
+  async function deletePromptHistory(entry: PromptHistoryEntry): Promise<void> {
+    if (!window.confirm("この履歴を削除します。元に戻せません。")) return;
+    await runAction("プロンプト履歴を削除中", () => window.illustMK.promptHistory.delete({ id: entry.id }), (history) => {
+      setPromptHistory(history);
+      setRepeatItems((current) => current.map((item) => (item.historyId === entry.id ? { ...item, historyId: undefined } : item)));
+      if (lastHistoryId === entry.id) {
+        setLastHistoryId(null);
+        setImageMemo("");
+      }
+    });
+  }
+
   function toggleBaseFilter(filter: string): void {
     setBaseFilters((current) => (current.includes(filter) ? current.filter((item) => item !== filter) : [...current, filter]));
   }
@@ -1927,7 +1961,7 @@ function App() {
             setLastImage(result.imageDataUrl ?? result.imagePath ?? null);
           }
           setRepeatItems((current) =>
-            current.map((item) => (item.id === itemId ? { ...item, result, durationText, historyId: history[0]?.id } : item))
+            current.map((item) => (item.id === itemId ? { ...item, result, durationText, historyId: history[0]?.id, memo: imageMemo } : item))
           );
         } catch (error) {
           const errorText = error instanceof Error ? error.message : String(error);
@@ -3337,7 +3371,7 @@ function App() {
                   return (
                     <article className={item.error ? "repeat-tile error" : "repeat-tile"} key={item.id}>
                       {image ? (
-                        <button type="button" onClick={() => setRepeatPreviewImage(image)} title="拡大表示">
+                        <button className="repeat-image-button" type="button" onClick={() => setRepeatPreviewImage(image)} title="拡大表示">
                           <img src={imageUrl(image)} alt={`Repeat seed ${item.seed}`} />
                         </button>
                       ) : (
@@ -3347,8 +3381,14 @@ function App() {
                         </div>
                       )}
                       <footer>
-                        <strong>Seed {item.seed}</strong>
+                        <div className="repeat-seed-row">
+                          <strong>Seed {item.seed}</strong>
+                          <button className="icon-button" disabled={!item.historyId} onClick={() => openRepeatMemoEditor(item)} title="メモ編集">
+                            <Pencil size={14} />
+                          </button>
+                        </div>
                         {item.durationText ? <span>{item.durationText}</span> : null}
+                        {item.memo ? <small className="repeat-memo">{item.memo}</small> : null}
                         {item.error ? <small>{item.error}</small> : null}
                       </footer>
                     </article>
@@ -3407,6 +3447,29 @@ function App() {
             </div>
             <div className="image-preview-frame">
               <img src={imageUrl(repeatPreviewImage)} alt="Repeat generated preview enlarged" />
+            </div>
+          </section>
+        </div>
+      ) : null}
+      {repeatMemoEditingItemId ? (
+        <div className="modal-backdrop stacked">
+          <section className="modal-panel repeat-memo-modal">
+            <div className="modal-header">
+              <PanelTitle icon={<Pencil size={18} />} title="Repeatメモ編集" />
+              <button className="icon-button" onClick={() => setRepeatMemoEditingItemId(null)} title="閉じる">
+                <Square size={16} />
+              </button>
+            </div>
+            <div className="field">
+              <label>Memo</label>
+              <textarea value={repeatMemoText} onChange={(event) => setRepeatMemoText(event.target.value)} />
+            </div>
+            <div className="modal-actions">
+              <button onClick={() => setRepeatMemoEditingItemId(null)}>キャンセル</button>
+              <button className="primary" onClick={() => void saveRepeatHistoryMemo()}>
+                <Save size={17} />
+                更新
+              </button>
             </div>
           </section>
         </div>
@@ -3666,10 +3729,15 @@ function App() {
                       {entry.memo ? <p className="history-memo">{entry.memo}</p> : null}
                       {entry.missingAssets?.length ? <small>不足: {entry.missingAssets.join(" / ")}</small> : null}
                       <small>{entry.negativePrompt}</small>
-                      <button disabled={entry.restorable === false} onClick={() => applyPromptHistory(entry)}>
-                        <CheckCircle2 size={17} />
-                        流用
-                      </button>
+                      <div className="history-card-actions">
+                        <button disabled={entry.restorable === false} onClick={() => applyPromptHistory(entry)}>
+                          <CheckCircle2 size={17} />
+                          流用
+                        </button>
+                        <button className="icon-button danger" onClick={() => void deletePromptHistory(entry)} title="削除">
+                          <Trash2 size={15} />
+                        </button>
+                      </div>
                     </div>
                   </article>
                 ))

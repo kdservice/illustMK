@@ -497,6 +497,10 @@ export type UpdatePromptHistoryMemoRequest = {
   memo: string;
 };
 
+export type DeletePromptHistoryEntryRequest = {
+  id: string;
+};
+
 type FetchContext = "Civitai検索" | "Civitaiダウンロード" | "Civitaiサムネイル";
 
 export type TestGenerationResult = {
@@ -2563,6 +2567,12 @@ export async function updatePromptHistoryMemo(request: UpdatePromptHistoryMemoRe
   const history = await readPromptHistoryRaw();
   const nextHistory = history.map((entry) => (entry.id === request.id ? { ...entry, memo: request.memo } : entry));
   await savePromptHistory(nextHistory);
+  return getVisiblePromptHistory();
+}
+
+export async function deletePromptHistoryEntry(request: DeletePromptHistoryEntryRequest): Promise<PromptHistoryEntry[]> {
+  const history = await readPromptHistoryRaw();
+  await savePromptHistory(history.filter((entry) => entry.id !== request.id));
   return getVisiblePromptHistory();
 }
 
