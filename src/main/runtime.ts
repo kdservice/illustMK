@@ -3377,6 +3377,16 @@ export async function runTestGeneration(request: TestGenerationRequest): Promise
         promptId
       };
     }
+    const historyImage = findPromptHistoryImage(history, paths.outputs);
+    if (historyImage && (await exists(historyImage))) {
+      return {
+        ok: true,
+        message: "テスト生成が完了しました。",
+        imagePath: historyImage,
+        imageDataUrl: await imageDataUrl(historyImage),
+        promptId
+      };
+    }
     const outputs = await listFiles(paths.outputs);
     const fresh = outputs.find((name) => !before.has(name) && /\.(png|jpe?g|webp)$/i.test(name));
     if (fresh) {
@@ -3396,6 +3406,31 @@ export async function runTestGeneration(request: TestGenerationRequest): Promise
     message: "生成完了を待機しましたが、新しい画像を確認できませんでした。",
     promptId
   };
+}
+
+function findPromptHistoryImage(history: unknown, outputsDir: string): string | null {
+  if (!history || typeof history !== "object") return null;
+  const root = history as Record<string, unknown>;
+  for (const entry of Object.values(root)) {
+    if (!entry || typeof entry !== "object") continue;
+    const outputs = (entry as Record<string, unknown>).outputs;
+    if (!outputs || typeof outputs !== "object") continue;
+    for (const nodeOutput of Object.values(outputs as Record<string, unknown>)) {
+      if (!nodeOutput || typeof nodeOutput !== "object") continue;
+      const images = (nodeOutput as Record<string, unknown>).images;
+      if (!Array.isArray(images)) continue;
+      for (const image of images) {
+        if (!image || typeof image !== "object") continue;
+        const imageRecord = image as Record<string, unknown>;
+        const filename = typeof imageRecord.filename === "string" ? imageRecord.filename : "";
+        const subfolder = typeof imageRecord.subfolder === "string" ? imageRecord.subfolder : "";
+        const type = typeof imageRecord.type === "string" ? imageRecord.type : "output";
+        if (type !== "output" || !/\.(png|jpe?g|webp)$/i.test(filename)) continue;
+        return join(outputsDir, subfolder, filename);
+      }
+    }
+  }
+  return null;
 }
 
 function applyLorasToWorkflow(

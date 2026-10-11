@@ -1983,7 +1983,7 @@ function App() {
       imageSizePreset,
       steps: request.steps,
       cfg: request.cfg,
-      seedMode,
+      seedMode: "fixed",
       seedValue: request.seed,
       requestSeed: request.seed,
       comfyUrl,
