@@ -1777,6 +1777,28 @@ function App() {
     setBaseFilters((current) => (current.includes(filter) ? current.filter((item) => item !== filter) : [...current, filter]));
   }
 
+  function createGenerationRequest(seed: number): TestGenerationRequest {
+    return {
+      prompt: effectivePrompt,
+      negativePrompt: effectiveNegativePrompt,
+      checkpoint: selectedCheckpoint,
+      loras: activeGenerationLoras,
+      width: generationWidth,
+      height: generationHeight,
+      steps: generationSteps,
+      cfg: generationCfg,
+      seed,
+      comfyUrl,
+      vae: selectedVae || undefined,
+      clip: selectedClip || undefined
+    };
+  }
+
+  function nextGenerationSeed(): number {
+    if (seedMode === "fixed" && seedValue >= 0) return seedValue;
+    return Math.floor(Math.random() * Number.MAX_SAFE_INTEGER);
+  }
+
   const downloadRequest: DownloadRequest = {
     url: downloadUrl.trim(),
     targetType: "checkpoints",
@@ -1784,20 +1806,7 @@ function App() {
     sha256: downloadSha.trim() || undefined
   };
 
-  const currentTestRequest: TestGenerationRequest = {
-    prompt: effectivePrompt,
-    negativePrompt: effectiveNegativePrompt,
-    checkpoint: selectedCheckpoint,
-    loras: activeGenerationLoras,
-    width: generationWidth,
-    height: generationHeight,
-    steps: generationSteps,
-    cfg: generationCfg,
-    seed: seedMode === "random" ? -1 : seedValue,
-    comfyUrl,
-    vae: selectedVae || undefined,
-    clip: selectedClip || undefined
-  };
+  const currentTestRequest = createGenerationRequest(seedMode === "fixed" ? seedValue : 0);
   const restoredRequestApplies = Boolean(
     restoredGenerationSettings?.generationRequest &&
     restoredGenerationSettings.prompt === prompt &&
@@ -1859,7 +1868,7 @@ function App() {
   }
 
   async function runLoraOnOffCompare(): Promise<void> {
-    const compareSeed = seedMode === "fixed" && seedValue >= 0 ? seedValue : Math.floor(Math.random() * Number.MAX_SAFE_INTEGER);
+    const compareSeed = nextGenerationSeed();
     setSeedMode("fixed");
     setSeedValue(compareSeed);
     await runAction(
@@ -2952,12 +2961,15 @@ function App() {
                         "ComfyUIでテスト生成中",
                         async () => {
                           const startedAt = performance.now();
-                          const requestLoras = testRequest.loras ?? [];
-                          appendLog("info", `ComfyUI Positive Prompt: ${testRequest.prompt}`);
-                          appendLog("info", `ComfyUI Negative Prompt: ${testRequest.negativePrompt}`);
+                          const request = restoredRequestApplies && restoredGenerationSettings?.generationRequest
+                            ? testRequest
+                            : createGenerationRequest(nextGenerationSeed());
+                          const requestLoras = request.loras ?? [];
+                          appendLog("info", `ComfyUI Positive Prompt: ${request.prompt}`);
+                          appendLog("info", `ComfyUI Negative Prompt: ${request.negativePrompt}`);
                           appendLog("info", `ComfyUI LoRA: ${requestLoras.length ? requestLoras.map((lora) => `${lora.name} model=${lora.modelStrength} clip=${lora.clipStrength}`).join(", ") : "なし"}`);
-                          appendLog("info", `ComfyUI Size/Steps/CFG/Seed: ${testRequest.width}x${testRequest.height} / ${testRequest.steps} / ${testRequest.cfg} / ${testRequest.seed}`);
-                          const result = await window.illustMK.runtime.testGenerate(testRequest);
+                          appendLog("info", `ComfyUI Size/Steps/CFG/Seed: ${request.width}x${request.height} / ${request.steps} / ${request.cfg} / ${request.seed}`);
+                          const result = await window.illustMK.runtime.testGenerate(request);
                           appendLog("info", `ComfyUI Prompt ID: ${result.promptId ?? "なし"}`);
                           const durationText = formatGenerationDuration(performance.now() - startedAt);
                           const resultWithDuration = {
@@ -2965,7 +2977,7 @@ function App() {
                             message: result.message ? `${result.message} (生成時間 ${durationText})` : `(生成時間 ${durationText})`
                           };
                           const history = await window.illustMK.promptHistory.save({
-                            ...testRequest,
+                            ...request,
                             prompt,
                             negativePrompt,
                             japanesePrompt,
@@ -2977,7 +2989,7 @@ function App() {
                             negativeOptionTagIds,
                             positiveLoraTriggerIds,
                             memo: imageMemo,
-                            generationSettings: buildGenerationHistorySettings(testRequest),
+                            generationSettings: buildGenerationHistorySettings(request),
                             imagePath: result.imagePath,
                             imageDataUrl: result.imageDataUrl
                           });
@@ -3043,7 +3055,7 @@ function App() {
                 <div className="field">
                   <label>Seed</label>
                   <select value={seedMode} onChange={(event) => setSeedMode(event.target.value as "random" | "fixed")}>
-                    <option value="random">Random (-1)</option>
+                    <option value="random">Random</option>
                     <option value="fixed">Fixed</option>
                   </select>
                 </div>

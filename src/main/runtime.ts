@@ -4359,7 +4359,7 @@ function testWorkflowTemplate(): Record<string, { class_type: string; inputs: Re
     "3": {
       class_type: "KSampler",
       inputs: {
-        seed: -1,
+        seed: 0,
         steps: 20,
         cfg: 7,
         sampler_name: "euler",
