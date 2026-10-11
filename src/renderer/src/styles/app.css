@@ -382,6 +382,11 @@ label {
   overflow: hidden;
 }
 
+.lora-layout > .panel:not(.lora-sidebar) {
+  overflow-y: auto;
+  align-content: start;
+}
+
 .lora-sidebar {
   height: 100%;
   min-height: 0;
