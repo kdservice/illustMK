@@ -332,6 +332,7 @@ export type LoraTrainingProject = {
   outputName: string;
   thumbnailPath?: string;
   thumbnailDataUrl?: string;
+  sourcePageUrl?: string;
   resolution: number;
   repeats: number;
   epochs: number;
@@ -1890,6 +1891,7 @@ function normalizeLoraTrainingProject(project: LoraTrainingProject, paths: Runti
     triggerWord: triggerWords[0] ?? "",
     triggerWords,
     sourceLora: project.sourceLora ?? "",
+    sourcePageUrl: project.sourcePageUrl ?? "",
     projectDir: resolvedProjectDir,
     datasetPath: project.datasetPath && basename(project.datasetPath) === "dataset" ? project.datasetPath : join(resolvedProjectDir, "dataset"),
     thumbnailPath: project.thumbnailPath
@@ -1952,6 +1954,7 @@ export async function saveLoraTrainingProject(request: SaveLoraTrainingProjectRe
     triggerWord: triggerWords[0] ?? "",
     triggerWords,
     sourceLora: existing?.sourceLora ?? "",
+    sourcePageUrl: existing?.sourcePageUrl,
     baseCheckpoint: request.baseCheckpoint.trim(),
     projectDir: projectRoot,
     datasetPath,
@@ -2085,23 +2088,25 @@ export async function downloadCivitaiLoraProject(
     const thumbnailPath = existing.thumbnailPath && thumbnailExists
       ? existing.thumbnailPath
       : await saveCivitaiLoraThumbnail(model, projectRoot);
+    const updatedProject: LoraTrainingProject = {
+      ...existing,
+      sourceLora: fileName,
+      outputName: fileName,
+      projectDir: projectRoot,
+      datasetPath: join(projectRoot, "dataset"),
+      thumbnailPath,
+      sourcePageUrl: model.pageUrl,
+      updatedAt: now,
+      status: "complete",
+      message: "Civitaiから取得済みのLoRAです。生成タブで選択できます。"
+    };
     const nextProjects: LoraTrainingProject[] = projects.map((project) =>
-      project.id === existing.id
-        ? {
-            ...project,
-            sourceLora: fileName,
-            outputName: fileName,
-            projectDir: projectRoot,
-            datasetPath: join(projectRoot, "dataset"),
-            thumbnailPath,
-            updatedAt: now,
-            status: "complete" as const,
-            message: "Civitaiから取得済みのLoRAです。生成タブで選択できます。"
-          }
-        : project
+      project.id === existing.id ? updatedProject : project
     );
+    await mkdir(join(projectRoot, "config"), { recursive: true });
+    await writeFile(join(projectRoot, "config", "lora-training.json"), JSON.stringify(stripLoraTransientFields(updatedProject), null, 2), "utf8");
     await saveLoraTrainingProjects(nextProjects);
-    return nextProjects;
+    return getLoraTrainingProjects();
   }
 
   const nameBase = safeFileName(model.name || fileName.replace(/\.safetensors$/i, ""));
@@ -2119,6 +2124,7 @@ export async function downloadCivitaiLoraProject(
     name: projectName,
     triggerWord: "",
     sourceLora: fileName,
+    sourcePageUrl: model.pageUrl,
     baseCheckpoint: model.baseModel || "unknown",
     projectDir: projectRoot,
     datasetPath,
@@ -2141,7 +2147,7 @@ export async function downloadCivitaiLoraProject(
   await writeFile(join(projectRoot, "config", "lora-training.json"), JSON.stringify(stripLoraTransientFields(project), null, 2), "utf8");
   const nextProjects = [project, ...projects];
   await saveLoraTrainingProjects(nextProjects);
-  return nextProjects;
+  return getLoraTrainingProjects();
 }
 
 async function saveCivitaiLoraThumbnail(model: CivitaiModelCard, projectRoot: string): Promise<string | undefined> {

@@ -2759,6 +2759,13 @@ function App() {
                     </div>
                   </div>
                   <div className="lora-detail-actions">
+                    <button
+                      disabled={!selectedLoraProject.sourcePageUrl}
+                      onClick={() => selectedLoraProject.sourcePageUrl && void window.illustMK.app.openExternal(selectedLoraProject.sourcePageUrl)}
+                    >
+                      <ExternalLink size={17} />
+                      Webページ
+                    </button>
                     <button className="primary" disabled={action.busy || !loraDetailName.trim()} onClick={() => void saveSelectedLoraDetails()}>
                       <Save size={17} />
                       更新
