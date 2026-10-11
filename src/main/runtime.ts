@@ -553,6 +553,7 @@ const dockerCommandPath = [
   "/usr/sbin",
   "/sbin"
 ].join(":");
+const civitaiUserAgent = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) illustMK/0.1 Safari/537.36";
 
 let activeRuntimeRoot = loadActiveRuntimeRoot();
 
@@ -1334,15 +1335,23 @@ export async function searchCivitaiModelPage(options: {
     params.set("page", String(options.page ?? 1));
   }
 
-  const response = await fetch(`https://civitai.com/api/v1/models?${params.toString()}`, {
-    headers: {
-      Accept: "application/json",
-      "User-Agent": "illustMK/0.1",
-      ...(await civitaiAuthHeader())
-    }
-  });
+  const url = `https://civitai.com/api/v1/models?${params.toString()}`;
+  let response: Response;
+  try {
+    response = await fetch(url, {
+      headers: {
+        Accept: "application/json",
+        "User-Agent": civitaiUserAgent,
+        ...(await civitaiAuthHeader())
+      },
+      signal: AbortSignal.timeout(30000)
+    });
+  } catch (error) {
+    throw new Error(`Civitai APIへ接続できませんでした: ${fetchFailureMessage(error)} / ${url}`);
+  }
   if (!response.ok) {
-    throw new Error(`Civitai API取得に失敗しました: HTTP ${response.status}`);
+    const body = await response.text().catch(() => "");
+    throw new Error(`Civitai API取得に失敗しました: HTTP ${response.status}${body ? ` / ${body.slice(0, 180)}` : ""}`);
   }
 
   const json = (await response.json()) as { items?: unknown[]; metadata?: { nextCursor?: string | number | null } };
@@ -3168,6 +3177,14 @@ function downloadErrorMessage(status: number, url: URL): string {
     ].join("\n");
   }
   return `ダウンロードに失敗しました: HTTP ${status}`;
+}
+
+function fetchFailureMessage(error: unknown): string {
+  if (error instanceof Error) {
+    if (error.name === "TimeoutError" || error.name === "AbortError") return "タイムアウトしました";
+    return error.message;
+  }
+  return String(error);
 }
 
 export async function runTestGeneration(request: TestGenerationRequest): Promise<TestGenerationResult> {
