@@ -1211,11 +1211,18 @@ export async function downloadModel(request: DownloadRequest, onLog?: RuntimeLog
   }
 
   const targetPath = join(targetDir, fileName);
+  const isCivitaiDownload = request.source === "civitai" || url.hostname.includes("civitai.com");
+  const requestUrl = await withCivitaiToken(url);
   const headers: Record<string, string> = {
-    "User-Agent": "illustMK/0.1",
-    ...(request.source === "civitai" || url.hostname.includes("civitai.com") ? await civitaiAuthHeader() : {})
+    "User-Agent": isCivitaiDownload ? civitaiUserAgent : "illustMK/0.1",
+    ...(isCivitaiDownload ? await civitaiAuthHeader() : {})
   };
-  const response = await fetch(await withCivitaiToken(url), { headers });
+  let response: Response;
+  try {
+    response = await fetch(requestUrl, { headers });
+  } catch (error) {
+    throw new Error(`ダウンロードURLへ接続できませんでした: ${fetchFailureMessage(error)} / ${requestUrl.toString()}`);
+  }
   if (!response.ok || !response.body) {
     throw new Error(downloadErrorMessage(response.status, url));
   }
@@ -2031,7 +2038,7 @@ export async function updateLoraTrainingProjectThumbnail(request: UpdateLoraThum
     const response = await fetch(parsedUrl, {
       headers: {
         Accept: "image/avif,image/webp,image/png,image/jpeg,*/*",
-        "User-Agent": "illustMK/0.1"
+        "User-Agent": civitaiUserAgent
       },
       signal: AbortSignal.timeout(30000)
     });
@@ -2167,7 +2174,7 @@ async function saveCivitaiLoraThumbnail(model: CivitaiModelCard, projectRoot: st
       headers: {
         Accept: "image/avif,image/webp,image/png,image/jpeg,*/*",
         Referer: "https://civitai.com/",
-        "User-Agent": "illustMK/0.1"
+        "User-Agent": civitaiUserAgent
       },
       signal: AbortSignal.timeout(30000)
     });
