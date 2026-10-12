@@ -1812,9 +1812,11 @@ export async function searchCivitaiModelPage(options: {
   }
 
   const json = (await response.json()) as { items?: unknown[]; metadata?: { nextCursor?: string | number | null } };
+  const requestedType = options.type ?? "Checkpoint";
   const models = (json.items ?? [])
     .flatMap(normalizeCivitaiModel)
-    .filter((model) => (options.type ?? "Checkpoint") !== "Checkpoint" || isAllowedBaseModel(model, options.baseModels ?? defaultBaseModelFilters))
+    .filter((model) => model.type.toLowerCase() === requestedType.toLowerCase())
+    .filter((model) => requestedType !== "Checkpoint" || isAllowedBaseModel(model, options.baseModels ?? defaultBaseModelFilters))
     .slice(0, options.limit ?? 10);
   return {
     models,

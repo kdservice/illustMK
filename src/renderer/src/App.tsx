@@ -3963,7 +3963,7 @@ function App() {
                   <label>MODEL TYPE</label>
                   <div className="filter-buttons">
                     {(["checkpoint", "controlnet", "vae", "other"] as ModelAssetType[]).map((type) => (
-                      <button key={type} className={modelCatalogTypes.includes(type) ? "filter-chip active" : "filter-chip"} onClick={() => setModelCatalogTypes((current) => current.includes(type) ? current.filter((item) => item !== type) : [...current, type])}>{modelTypeLabel(type)}</button>
+                      <button key={type} className={modelCatalogTypes.includes(type) ? "filter-chip active" : "filter-chip"} onClick={() => setModelCatalogTypes([type])}>{modelTypeLabel(type)}</button>
                     ))}
                     <button className="filter-chip openpose-shortcut" onClick={() => { setModelCatalogTypes(["controlnet"]); setModelCatalogQuery("OpenPose"); }}>OpenPose</button>
                   </div>
