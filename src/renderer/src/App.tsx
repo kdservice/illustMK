@@ -132,6 +132,7 @@ type UsageSample = {
   gpu: number | null;
 };
 const recommendedLlmModels = [
+  { name: "qwen2.5vl:3b", source: "Ollama", size: "軽量", note: "画像対応VLM。デッサン人形のポーズ解析向け。" },
   { name: "qwen2.5:3b-instruct", source: "Ollama", size: "軽量", note: "まず試す用。日本語もそこそこ。" },
   { name: "qwen2.5:7b-instruct", source: "Ollama", size: "標準", note: "日本語prompt整形の本命寄り。" },
   { name: "gemma3:4b", source: "Ollama", size: "軽量", note: "4B級の候補。応答が軽い。" },
@@ -434,8 +435,19 @@ function App() {
         selectedCheckpointInfo.hasVae ? "VAE内蔵" : selectedVae ? `外部VAE: ${selectedVae}` : "外部VAEが必要"
       ].join(" / ")
     : "未選択";
+  const poseAnalysisReady = Boolean(
+    !poseConditioning.analysisStale && poseConditioning.positivePrompt?.trim()
+  ) || Boolean(
+    poseConditioning.referenceImageDataUrl &&
+    poseConditioning.visionModel &&
+    ollamaStatus?.reachable &&
+    ollamaStatus.dataLinked
+  );
   const poseConditioningReady = !poseConditioning.enabled || Boolean(
-    poseConditioning.imageDataUrl && poseConditioning.controlNet && status?.controlnet.some((file) => file.name === poseConditioning.controlNet)
+    poseConditioning.imageDataUrl &&
+    poseConditioning.controlNet &&
+    status?.controlnet.some((file) => file.name === poseConditioning.controlNet) &&
+    poseAnalysisReady
   );
   const canGenerate = Boolean(status?.comfyReachable && selectedCheckpointGenerationReady && poseConditioningReady && !action.busy);
   const canDownloadLlm = Boolean(ollamaStatus?.reachable && ollamaStatus.dataLinked && llmPullName.trim() && !action.busy);
@@ -1032,7 +1044,7 @@ function App() {
     setSelectedSavedPoseId(id);
     if (!saved) return;
     setPoseTitle(saved.title);
-    setPoseConditioning(structuredClone(saved.pose));
+    setPoseConditioning(normalizePoseConditioning(saved.pose));
     setRestoredGenerationSettings(null);
   }
 
@@ -1058,7 +1070,7 @@ function App() {
         currentPose: poseConditioning
       });
       setRestoredGenerationSettings(null);
-      setPoseConditioning(result.pose);
+      setPoseConditioning({ ...result.pose, analysisStale: true });
       appendLog("info", result.summary, id);
       setAction({ busy: false, message: "完了しました", error: null });
       return result.summary;
@@ -1068,6 +1080,59 @@ function App() {
       setAction({ busy: false, message: "失敗しました", error: errorText });
       throw error;
     }
+  }
+
+  async function analyzePose(pose: PoseConditioning): Promise<{ pose: PoseConditioning; summary: string }> {
+    if (!pose.visionModel?.trim()) throw new Error("画像対応VLMを選択してください。");
+    if (!pose.referenceImageDataUrl) throw new Error("解析するデッサン人形画像がありません。");
+    const result = await window.illustMK.poses.analyze({
+      ollamaUrl,
+      model: pose.visionModel,
+      imageDataUrl: pose.referenceImageDataUrl
+    });
+    return {
+      pose: {
+        ...pose,
+        positivePrompt: result.positivePrompt,
+        negativePrompt: result.negativePrompt,
+        analysisStale: false
+      },
+      summary: result.summary
+    };
+  }
+
+  async function analyzeCurrentPose(): Promise<string> {
+    const id = crypto.randomUUID();
+    currentOperationId.current = id;
+    appendLog("info", `VLMでデッサンポーズを解析中: ${poseConditioning.visionModel || "未選択"}`, id);
+    setAction({ busy: true, message: "VLMでポーズを解析中", error: null });
+    try {
+      const result = await analyzePose(poseConditioning);
+      setRestoredGenerationSettings(null);
+      setPoseConditioning(result.pose);
+      appendLog("info", `Pose Positive: ${result.pose.positivePrompt || "なし"}`, id);
+      appendLog("info", `Pose Negative: ${result.pose.negativePrompt || "なし"}`, id);
+      appendLog("info", result.summary, id);
+      setAction({ busy: false, message: "完了しました", error: null });
+      return result.summary;
+    } catch (error) {
+      const errorText = error instanceof Error ? error.message : String(error);
+      appendLog("stderr", errorText, id);
+      setAction({ busy: false, message: "失敗しました", error: errorText });
+      throw error;
+    }
+  }
+
+  async function ensurePoseAnalysis(pose: PoseConditioning): Promise<PoseConditioning> {
+    if (!pose.enabled) return pose;
+    if (!pose.analysisStale && pose.positivePrompt?.trim()) return pose;
+    appendLog("info", `生成前にVLMでデッサンポーズを解析します: ${pose.visionModel || "未選択"}`);
+    const result = await analyzePose(pose);
+    setPoseConditioning(result.pose);
+    appendLog("info", `Pose Positive: ${result.pose.positivePrompt || "なし"}`);
+    appendLog("info", `Pose Negative: ${result.pose.negativePrompt || "なし"}`);
+    appendLog("info", result.summary);
+    return result.pose;
   }
 
   function updateModelDraft(patch: Partial<ModelLibraryEntry>): void {
@@ -1448,9 +1513,9 @@ function App() {
     setGenerationCfg(settings?.cfg ?? entry.cfg);
     setSeedMode(settings?.seedMode ?? (entry.seed >= 0 ? "fixed" : "random"));
     setSeedValue(settings?.seedValue ?? entry.seed);
-    setPoseConditioning(
-      settings?.poseConditioning ?? settings?.generationRequest?.poseConditioning ?? createDefaultPoseConditioning()
-    );
+    setPoseConditioning(normalizePoseConditioning(
+      settings?.poseConditioning ?? settings?.generationRequest?.poseConditioning
+    ));
     if (settings?.baseFilters) setBaseFilters(settings.baseFilters);
     if (settings?.selectedModelAddMode === "catalog" || settings?.selectedModelAddMode === "url") setModelAddMode(settings.selectedModelAddMode);
     if (
@@ -2181,10 +2246,11 @@ function App() {
     setBaseFilters((current) => (current.includes(filter) ? current.filter((item) => item !== filter) : [...current, filter]));
   }
 
-  function createGenerationRequest(seed: number): TestGenerationRequest {
+  function createGenerationRequest(seed: number, activePose = poseConditioning): TestGenerationRequest {
+    const poseEnabled = activePose.enabled;
     return {
-      prompt: effectivePrompt,
-      negativePrompt: effectiveNegativePrompt,
+      prompt: composeGenerationPrompt(effectivePrompt, poseEnabled ? [activePose.positivePrompt ?? ""] : []),
+      negativePrompt: composeGenerationPrompt(effectiveNegativePrompt, poseEnabled ? [activePose.negativePrompt ?? ""] : []),
       checkpoint: selectedCheckpoint,
       loras: activeGenerationLoras,
       width: generationWidth,
@@ -2195,7 +2261,7 @@ function App() {
       comfyUrl,
       vae: selectedVae || undefined,
       clip: selectedClip || undefined,
-      poseConditioning: poseConditioning.enabled ? poseConditioning : undefined
+      poseConditioning: poseEnabled ? activePose : undefined
     };
   }
 
@@ -2252,6 +2318,15 @@ function App() {
 
   async function runRepeatGenerate(): Promise<void> {
     if (repeatRunning || !canGenerate) return;
+    let repeatPose: PoseConditioning;
+    try {
+      repeatPose = await ensurePoseAnalysis(poseConditioning);
+    } catch (error) {
+      const errorText = error instanceof Error ? error.message : String(error);
+      appendLog("stderr", errorText);
+      setAction({ busy: false, message: "失敗しました", error: errorText });
+      return;
+    }
     setRepeatDialogOpen(true);
     setRepeatItems([]);
     setRepeatPreviewImage(null);
@@ -2267,7 +2342,7 @@ function App() {
         if (repeatStopRequested.current) break;
         const seed = nextRandomSeed(usedSeeds);
         usedSeeds.add(seed);
-        const request = createGenerationRequest(seed);
+        const request = createGenerationRequest(seed, repeatPose);
         const itemId = crypto.randomUUID();
         setRepeatItems((current) => [{ id: itemId, seed, startedAt: new Date().toISOString() }, ...current]);
         try {
@@ -3721,7 +3796,13 @@ function App() {
                         async () => {
                           const startedAt = performance.now();
                           const usesRestoredRequest = Boolean(restoredRequestApplies && restoredGenerationSettings?.generationRequest);
-                          const rawRequest = usesRestoredRequest ? testRequest : createGenerationRequest(nextGenerationSeed());
+                          const sourcePose = normalizePoseConditioning(
+                            usesRestoredRequest ? testRequest.poseConditioning : poseConditioning
+                          );
+                          const analyzedPose = await ensurePoseAnalysis(sourcePose);
+                          const rawRequest = usesRestoredRequest
+                            ? { ...testRequest, poseConditioning: analyzedPose.enabled ? analyzedPose : undefined }
+                            : createGenerationRequest(nextGenerationSeed(), analyzedPose);
                           const request = requestWithConcreteSeed(rawRequest);
                           const seedSource = usesRestoredRequest
                             ? rawRequest.seed >= 0
@@ -3784,6 +3865,8 @@ function App() {
                 onSavePose={() => void saveCurrentPose()}
                 onDeletePose={() => void deleteSelectedPose()}
                 onAssistPose={assistCurrentPose}
+                visionModels={ollamaStatus?.models.map((model) => model.name) ?? []}
+                onAnalyzePose={analyzeCurrentPose}
                 outputWidth={generationWidth}
                 outputHeight={generationHeight}
                 disabled={action.busy}
@@ -5334,8 +5417,26 @@ function samePoseConditioning(left: PoseConditioning | undefined, right: PoseCon
     left.strength === right.strength &&
     left.startPercent === right.startPercent &&
     left.endPercent === right.endPercent &&
-    left.imageDataUrl === right.imageDataUrl
+    left.imageDataUrl === right.imageDataUrl &&
+    left.referenceImageDataUrl === right.referenceImageDataUrl &&
+    left.visionModel === right.visionModel &&
+    left.positivePrompt === right.positivePrompt &&
+    left.negativePrompt === right.negativePrompt &&
+    left.analysisStale === right.analysisStale
   );
+}
+
+function normalizePoseConditioning(value?: PoseConditioning): PoseConditioning {
+  const defaults = createDefaultPoseConditioning();
+  if (!value) return defaults;
+  return {
+    ...defaults,
+    ...structuredClone(value),
+    jointRotations: value.jointRotations ?? defaults.jointRotations,
+    cameraPosition: value.cameraPosition ?? defaults.cameraPosition,
+    cameraTarget: value.cameraTarget ?? defaults.cameraTarget,
+    analysisStale: value.analysisStale ?? !value.positivePrompt?.trim()
+  };
 }
 
 function formatGenerationDuration(milliseconds: number): string {

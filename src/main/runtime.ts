@@ -390,6 +390,11 @@ export type PoseConditioning = {
   jointRotations: Record<string, PoseJointRotation>;
   cameraPosition: [number, number, number];
   cameraTarget: [number, number, number];
+  referenceImageDataUrl?: string;
+  visionModel?: string;
+  positivePrompt?: string;
+  negativePrompt?: string;
+  analysisStale?: boolean;
 };
 
 export type PoseAssistantRequest = {
@@ -401,6 +406,18 @@ export type PoseAssistantRequest = {
 
 export type PoseAssistantResult = {
   pose: PoseConditioning;
+  summary: string;
+};
+
+export type PoseVisionRequest = {
+  ollamaUrl: string;
+  model: string;
+  imageDataUrl: string;
+};
+
+export type PoseVisionResult = {
+  positivePrompt: string;
+  negativePrompt: string;
   summary: string;
 };
 
@@ -2261,6 +2278,46 @@ export async function generatePoseWithOllama(request: PoseAssistantRequest): Pro
   };
 }
 
+export async function analyzePoseImageWithOllama(request: PoseVisionRequest): Promise<PoseVisionResult> {
+  if (!request.model.trim()) throw new Error("画像対応VLMを選択してください。");
+  const imageBase64 = extractImageBase64(request.imageDataUrl);
+  if (!imageBase64) throw new Error("解析するデッサン人形画像がありません。");
+  await assertOllamaReady(request.ollamaUrl);
+  const instruction = [
+    "この画像はAIイラスト生成用の3Dデッサン人形です。人物の外見や服装ではなく、現在の姿勢とカメラ視点だけを解析してください。",
+    "手足の位置、身体の向き、接地状態、重心、視点を、画像生成モデルが理解しやすい短い英語タグへ変換してください。",
+    "positivePromptには見えているポーズを具体的に記述してください。negativePromptには、そのポーズと明確に競合する姿勢だけを記述してください。",
+    "推測できない内容を追加しないでください。Markdownを使わず、次のJSONだけを返してください。",
+    '{"positivePrompt":"...","negativePrompt":"...","summary":"解析した姿勢の短い日本語説明"}'
+  ].join("\n");
+  let response: Response;
+  try {
+    response = await fetch(`${request.ollamaUrl.replace(/\/$/, "")}/api/chat`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        model: request.model,
+        stream: false,
+        format: "json",
+        options: { temperature: 0.1 },
+        messages: [{ role: "user", content: instruction, images: [imageBase64] }]
+      })
+    });
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : String(error);
+    throw new Error(`OllamaのVLMへ接続できませんでした: ${detail}`);
+  }
+  if (!response.ok) {
+    const detail = (await response.text()).trim();
+    if (/image input is not supported|mmproj/i.test(detail)) {
+      throw new Error(`選択したモデル「${request.model}」は画像入力に対応していません。画像対応VLMを導入して選択してください。`);
+    }
+    throw new Error(`VLMによるポーズ解析に失敗しました: HTTP ${response.status}${detail ? `\n${detail}` : ""}`);
+  }
+  const json = (await response.json()) as { message?: { content?: string } };
+  return parsePoseVisionResponse(String(json.message?.content ?? ""));
+}
+
 function posePresetForInstruction(
   instruction: string,
   rotations: Record<string, PoseJointRotation>
@@ -3774,6 +3831,33 @@ function normalizePoseRotation(value: unknown, fallback: PoseJointRotation): Pos
     return [...fallback] as PoseJointRotation;
   }
   return value.map((item) => Math.max(-Math.PI, Math.min(Math.PI, Number(item)))) as PoseJointRotation;
+}
+
+function extractImageBase64(dataUrl: string): string {
+  const match = dataUrl.match(/^data:image\/[a-z0-9.+-]+;base64,([a-z0-9+/=]+)$/i);
+  return match?.[1] ?? "";
+}
+
+function parsePoseVisionResponse(response: string): PoseVisionResult {
+  const cleaned = response
+    .replace(/<think>[\s\S]*?<\/think>/gi, "")
+    .replace(/```(?:json)?/gi, "")
+    .trim();
+  const start = cleaned.indexOf("{");
+  const end = cleaned.lastIndexOf("}");
+  try {
+    const parsed = JSON.parse(start >= 0 && end > start ? cleaned.slice(start, end + 1) : cleaned) as Partial<PoseVisionResult>;
+    const positivePrompt = typeof parsed.positivePrompt === "string" ? parsed.positivePrompt.trim() : "";
+    const negativePrompt = typeof parsed.negativePrompt === "string" ? parsed.negativePrompt.trim() : "";
+    if (!positivePrompt) throw new Error("missing positivePrompt");
+    return {
+      positivePrompt,
+      negativePrompt,
+      summary: typeof parsed.summary === "string" && parsed.summary.trim() ? parsed.summary.trim() : "現在のポーズを解析しました。"
+    };
+  } catch {
+    throw new Error("VLMのポーズ解析結果をJSONとして認識できませんでした。");
+  }
 }
 
 async function saveIllustrationTags(tags: IllustrationTag[]): Promise<void> {

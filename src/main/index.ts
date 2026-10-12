@@ -34,6 +34,7 @@ import {
   getSavedPromptHistory,
   generateTagJapaneseDescription,
   generatePoseWithOllama,
+  analyzePoseImageWithOllama,
   initNativeRuntime,
   installLoraRuntime,
   importModelAsset,
@@ -95,6 +96,7 @@ import {
   type LlmChatRequest,
   type PromptEnhanceRequest,
   type PoseAssistantRequest,
+  type PoseVisionRequest,
   type SaveLoraCaptionWorkspaceRequest,
   type SaveIllustrationTagRequest,
   type SaveLoraTrainingProjectRequest,
@@ -387,6 +389,7 @@ function registerIpc(): void {
   ipcMain.handle("poses:save", (_event, request) => savePose(request));
   ipcMain.handle("poses:delete", (_event, id: string) => deleteSavedPose(id));
   ipcMain.handle("poses:assist", (_event, request: PoseAssistantRequest) => generatePoseWithOllama(request));
+  ipcMain.handle("poses:analyze", (_event, request: PoseVisionRequest) => analyzePoseImageWithOllama(request));
   ipcMain.handle("runtime:search-huggingface-llm", (_event, options) => searchHuggingFaceLlmModels(options));
   ipcMain.handle("runtime:test-generate", (_event, request: TestGenerationRequest) => runTestGeneration(request));
   ipcMain.handle("prompt-history:list", () => getSavedPromptHistory());

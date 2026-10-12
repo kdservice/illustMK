@@ -1895,9 +1895,49 @@ label {
   min-height: 0;
   height: auto;
   display: grid;
-  grid-template-rows: auto auto minmax(140px, 1fr) auto auto;
+  grid-template-rows: auto auto minmax(140px, 1fr) auto auto auto;
   gap: 10px;
   overflow: hidden;
+}
+
+.pose-vision-panel {
+  display: grid;
+  gap: 8px;
+  padding: 10px;
+  border: 1px solid #26375f;
+  border-radius: 8px;
+  background: #091329;
+}
+
+.pose-vision-toolbar {
+  display: grid;
+  grid-template-columns: minmax(180px, 1fr) auto minmax(160px, 0.8fr);
+  gap: 8px;
+  align-items: end;
+}
+
+.pose-vision-toolbar .field,
+.pose-prompt-fields .field {
+  margin-bottom: 0;
+}
+
+.pose-analysis-status {
+  align-self: center;
+  overflow: hidden;
+  color: #73e6b1;
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.pose-analysis-status.stale {
+  color: #f4c66c;
+}
+
+.pose-prompt-fields {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
 }
 
 .pose-library-bar {
@@ -3002,7 +3042,7 @@ label {
 
 @media (max-height: 850px) {
   .pose-editor {
-    grid-template-rows: auto auto minmax(110px, 1fr) auto auto;
+    grid-template-rows: auto auto minmax(110px, 1fr) auto auto auto;
   }
 
   .pose-viewport-wrap {

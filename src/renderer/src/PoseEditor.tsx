@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import * as THREE from "three";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
 import { TransformControls } from "three/examples/jsm/controls/TransformControls.js";
-import { Bot, Camera, RotateCcw, Save, Send, Trash2 } from "lucide-react";
+import { Bot, Camera, RotateCcw, Save, ScanSearch, Send, Trash2 } from "lucide-react";
 import type { PoseConditioning, PoseJointRotation, SavedPose } from "../../main/runtime";
 
 type PoseEditorProps = {
@@ -17,6 +17,8 @@ type PoseEditorProps = {
   onSavePose: () => void;
   onDeletePose: () => void;
   onAssistPose: (instruction: string) => Promise<string>;
+  visionModels: string[];
+  onAnalyzePose: () => Promise<string>;
   outputWidth: number;
   outputHeight: number;
   disabled?: boolean;
@@ -112,20 +114,27 @@ export function createDefaultPoseConditioning(): PoseConditioning {
     endPercent: 0.9,
     jointRotations: structuredClone(defaultRotations),
     cameraPosition: [0, 4.4, 10],
-    cameraTarget: [0, 3.8, 0]
+    cameraTarget: [0, 3.8, 0],
+    referenceImageDataUrl: "",
+    visionModel: "",
+    positivePrompt: "",
+    negativePrompt: "",
+    analysisStale: true
   };
 }
 
-export function PoseEditor({ value, controlNetModels, onChange, savedPoses, selectedSavedPoseId, poseTitle, onPoseTitleChange, onSelectSavedPose, onSavePose, onDeletePose, onAssistPose, outputWidth, outputHeight, disabled = false }: PoseEditorProps) {
+export function PoseEditor({ value, controlNetModels, onChange, savedPoses, selectedSavedPoseId, poseTitle, onPoseTitleChange, onSelectSavedPose, onSavePose, onDeletePose, onAssistPose, visionModels, onAnalyzePose, outputWidth, outputHeight, disabled = false }: PoseEditorProps) {
   const hostRef = useRef<HTMLDivElement | null>(null);
   const valueRef = useRef(value);
   const onChangeRef = useRef(onChange);
   const applyValueRef = useRef<((next: PoseConditioning) => void) | null>(null);
   const capturePoseRef = useRef<(() => string) | null>(null);
+  const captureReferenceRef = useRef<(() => string) | null>(null);
   const [selectedJoint, setSelectedJoint] = useState("hips");
   const [assistantInstruction, setAssistantInstruction] = useState("");
   const [assistantMessage, setAssistantMessage] = useState("");
   const [assistantBusy, setAssistantBusy] = useState(false);
+  const [analysisMessage, setAnalysisMessage] = useState("");
 
   valueRef.current = value;
   onChangeRef.current = onChange;
@@ -134,8 +143,16 @@ export function PoseEditor({ value, controlNetModels, onChange, savedPoses, sele
     applyValueRef.current?.(value);
     const frame = requestAnimationFrame(() => {
       const imageDataUrl = capturePoseRef.current?.();
-      if (imageDataUrl && imageDataUrl !== valueRef.current.imageDataUrl) {
-        onChangeRef.current({ ...valueRef.current, imageDataUrl });
+      const referenceImageDataUrl = captureReferenceRef.current?.();
+      if (
+        (imageDataUrl && imageDataUrl !== valueRef.current.imageDataUrl) ||
+        (referenceImageDataUrl && referenceImageDataUrl !== valueRef.current.referenceImageDataUrl)
+      ) {
+        onChangeRef.current({
+          ...valueRef.current,
+          imageDataUrl: imageDataUrl || valueRef.current.imageDataUrl,
+          referenceImageDataUrl: referenceImageDataUrl || valueRef.current.referenceImageDataUrl
+        });
       }
     });
     return () => cancelAnimationFrame(frame);
@@ -174,7 +191,8 @@ export function PoseEditor({ value, controlNetModels, onChange, savedPoses, sele
     const transform = new TransformControls(camera, renderer.domElement);
     transform.setMode("rotate");
     transform.setSize(0.72);
-    scene.add(transform.getHelper());
+    const transformHelper = transform.getHelper();
+    scene.add(transformHelper);
     transform.attach(rig.joints.get("hips")!);
 
     const raycaster = new THREE.Raycaster();
@@ -207,6 +225,8 @@ export function PoseEditor({ value, controlNetModels, onChange, savedPoses, sele
       onChangeRef.current({
         ...current,
         imageDataUrl: renderOpenPoseImage(rig, camera, current, outputWidth, outputHeight),
+        referenceImageDataUrl: renderMannequinImage(renderer, scene, camera, transformHelper),
+        analysisStale: true,
         jointRotations: rotations,
         cameraPosition: camera.position.toArray() as [number, number, number],
         cameraTarget: orbit.target.toArray() as [number, number, number]
@@ -216,6 +236,7 @@ export function PoseEditor({ value, controlNetModels, onChange, savedPoses, sele
       scene.updateMatrixWorld(true);
       return renderOpenPoseImage(rig, camera, valueRef.current, outputWidth, outputHeight);
     };
+    captureReferenceRef.current = () => renderMannequinImage(renderer, scene, camera, transformHelper);
 
     const selectAtPointer = (event: PointerEvent) => {
       if (transform.dragging) return;
@@ -277,17 +298,23 @@ export function PoseEditor({ value, controlNetModels, onChange, savedPoses, sele
       renderer.domElement.remove();
       applyValueRef.current = null;
       capturePoseRef.current = null;
+      captureReferenceRef.current = null;
     };
   }, [outputHeight, outputWidth]);
 
   const resetPose = () => {
-    const reset = { ...createDefaultPoseConditioning(), enabled: value.enabled, controlNet: value.controlNet };
+    const reset = {
+      ...createDefaultPoseConditioning(),
+      enabled: value.enabled,
+      controlNet: value.controlNet,
+      visionModel: value.visionModel
+    };
     onChange(reset);
   };
 
   const resetCamera = () => {
     const defaults = createDefaultPoseConditioning();
-    onChange({ ...value, cameraPosition: defaults.cameraPosition, cameraTarget: defaults.cameraTarget });
+    onChange({ ...value, cameraPosition: defaults.cameraPosition, cameraTarget: defaults.cameraTarget, analysisStale: true });
   };
 
   const runAssistant = async () => {
@@ -301,6 +328,16 @@ export function PoseEditor({ value, controlNetModels, onChange, savedPoses, sele
       setAssistantMessage(error instanceof Error ? error.message : String(error));
     } finally {
       setAssistantBusy(false);
+    }
+  };
+
+  const runVisionAnalysis = async () => {
+    if (disabled || !value.visionModel || !value.referenceImageDataUrl) return;
+    setAnalysisMessage("");
+    try {
+      setAnalysisMessage(await onAnalyzePose());
+    } catch (error) {
+      setAnalysisMessage(error instanceof Error ? error.message : String(error));
     }
   };
 
@@ -348,6 +385,50 @@ export function PoseEditor({ value, controlNetModels, onChange, savedPoses, sele
           <RotateCcw size={16} />
         </button>
       </div>
+      <div className="pose-vision-panel">
+        <div className="pose-vision-toolbar">
+          <div className="field">
+            <label>画像対応VLM</label>
+            <select
+              value={value.visionModel ?? ""}
+              onChange={(event) => onChange({ ...value, visionModel: event.target.value, analysisStale: true })}
+              disabled={disabled}
+            >
+              <option value="">選択してください</option>
+              {visionModels.map((name) => <option key={name} value={name}>{name}</option>)}
+            </select>
+          </div>
+          <button
+            type="button"
+            disabled={disabled || !value.visionModel || !value.referenceImageDataUrl}
+            onClick={() => void runVisionAnalysis()}
+          >
+            <ScanSearch size={16} />
+            {value.analysisStale ? "ポーズ解析" : "解析更新"}
+          </button>
+          <span className={value.analysisStale ? "pose-analysis-status stale" : "pose-analysis-status"}>
+            {analysisMessage || (value.analysisStale ? "生成時に自動解析します" : "解析済み")}
+          </span>
+        </div>
+        <div className="pose-prompt-fields">
+          <div className="field">
+            <label>POSE POSITIVE</label>
+            <input
+              value={value.positivePrompt ?? ""}
+              onChange={(event) => onChange({ ...value, positivePrompt: event.target.value, analysisStale: false })}
+              placeholder="VLM解析結果。生成時に自動追加"
+            />
+          </div>
+          <div className="field">
+            <label>POSE NEGATIVE</label>
+            <input
+              value={value.negativePrompt ?? ""}
+              onChange={(event) => onChange({ ...value, negativePrompt: event.target.value, analysisStale: false })}
+              placeholder="競合する姿勢。生成時に自動追加"
+            />
+          </div>
+        </div>
+      </div>
       <div className="pose-footer">
         <div className="pose-controlnet-field">
           <label>OPENPOSE CONTROLNET</label>
@@ -386,6 +467,21 @@ export function PoseEditor({ value, controlNetModels, onChange, savedPoses, sele
       {!controlNetModels.length ? <p className="pose-warning">「モデル」タブからOpenPose用ControlNetモデルを導入してください。</p> : null}
     </div>
   );
+}
+
+function renderMannequinImage(
+  renderer: THREE.WebGLRenderer,
+  scene: THREE.Scene,
+  camera: THREE.Camera,
+  transformHelper: THREE.Object3D
+): string {
+  const wasVisible = transformHelper.visible;
+  transformHelper.visible = false;
+  renderer.render(scene, camera);
+  const image = renderer.domElement.toDataURL("image/png");
+  transformHelper.visible = wasVisible;
+  renderer.render(scene, camera);
+  return image;
 }
 
 function createRig(): Rig {
