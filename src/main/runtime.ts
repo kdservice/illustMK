@@ -33,6 +33,7 @@ export type RuntimePaths = {
   vae: string;
   clip: string;
   controlnet: string;
+  otherModels: string;
   outputs: string;
   workflows: string;
   loraProjects: string;
@@ -127,7 +128,7 @@ export type ModelFileInfo = {
 
 export type DownloadRequest = {
   url: string;
-  targetType: "checkpoints" | "loras" | "vae" | "clip";
+  targetType: "checkpoints" | "loras" | "vae" | "clip" | "controlnet" | "otherModels";
   fileName?: string;
   sha256?: string;
   source?: "civitai" | "direct";
@@ -135,13 +136,71 @@ export type DownloadRequest = {
 };
 
 export type DeleteModelRequest = {
-  targetType: "checkpoints" | "loras" | "vae" | "clip";
+  targetType: "checkpoints" | "loras" | "vae" | "clip" | "controlnet" | "otherModels";
   fileName: string;
 };
 
 export type ImportModelAssetRequest = {
-  targetType: "vae" | "clip" | "controlnet";
+  targetType: "checkpoints" | "vae" | "clip" | "controlnet" | "otherModels";
   sourcePath: string;
+};
+
+export type ModelAssetType = "checkpoint" | "controlnet" | "vae" | "clip" | "other";
+
+export type ModelLibraryEntry = {
+  id: string;
+  name: string;
+  fileName: string;
+  path: string;
+  type: ModelAssetType;
+  format: string;
+  baseModel: string;
+  usage: string;
+  sizeBytes: number;
+  sizeLabel: string;
+  sourcePageUrl?: string;
+  thumbnailPath?: string;
+  thumbnailDataUrl?: string;
+  civitaiModelId?: number;
+  civitaiVersionId?: number;
+  selectedVae?: string;
+  selectedClip?: string;
+  requiredComponents?: CivitaiRequiredComponent[];
+  installedAt: string;
+  updatedAt: string;
+  active: boolean;
+};
+
+export type SaveModelLibraryEntryRequest = {
+  id: string;
+  name?: string;
+  baseModel?: string;
+  usage?: string;
+  selectedVae?: string;
+  selectedClip?: string;
+};
+
+export type DownloadCivitaiModelRequest = {
+  model: CivitaiModelCard;
+  targetType: ModelAssetType;
+  operationId?: string;
+};
+
+export type DownloadDirectModelRequest = {
+  url: string;
+  fileName?: string;
+  targetType: ModelAssetType;
+  baseModel?: string;
+  usage?: string;
+  operationId?: string;
+};
+
+export type SavedPose = {
+  id: string;
+  title: string;
+  createdAt: string;
+  updatedAt: string;
+  pose: PoseConditioning;
 };
 
 export type DownloadResult = {
@@ -188,6 +247,8 @@ export type CivitaiSearchResult = {
   models: CivitaiModelCard[];
   nextCursor: string | null;
 };
+
+export type CivitaiModelType = "Checkpoint" | "LORA" | "Controlnet" | "VAE" | "TextualInversion" | "Hypernetwork" | "Poses";
 
 export type HuggingFaceLlmModelCard = {
   id: string;
@@ -519,7 +580,7 @@ export type DeletePromptHistoryEntryRequest = {
   id: string;
 };
 
-type FetchContext = "Civitai検索" | "Civitaiダウンロード" | "Civitaiサムネイル";
+type FetchContext = "Civitai検索" | "Civitaiダウンロード" | "Civitaiサムネイル" | "モデルサムネイル";
 
 export type TestGenerationResult = {
   ok: boolean;
@@ -618,6 +679,7 @@ function getRuntimePathsForRoot(runtimeRootPath: string): RuntimePaths {
     vae: join(root, "models", "vae"),
     clip: join(root, "models", "clip"),
     controlnet: join(root, "models", "controlnet"),
+    otherModels: join(root, "models", "other"),
     outputs: join(root, "outputs"),
     workflows: join(root, "workflows"),
     loraProjects: join(root, "lora-projects"),
@@ -786,6 +848,7 @@ export async function ensureRuntimeFiles(): Promise<RuntimePaths> {
     mkdir(paths.vae, { recursive: true }),
     mkdir(paths.clip, { recursive: true }),
     mkdir(paths.controlnet, { recursive: true }),
+    mkdir(paths.otherModels, { recursive: true }),
     mkdir(paths.outputs, { recursive: true }),
     mkdir(paths.workflows, { recursive: true }),
     mkdir(paths.loraProjects, { recursive: true }),
@@ -1313,11 +1376,11 @@ export async function deleteModelFile(request: DeleteModelRequest): Promise<stri
 export async function importModelAsset(request: ImportModelAssetRequest): Promise<DownloadResult> {
   if (!request.sourcePath.trim()) throw new Error("インポートするファイルを選択してください。");
   const paths = await ensureRuntimeFiles();
-  const targetDir = request.targetType === "vae" ? paths.vae : request.targetType === "clip" ? paths.clip : paths.controlnet;
+  const targetDir = modelTargetDirectory(paths, request.targetType);
   const sourceName = basename(request.sourcePath);
   const fileName = request.targetType === "controlnet"
     ? sanitizeControlNetFileName(sourceName)
-    : normalizeSafetensorsName(sourceName);
+    : sanitizeModelFileName(sourceName);
   const destination = join(targetDir, fileName);
   const from = resolve(request.sourcePath);
   const to = resolve(destination);
@@ -1334,6 +1397,337 @@ export async function importModelAsset(request: ImportModelAssetRequest): Promis
     sha256: digest,
     message: `${fileName} をインポートしました。`
   };
+}
+
+type StoredModelLibrary = {
+  activeCheckpointId: string | null;
+  entries: Omit<ModelLibraryEntry, "thumbnailDataUrl" | "active">[];
+};
+
+function modelLibraryPath(paths: RuntimePaths): string {
+  return join(paths.root, ".illustmk", "model-library.json");
+}
+
+function savedPosesPath(paths: RuntimePaths): string {
+  return join(paths.root, ".illustmk", "saved-poses.json");
+}
+
+function modelTargetDirectory(paths: RuntimePaths, targetType: ImportModelAssetRequest["targetType"]): string {
+  if (targetType === "checkpoints") return paths.checkpoints;
+  if (targetType === "vae") return paths.vae;
+  if (targetType === "clip") return paths.clip;
+  if (targetType === "controlnet") return paths.controlnet;
+  return paths.otherModels;
+}
+
+function libraryTargetType(type: ModelAssetType): ImportModelAssetRequest["targetType"] {
+  if (type === "checkpoint") return "checkpoints";
+  if (type === "other") return "otherModels";
+  return type;
+}
+
+function sanitizeModelFileName(value: string): string {
+  const extension = value.toLowerCase().match(/\.(safetensors|pth|pt|ckpt|bin)$/)?.[0];
+  if (!extension) throw new Error("モデルは .safetensors / .pth / .pt / .ckpt / .bin を選択してください。");
+  return `${safeFileName(value.slice(0, -extension.length))}${extension}`;
+}
+
+function modelLibraryId(type: ModelAssetType, fileName: string): string {
+  return createHash("sha1").update(`${type}:${fileName}`).digest("hex").slice(0, 20);
+}
+
+function inferCheckpointBaseModel(fileName: string): string {
+  const value = fileName.toLowerCase();
+  if (value.includes("illustrious")) return "Illustrious";
+  if (value.includes("animagine")) return "Animagine";
+  if (value.includes("anima")) return "Anima";
+  if (value.includes("pony")) return "Pony";
+  if (value.includes("flux")) return "Flux";
+  if (value.includes("qwen")) return "Qwen Image";
+  if (value.includes("krea")) return "Krea";
+  if (value.includes("sdxl") || value.includes("xl")) return "SDXL";
+  if (value.includes("sd15") || value.includes("1.5")) return "SD 1.5";
+  return "不明";
+}
+
+function inferControlNetUsage(fileName: string): string {
+  const value = fileName.toLowerCase();
+  if (value.includes("openpose") || value.includes("pose")) return "OpenPose";
+  if (value.includes("depth")) return "Depth";
+  if (value.includes("canny")) return "Canny";
+  if (value.includes("lineart")) return "Lineart";
+  if (value.includes("tile")) return "Tile";
+  if (value.includes("scribble")) return "Scribble";
+  return "ControlNet";
+}
+
+async function readStoredModelLibrary(paths: RuntimePaths): Promise<StoredModelLibrary> {
+  try {
+    const parsed = JSON.parse(await readFile(modelLibraryPath(paths), "utf8")) as Partial<StoredModelLibrary>;
+    return {
+      activeCheckpointId: parsed.activeCheckpointId ?? null,
+      entries: Array.isArray(parsed.entries) ? parsed.entries : []
+    };
+  } catch {
+    return { activeCheckpointId: null, entries: [] };
+  }
+}
+
+async function writeStoredModelLibrary(paths: RuntimePaths, library: StoredModelLibrary): Promise<void> {
+  await mkdir(dirname(modelLibraryPath(paths)), { recursive: true });
+  await writeFile(modelLibraryPath(paths), JSON.stringify(library, null, 2), "utf8");
+}
+
+export async function getModelLibrary(): Promise<ModelLibraryEntry[]> {
+  const paths = await ensureRuntimeFiles();
+  const stored = await readStoredModelLibrary(paths);
+  const existingByKey = new Map(stored.entries.map((entry) => [`${entry.type}:${entry.fileName}`, entry]));
+  const now = new Date().toISOString();
+  const specs: Array<{ type: ModelAssetType; directory: string }> = [
+    { type: "checkpoint", directory: paths.checkpoints },
+    { type: "controlnet", directory: paths.controlnet },
+    { type: "vae", directory: paths.vae },
+    { type: "clip", directory: paths.clip },
+    { type: "other", directory: paths.otherModels }
+  ];
+  const entries: StoredModelLibrary["entries"] = [];
+  for (const spec of specs) {
+    for (const fileName of await listFiles(spec.directory)) {
+      if (!/\.(safetensors|pth|pt|ckpt|bin)$/i.test(fileName)) continue;
+      const path = join(spec.directory, fileName);
+      const fileStat = await stat(path).catch(() => null);
+      if (!fileStat?.isFile()) continue;
+      const existing = existingByKey.get(`${spec.type}:${fileName}`);
+      entries.push({
+        id: existing?.id ?? modelLibraryId(spec.type, fileName),
+        name: existing?.name ?? fileName.replace(/\.[^.]+$/, ""),
+        fileName,
+        path,
+        type: spec.type,
+        format: fileName.split(".").pop()?.toUpperCase() ?? "MODEL",
+        baseModel: existing?.baseModel ?? (spec.type === "checkpoint" ? inferCheckpointBaseModel(fileName) : ""),
+        usage: existing?.usage ?? (spec.type === "controlnet" ? inferControlNetUsage(fileName) : ""),
+        sizeBytes: fileStat.size,
+        sizeLabel: formatBytes(fileStat.size),
+        sourcePageUrl: existing?.sourcePageUrl,
+        thumbnailPath: existing?.thumbnailPath,
+        civitaiModelId: existing?.civitaiModelId,
+        civitaiVersionId: existing?.civitaiVersionId,
+        selectedVae: existing?.selectedVae,
+        selectedClip: existing?.selectedClip,
+        requiredComponents: existing?.requiredComponents,
+        installedAt: existing?.installedAt ?? now,
+        updatedAt: existing?.updatedAt ?? now
+      });
+    }
+  }
+  let activeCheckpointId = stored.activeCheckpointId;
+  if (!entries.some((entry) => entry.type === "checkpoint" && entry.id === activeCheckpointId)) {
+    activeCheckpointId = entries.find((entry) => entry.type === "checkpoint")?.id ?? null;
+  }
+  await writeStoredModelLibrary(paths, { activeCheckpointId, entries });
+  return Promise.all(entries.map(async (entry) => ({
+    ...entry,
+    active: entry.type === "checkpoint" && entry.id === activeCheckpointId,
+    thumbnailDataUrl: await imagePathToDataUrl(entry.thumbnailPath)
+  })));
+}
+
+export async function setActiveModelLibraryEntry(id: string): Promise<ModelLibraryEntry[]> {
+  const paths = await ensureRuntimeFiles();
+  const entries = await getModelLibrary();
+  const target = entries.find((entry) => entry.id === id);
+  if (!target || target.type !== "checkpoint") throw new Error("Checkpointを選択してください。");
+  const stored = await readStoredModelLibrary(paths);
+  stored.activeCheckpointId = id;
+  await writeStoredModelLibrary(paths, stored);
+  return getModelLibrary();
+}
+
+export async function saveModelLibraryEntry(request: SaveModelLibraryEntryRequest): Promise<ModelLibraryEntry[]> {
+  const paths = await ensureRuntimeFiles();
+  await getModelLibrary();
+  const stored = await readStoredModelLibrary(paths);
+  const entry = stored.entries.find((item) => item.id === request.id);
+  if (!entry) throw new Error("モデルが見つかりません。");
+  if (request.name !== undefined) entry.name = request.name.trim() || entry.name;
+  if (request.baseModel !== undefined) entry.baseModel = request.baseModel.trim();
+  if (request.usage !== undefined) entry.usage = request.usage.trim();
+  if (request.selectedVae !== undefined) entry.selectedVae = request.selectedVae;
+  if (request.selectedClip !== undefined) entry.selectedClip = request.selectedClip;
+  entry.updatedAt = new Date().toISOString();
+  await writeStoredModelLibrary(paths, stored);
+  return getModelLibrary();
+}
+
+export async function importModelLibraryEntry(type: ModelAssetType, sourcePath: string): Promise<ModelLibraryEntry[]> {
+  await importModelAsset({ targetType: libraryTargetType(type), sourcePath });
+  return getModelLibrary();
+}
+
+export async function downloadCivitaiModelLibraryEntry(
+  request: DownloadCivitaiModelRequest,
+  onLog?: RuntimeLogSink
+): Promise<ModelLibraryEntry[]> {
+  const targetType = libraryTargetType(request.targetType);
+  const result = await downloadModel({
+    url: request.model.downloadUrl,
+    targetType,
+    fileName: request.model.fileName,
+    sha256: request.model.sha256,
+    source: "civitai",
+    operationId: request.operationId
+  }, onLog);
+  if (request.targetType === "controlnet") await syncNativeControlNetLinks(getRuntimePaths());
+  await getModelLibrary();
+  const paths = getRuntimePaths();
+  const stored = await readStoredModelLibrary(paths);
+  const fileName = basename(result.path);
+  const entry = stored.entries.find((item) => item.type === request.targetType && item.fileName === fileName);
+  if (entry) {
+    entry.name = request.model.name;
+    entry.baseModel = request.model.baseModel;
+    entry.usage = request.targetType === "controlnet" ? inferControlNetUsage(`${request.model.name} ${fileName}`) : entry.usage;
+    entry.sourcePageUrl = request.model.pageUrl;
+    entry.civitaiModelId = request.model.id;
+    entry.civitaiVersionId = request.model.versionId;
+    entry.requiredComponents = request.model.requiredComponents;
+    const installedNames = new Set(stored.entries.map((item) => item.fileName));
+    const requiredVae = request.model.requiredComponents.find((component) => component.type.toLowerCase() === "vae" && installedNames.has(component.name));
+    const requiredClip = request.model.requiredComponents.find((component) => component.type.toLowerCase() === "text encoder" && installedNames.has(component.name));
+    if (requiredVae) entry.selectedVae = requiredVae.name;
+    if (requiredClip) entry.selectedClip = requiredClip.name;
+    entry.thumbnailPath = await saveModelLibraryThumbnail(request.model, paths, entry.id, onLog);
+    entry.updatedAt = new Date().toISOString();
+    if (request.targetType === "checkpoint" && !stored.activeCheckpointId) stored.activeCheckpointId = entry.id;
+    await writeStoredModelLibrary(paths, stored);
+  }
+  return getModelLibrary();
+}
+
+export async function downloadDirectModelLibraryEntry(
+  request: DownloadDirectModelRequest,
+  onLog?: RuntimeLogSink
+): Promise<ModelLibraryEntry[]> {
+  const result = await downloadModel({
+    url: request.url,
+    targetType: libraryTargetType(request.targetType),
+    fileName: request.fileName,
+    source: request.url.includes("civitai.com") ? "civitai" : "direct",
+    operationId: request.operationId
+  }, onLog);
+  if (request.targetType === "controlnet") await syncNativeControlNetLinks(getRuntimePaths());
+  await getModelLibrary();
+  const paths = getRuntimePaths();
+  const stored = await readStoredModelLibrary(paths);
+  const entry = stored.entries.find((item) => item.type === request.targetType && item.fileName === basename(result.path));
+  if (entry) {
+    entry.baseModel = request.baseModel?.trim() || entry.baseModel;
+    entry.usage = request.usage?.trim() || entry.usage;
+    entry.updatedAt = new Date().toISOString();
+    await writeStoredModelLibrary(paths, stored);
+  }
+  return getModelLibrary();
+}
+
+export async function deleteModelLibraryEntry(id: string): Promise<ModelLibraryEntry[]> {
+  const paths = await ensureRuntimeFiles();
+  await getModelLibrary();
+  const stored = await readStoredModelLibrary(paths);
+  const entry = stored.entries.find((item) => item.id === id);
+  if (!entry) throw new Error("モデルが見つかりません。");
+  if (entry.type === "checkpoint" && stored.activeCheckpointId === id) {
+    throw new Error("アクティブなCheckpointは削除できません。先に別のCheckpointをアクティブにしてください。");
+  }
+  if (entry.type === "vae" || entry.type === "clip") {
+    const linkedCheckpoints = stored.entries.filter((item) =>
+      item.type === "checkpoint" && (entry.type === "vae" ? item.selectedVae === entry.fileName : item.selectedClip === entry.fileName)
+    );
+    if (linkedCheckpoints.length) {
+      throw new Error(`${entry.name} はCheckpoint「${linkedCheckpoints.map((item) => item.name).join("、")}」で使用中です。先にCheckpointの${entry.type.toUpperCase()}設定を変更してください。`);
+    }
+  }
+  await rm(entry.path, { force: true });
+  if (entry.type === "controlnet" && await exists(paths.nativeComfy)) {
+    const nativeLink = join(paths.nativeComfy, "models", "controlnet", entry.fileName);
+    const linkedPath = await readlink(nativeLink).catch(() => "");
+    if (linkedPath && resolve(dirname(nativeLink), linkedPath) === resolve(entry.path)) {
+      await unlink(nativeLink).catch(() => undefined);
+    }
+  }
+  if (entry.thumbnailPath) await rm(entry.thumbnailPath, { force: true });
+  stored.entries = stored.entries.filter((item) => item.id !== id);
+  await writeStoredModelLibrary(paths, stored);
+  return getModelLibrary();
+}
+
+async function saveModelLibraryThumbnail(
+  model: CivitaiModelCard,
+  paths: RuntimePaths,
+  id: string,
+  onLog?: RuntimeLogSink
+): Promise<string | undefined> {
+  if (!model.imageUrl) return undefined;
+  try {
+    const response = await fetch(model.imageUrl, {
+      headers: { Accept: "image/avif,image/webp,image/png,image/jpeg,*/*", "User-Agent": "illustMK/0.1" },
+      signal: AbortSignal.timeout(30000)
+    });
+    if (!response.ok || !response.body) throw new Error(`HTTP ${response.status}`);
+    const contentType = response.headers.get("content-type") ?? "";
+    const extension = contentType.includes("png") ? "png" : contentType.includes("webp") ? "webp" : "jpg";
+    const directory = join(paths.root, ".illustmk", "model-thumbnails");
+    await mkdir(directory, { recursive: true });
+    const path = join(directory, `${id}-${Date.now()}.${extension}`);
+    await pipeline(response.body as unknown as NodeJS.ReadableStream, createWriteStream(path));
+    return path;
+  } catch (error) {
+    onLog?.({ level: "stderr", line: formatFetchFailure("モデルサムネイル", model.imageUrl, error) });
+    return undefined;
+  }
+}
+
+async function imagePathToDataUrl(path?: string): Promise<string | undefined> {
+  if (!path || !(await exists(path))) return undefined;
+  const extension = path.toLowerCase().split(".").pop();
+  const mime = extension === "png" ? "image/png" : extension === "webp" ? "image/webp" : "image/jpeg";
+  return `data:${mime};base64,${(await readFile(path)).toString("base64")}`;
+}
+
+export async function getSavedPoses(): Promise<SavedPose[]> {
+  try {
+    const parsed = JSON.parse(await readFile(savedPosesPath(getRuntimePaths()), "utf8")) as SavedPose[];
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
+
+export async function savePose(request: { id?: string; title: string; pose: PoseConditioning }): Promise<SavedPose[]> {
+  const title = request.title.trim();
+  if (!title) throw new Error("ポーズのタイトルを入力してください。");
+  const poses = await getSavedPoses();
+  const now = new Date().toISOString();
+  const existing = request.id ? poses.find((pose) => pose.id === request.id) : undefined;
+  if (existing) {
+    existing.title = title;
+    existing.pose = request.pose;
+    existing.updatedAt = now;
+  } else {
+    poses.unshift({ id: randomUUID(), title, pose: request.pose, createdAt: now, updatedAt: now });
+  }
+  const path = savedPosesPath(getRuntimePaths());
+  await mkdir(dirname(path), { recursive: true });
+  await writeFile(path, JSON.stringify(poses, null, 2), "utf8");
+  return poses;
+}
+
+export async function deleteSavedPose(id: string): Promise<SavedPose[]> {
+  const poses = (await getSavedPoses()).filter((pose) => pose.id !== id);
+  const path = savedPosesPath(getRuntimePaths());
+  await mkdir(dirname(path), { recursive: true });
+  await writeFile(path, JSON.stringify(poses, null, 2), "utf8");
+  return poses;
 }
 
 async function syncNativeControlNetLinks(paths: RuntimePaths): Promise<void> {
@@ -1365,7 +1759,7 @@ export async function searchCivitaiModels(options: {
   cursor?: string;
   nsfw?: boolean;
   baseModels?: string[];
-  type?: "Checkpoint" | "LORA";
+  type?: CivitaiModelType;
 }): Promise<CivitaiModelCard[]> {
   const result = await searchCivitaiModelPage(options);
   return result.models;
@@ -1380,7 +1774,7 @@ export async function searchCivitaiModelPage(options: {
   cursor?: string;
   nsfw?: boolean;
   baseModels?: string[];
-  type?: "Checkpoint" | "LORA";
+  type?: CivitaiModelType;
 }): Promise<CivitaiSearchResult> {
   const requestLimit = options.type === "LORA" ? options.limit ?? 20 : Math.max(options.limit ?? 10, 50);
   const params = new URLSearchParams({
@@ -1420,7 +1814,7 @@ export async function searchCivitaiModelPage(options: {
   const json = (await response.json()) as { items?: unknown[]; metadata?: { nextCursor?: string | number | null } };
   const models = (json.items ?? [])
     .flatMap(normalizeCivitaiModel)
-    .filter((model) => options.type === "LORA" || isAllowedBaseModel(model, options.baseModels ?? defaultBaseModelFilters))
+    .filter((model) => (options.type ?? "Checkpoint") !== "Checkpoint" || isAllowedBaseModel(model, options.baseModels ?? defaultBaseModelFilters))
     .slice(0, options.limit ?? 10);
   return {
     models,

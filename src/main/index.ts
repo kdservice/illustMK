@@ -7,6 +7,8 @@ import {
   cleanupDockerRuntime,
   deleteLoraTrainingProject,
   deleteModelFile,
+  deleteModelLibraryEntry,
+  deleteSavedPose,
   deleteIllustrationTag,
   deletePromptHistoryEntry,
   deleteOllamaModelStorage,
@@ -14,11 +16,15 @@ import {
   deleteDataPath,
   downloadCivitaiLoraProject,
   downloadModel,
+  downloadCivitaiModelLibraryEntry,
+  downloadDirectModelLibraryEntry,
   enhancePromptWithOllama,
   ensureRuntimeFiles,
   getRuntimePaths,
   getDataPaths,
   getStatus,
+  getModelLibrary,
+  getSavedPoses,
   getAppSettings,
   getIllustrationTags,
   getLlmChatHistory,
@@ -30,6 +36,7 @@ import {
   initNativeRuntime,
   installLoraRuntime,
   importModelAsset,
+  importModelLibraryEntry,
   importLoraFile,
   installOllama,
   installNativeRuntime,
@@ -40,6 +47,9 @@ import {
   searchCivitaiModels,
   searchHuggingFaceLlmModels,
   saveAppSettings,
+  saveModelLibraryEntry,
+  savePose,
+  setActiveModelLibraryEntry,
   addDataPath,
   saveIllustrationTag,
   saveLoraCaptionWorkspace,
@@ -76,6 +86,10 @@ import {
   type DownloadCivitaiLoraProjectRequest,
   type DownloadRequest,
   type ImportModelAssetRequest,
+  type DownloadCivitaiModelRequest,
+  type DownloadDirectModelRequest,
+  type ModelAssetType,
+  type SaveModelLibraryEntryRequest,
   type LoraTrainingRunParams,
   type LlmChatRequest,
   type PromptEnhanceRequest,
@@ -335,6 +349,41 @@ function registerIpc(): void {
   });
   ipcMain.handle("runtime:search-civitai", (_event, options) => searchCivitaiModels(options));
   ipcMain.handle("runtime:search-civitai-page", (_event, options) => searchCivitaiModelPage(options));
+  ipcMain.handle("models:list", () => getModelLibrary());
+  ipcMain.handle("models:set-active", (_event, id: string) => setActiveModelLibraryEntry(id));
+  ipcMain.handle("models:save", (_event, request: SaveModelLibraryEntryRequest) => saveModelLibraryEntry(request));
+  ipcMain.handle("models:delete", (_event, id: string) => deleteModelLibraryEntry(id));
+  ipcMain.handle("models:import", async (_event, type: ModelAssetType) => {
+    const options: OpenDialogOptions = {
+      title: "モデルをインポート",
+      properties: ["openFile"],
+      filters: [{ name: "AI model", extensions: ["safetensors", "pth", "pt", "ckpt", "bin"] }]
+    };
+    const result = mainWindow ? await dialog.showOpenDialog(mainWindow, options) : await dialog.showOpenDialog(options);
+    if (result.canceled || !result.filePaths[0]) return getModelLibrary();
+    return importModelLibraryEntry(type, result.filePaths[0]);
+  });
+  ipcMain.handle("models:download-civitai", (event, request: DownloadCivitaiModelRequest) =>
+    downloadCivitaiModelLibraryEntry(request, (log) => {
+      event.sender.send("runtime:operation-log", {
+        id: request.operationId ?? "model-civitai-download",
+        level: log.level,
+        line: log.line
+      });
+    })
+  );
+  ipcMain.handle("models:download-direct", (event, request: DownloadDirectModelRequest) =>
+    downloadDirectModelLibraryEntry(request, (log) => {
+      event.sender.send("runtime:operation-log", {
+        id: request.operationId ?? "model-direct-download",
+        level: log.level,
+        line: log.line
+      });
+    })
+  );
+  ipcMain.handle("poses:list", () => getSavedPoses());
+  ipcMain.handle("poses:save", (_event, request) => savePose(request));
+  ipcMain.handle("poses:delete", (_event, id: string) => deleteSavedPose(id));
   ipcMain.handle("runtime:search-huggingface-llm", (_event, options) => searchHuggingFaceLlmModels(options));
   ipcMain.handle("runtime:test-generate", (_event, request: TestGenerationRequest) => runTestGeneration(request));
   ipcMain.handle("prompt-history:list", () => getSavedPromptHistory());

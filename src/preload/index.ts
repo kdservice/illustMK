@@ -3,6 +3,7 @@ import type {
   AppSettings,
   CivitaiModelCard,
   CivitaiSearchResult,
+  CivitaiModelType,
   DataPathEntry,
   DeleteModelRequest,
   DownloadCivitaiLoraProjectRequest,
@@ -11,16 +12,20 @@ import type {
   HuggingFaceLlmModelCard,
   LlmChatMessage,
   LlmChatRequest,
+  ModelAssetType,
+  ModelLibraryEntry,
   LoraCaptionWorkspace,
   LoraTrainingRunParams,
   LoraTrainingProject,
   IllustrationTag,
   OllamaStatus,
+  PoseConditioning,
   PromptEnhanceRequest,
   PromptEnhanceResult,
   PromptHistoryEntry,
   RuntimePaths,
   RuntimeStatus,
+  SavedPose,
   SaveIllustrationTagRequest,
   SaveLoraCaptionWorkspaceRequest,
   SaveLoraTrainingProjectRequest,
@@ -81,7 +86,7 @@ const api = {
       cursor?: string;
       nsfw?: boolean;
       baseModels?: string[];
-      type?: "Checkpoint" | "LORA";
+      type?: CivitaiModelType;
     }): Promise<CivitaiModelCard[]> => ipcRenderer.invoke("runtime:search-civitai", options),
     searchCivitaiPage: (options: {
       query?: string;
@@ -92,12 +97,29 @@ const api = {
       cursor?: string;
       nsfw?: boolean;
       baseModels?: string[];
-      type?: "Checkpoint" | "LORA";
+      type?: CivitaiModelType;
     }): Promise<CivitaiSearchResult> => ipcRenderer.invoke("runtime:search-civitai-page", options),
     searchHuggingFaceLlm: (options: { query: string; limit?: number }): Promise<HuggingFaceLlmModelCard[]> =>
       ipcRenderer.invoke("runtime:search-huggingface-llm", options),
     testGenerate: (request: TestGenerationRequest): Promise<TestGenerationResult> =>
       ipcRenderer.invoke("runtime:test-generate", request)
+  },
+  models: {
+    list: (): Promise<ModelLibraryEntry[]> => ipcRenderer.invoke("models:list"),
+    setActive: (id: string): Promise<ModelLibraryEntry[]> => ipcRenderer.invoke("models:set-active", id),
+    save: (request: { id: string; name?: string; baseModel?: string; usage?: string; selectedVae?: string; selectedClip?: string }): Promise<ModelLibraryEntry[]> =>
+      ipcRenderer.invoke("models:save", request),
+    delete: (id: string): Promise<ModelLibraryEntry[]> => ipcRenderer.invoke("models:delete", id),
+    importFile: (type: ModelAssetType): Promise<ModelLibraryEntry[]> => ipcRenderer.invoke("models:import", type),
+    downloadCivitai: (request: { model: CivitaiModelCard; targetType: ModelAssetType; operationId?: string }): Promise<ModelLibraryEntry[]> =>
+      ipcRenderer.invoke("models:download-civitai", request),
+    downloadDirect: (request: { url: string; fileName?: string; targetType: ModelAssetType; baseModel?: string; usage?: string; operationId?: string }): Promise<ModelLibraryEntry[]> =>
+      ipcRenderer.invoke("models:download-direct", request)
+  },
+  poses: {
+    list: (): Promise<SavedPose[]> => ipcRenderer.invoke("poses:list"),
+    save: (request: { id?: string; title: string; pose: PoseConditioning }): Promise<SavedPose[]> => ipcRenderer.invoke("poses:save", request),
+    delete: (id: string): Promise<SavedPose[]> => ipcRenderer.invoke("poses:delete", id)
   },
   ollama: {
     status: (ollamaUrl?: string): Promise<OllamaStatus> => ipcRenderer.invoke("ollama:status", ollamaUrl),

@@ -36,6 +36,8 @@ import type {
   LoraCaptionWorkspace,
   LoraTrainingRunParams,
   LoraTrainingProject,
+  ModelAssetType,
+  ModelLibraryEntry,
   OllamaStatus,
   PromptEnhanceMode,
   PromptGenerationSettings,
@@ -43,6 +45,7 @@ import type {
   PoseConditioning,
   RuntimePaths,
   RuntimeStatus,
+  SavedPose,
   TestGenerationRequest,
   TestGenerationResult
 } from "../../main/runtime";
@@ -241,6 +244,9 @@ function App() {
   const [seedMode, setSeedMode] = useState<"random" | "fixed">("random");
   const [seedValue, setSeedValue] = useState(-1);
   const [poseConditioning, setPoseConditioning] = useState<PoseConditioning>(() => createDefaultPoseConditioning());
+  const [savedPoses, setSavedPoses] = useState<SavedPose[]>([]);
+  const [selectedSavedPoseId, setSelectedSavedPoseId] = useState("");
+  const [poseTitle, setPoseTitle] = useState("");
   const [promptHistory, setPromptHistory] = useState<PromptHistoryEntry[]>([]);
   const [promptHistoryOpen, setPromptHistoryOpen] = useState(false);
   const [restoredGenerationSettings, setRestoredGenerationSettings] = useState<PromptGenerationSettings | null>(null);
@@ -290,7 +296,24 @@ function App() {
   const [autoFollowLogs, setAutoFollowLogs] = useState(true);
   const [downloadProgress, setDownloadProgress] = useState<number | null>(null);
   const [settingsLoaded, setSettingsLoaded] = useState(false);
-  const [mainTab, setMainTab] = useState<"environment" | "llm" | "lora" | "generate">("environment");
+  const [mainTab, setMainTab] = useState<"environment" | "models" | "llm" | "lora" | "generate">("environment");
+  const [modelLibrary, setModelLibrary] = useState<ModelLibraryEntry[]>([]);
+  const [selectedModelId, setSelectedModelId] = useState<string | null>(null);
+  const [modelTypeFilters, setModelTypeFilters] = useState<ModelAssetType[]>([]);
+  const [modelCatalogOpen, setModelCatalogOpen] = useState(false);
+  const [modelCatalogMode, setModelCatalogMode] = useState<"civitai" | "url">("civitai");
+  const [modelCatalogTypes, setModelCatalogTypes] = useState<ModelAssetType[]>(["checkpoint"]);
+  const [modelCatalogResults, setModelCatalogResults] = useState<CivitaiModelCard[]>([]);
+  const [modelCatalogQuery, setModelCatalogQuery] = useState("");
+  const [modelCatalogPeriod, setModelCatalogPeriod] = useState<"AllTime" | "Year" | "Month" | "Week" | "Day">("Month");
+  const [modelCatalogSort, setModelCatalogSort] = useState<"Most Downloaded" | "Highest Rated" | "Newest">("Most Downloaded");
+  const [modelDirectType, setModelDirectType] = useState<ModelAssetType>("checkpoint");
+  const [modelDirectUrl, setModelDirectUrl] = useState("");
+  const [modelDirectFileName, setModelDirectFileName] = useState("");
+  const [modelDirectBase, setModelDirectBase] = useState("");
+  const [modelDirectUsage, setModelDirectUsage] = useState("");
+  const [modelImportOpen, setModelImportOpen] = useState(false);
+  const [modelImportType, setModelImportType] = useState<ModelAssetType>("checkpoint");
   const [runtimeTab, setRuntimeTab] = useState<"macos" | "docker">("macos");
   const [modelAddMode, setModelAddMode] = useState<"catalog" | "url">("catalog");
   const [generateTab, setGenerateTab] = useState<"prompt" | "lora" | "options" | "pose">("prompt");
@@ -341,6 +364,14 @@ function App() {
   );
   const selectedProjectOutputExists = Boolean(
     selectedLoraProject && status?.loras.some((file) => file.name === selectedLoraProject.outputName)
+  );
+  const selectedModel = useMemo(
+    () => modelLibrary.find((entry) => entry.id === selectedModelId) ?? null,
+    [modelLibrary, selectedModelId]
+  );
+  const filteredModelLibrary = useMemo(
+    () => modelTypeFilters.length ? modelLibrary.filter((entry) => modelTypeFilters.includes(entry.type)) : modelLibrary,
+    [modelLibrary, modelTypeFilters]
   );
   const japanesePromptTags = useMemo(
     () => illustrationTags.filter((tag) => japanesePromptTagIds.includes(tag.id)),
@@ -446,6 +477,8 @@ function App() {
     void loadIllustrationTags();
     void loadPromptHistory();
     void loadLoraProjects();
+    void loadModelLibrary();
+    void loadSavedPoses();
   }, []);
 
   useEffect(() => {
@@ -520,11 +553,12 @@ function App() {
 
   useEffect(() => {
     if (!selectedCheckpoint) return;
+    if (modelLibrary.some((entry) => entry.type === "checkpoint" && entry.active)) return;
     const saved = checkpointExternalSelections[selectedCheckpoint];
     if (!saved) return;
     setSelectedVae(saved.vae);
     setSelectedClip(saved.clip);
-  }, [checkpointExternalSelections, selectedCheckpoint]);
+  }, [checkpointExternalSelections, modelLibrary, selectedCheckpoint]);
 
   useEffect(() => {
     if (!status) return;
@@ -532,8 +566,8 @@ function App() {
       if (selectedVae) setSelectedVae("");
       return;
     }
-    if (!selectedVae || !status.vae.some((file) => file.name === selectedVae)) {
-      setSelectedVae(status.vae.find((file) => file.hasVae)?.name ?? status.vae[0].name);
+    if (selectedVae && !status.vae.some((file) => file.name === selectedVae)) {
+      setSelectedVae("");
     }
   }, [selectedVae, status?.vae]);
 
@@ -543,8 +577,8 @@ function App() {
       if (selectedClip) setSelectedClip("");
       return;
     }
-    if (!selectedClip || !status.clip.some((file) => file.name === selectedClip)) {
-      setSelectedClip(status.clip.find((file) => file.hasClip)?.name ?? status.clip[0].name);
+    if (selectedClip && !status.clip.some((file) => file.name === selectedClip)) {
+      setSelectedClip("");
     }
   }, [selectedClip, status?.clip]);
 
@@ -962,6 +996,250 @@ function App() {
     );
   }
 
+  async function loadModelLibrary(): Promise<void> {
+    const entries = await window.illustMK.models.list();
+    setModelLibrary(entries);
+    setSelectedModelId((current) => current && entries.some((entry) => entry.id === current) ? current : entries[0]?.id ?? null);
+    const active = entries.find((entry) => entry.type === "checkpoint" && entry.active);
+    if (active) {
+      setSelectedCheckpoint(active.fileName);
+      setSelectedVae(active.selectedVae ?? "");
+      setSelectedClip(active.selectedClip ?? "");
+    }
+  }
+
+  async function loadSavedPoses(): Promise<void> {
+    const poses = await window.illustMK.poses.list();
+    setSavedPoses(poses);
+    setSelectedSavedPoseId((current) => current && poses.some((pose) => pose.id === current) ? current : "");
+  }
+
+  async function saveCurrentPose(): Promise<void> {
+    await runAction("ポーズを保存中", () => window.illustMK.poses.save({
+      id: selectedSavedPoseId || undefined,
+      title: poseTitle,
+      pose: poseConditioning
+    }), (poses) => {
+      setSavedPoses(poses);
+      const saved = poses.find((pose) => pose.id === selectedSavedPoseId) ?? poses[0];
+      setSelectedSavedPoseId(saved?.id ?? "");
+      setPoseTitle(saved?.title ?? poseTitle);
+    });
+  }
+
+  function loadSelectedPose(id: string): void {
+    const saved = savedPoses.find((pose) => pose.id === id);
+    setSelectedSavedPoseId(id);
+    if (!saved) return;
+    setPoseTitle(saved.title);
+    setPoseConditioning(structuredClone(saved.pose));
+    setRestoredGenerationSettings(null);
+  }
+
+  async function deleteSelectedPose(): Promise<void> {
+    if (!selectedSavedPoseId || !window.confirm("選択中の保存ポーズを削除します。")) return;
+    await runAction("保存ポーズを削除中", () => window.illustMK.poses.delete(selectedSavedPoseId), (poses) => {
+      setSavedPoses(poses);
+      setSelectedSavedPoseId("");
+      setPoseTitle("");
+    });
+  }
+
+  function updateModelDraft(patch: Partial<ModelLibraryEntry>): void {
+    if (!selectedModelId) return;
+    setModelLibrary((current) => current.map((entry) => entry.id === selectedModelId ? { ...entry, ...patch } : entry));
+  }
+
+  async function saveSelectedModel(): Promise<void> {
+    const entry = modelLibrary.find((item) => item.id === selectedModelId);
+    if (!entry) return;
+    await runAction("モデル情報を保存中", () => window.illustMK.models.save({
+      id: entry.id,
+      name: entry.name,
+      baseModel: entry.baseModel,
+      usage: entry.usage,
+      selectedVae: entry.selectedVae,
+      selectedClip: entry.selectedClip
+    }), (entries) => {
+      setModelLibrary(entries);
+      if (entry.active) {
+        setSelectedVae(entry.selectedVae ?? "");
+        setSelectedClip(entry.selectedClip ?? "");
+      }
+    });
+  }
+
+  async function activateSelectedModel(): Promise<void> {
+    const entry = modelLibrary.find((item) => item.id === selectedModelId);
+    if (!entry || entry.type !== "checkpoint") return;
+    await runAction("Checkpointを切替中", () => window.illustMK.models.setActive(entry.id), (entries) => {
+      setModelLibrary(entries);
+      const active = entries.find((item) => item.active);
+      setSelectedCheckpoint(active?.fileName ?? "");
+      setSelectedVae(active?.selectedVae ?? "");
+      setSelectedClip(active?.selectedClip ?? "");
+    });
+  }
+
+  async function importModelLibraryFile(): Promise<void> {
+    await runAction("モデルをインポート中", () => window.illustMK.models.importFile(modelImportType), (entries) => {
+      setModelLibrary(entries);
+      setModelImportOpen(false);
+      setSelectedModelId(entries.find((entry) => entry.type === modelImportType)?.id ?? entries[0]?.id ?? null);
+      void refreshStatus();
+    });
+  }
+
+  function civitaiTypesForFilter(type: ModelAssetType): Array<"Checkpoint" | "Controlnet" | "VAE" | "TextualInversion" | "Hypernetwork" | "Poses"> {
+    if (type === "checkpoint") return ["Checkpoint"];
+    if (type === "controlnet") return ["Controlnet"];
+    if (type === "vae") return ["VAE"];
+    if (type === "other") return ["TextualInversion", "Hypernetwork", "Poses"];
+    return [];
+  }
+
+  function targetTypeForCatalogModel(model: CivitaiModelCard): ModelAssetType {
+    const type = model.type.toLowerCase();
+    if (type === "checkpoint") return "checkpoint";
+    if (type === "controlnet") return "controlnet";
+    if (type === "vae") return "vae";
+    return "other";
+  }
+
+  async function searchModelCatalog(top10 = false): Promise<void> {
+    const selectedTypes = modelCatalogTypes.filter((type) => type !== "clip");
+    if (!selectedTypes.length) {
+      setModelCatalogResults([]);
+      return;
+    }
+    await runAction(top10 ? "Civitai人気モデルを取得中" : "Civitaiモデルを検索中", async () => {
+      const query = top10 ? undefined : modelCatalogQuery.trim() || undefined;
+      const results = await Promise.all(selectedTypes.flatMap(civitaiTypesForFilter).map((type) =>
+        window.illustMK.runtime.searchCivitaiPage({
+          query,
+          sort: modelCatalogSort,
+          period: modelCatalogPeriod,
+          limit: top10 ? 10 : 24,
+          nsfw: false,
+          baseModels: type === "Checkpoint" ? baseFilters : undefined,
+          type
+        })
+      ));
+      const seen = new Set<string>();
+      return results.flatMap((result) => result.models).filter((model) => {
+        const key = `${model.id}-${model.versionId}`;
+        if (seen.has(key)) return false;
+        seen.add(key);
+        return true;
+      }).sort((a, b) => b.downloadCount - a.downloadCount).slice(0, top10 ? 10 : 60);
+    }, (models) => setModelCatalogResults(models));
+  }
+
+  async function downloadCatalogModelToLibrary(model: CivitaiModelCard): Promise<void> {
+    const id = crypto.randomUUID();
+    currentOperationId.current = id;
+    setAction({ busy: true, message: `${model.name} をダウンロード中`, error: null });
+    setDownloadProgress(0);
+    try {
+      const entries = await window.illustMK.models.downloadCivitai({
+        model,
+        targetType: targetTypeForCatalogModel(model),
+        operationId: id
+      });
+      setModelLibrary(entries);
+      setSelectedModelId(entries.find((entry) => entry.civitaiVersionId === model.versionId)?.id ?? null);
+      setDownloadProgress(100);
+      setAction({ busy: false, message: "完了しました", error: null });
+      await refreshStatus();
+    } catch (error) {
+      const errorText = error instanceof Error ? error.message : String(error);
+      appendLog("stderr", errorText, id);
+      setAction({ busy: false, message: "失敗しました", error: errorText });
+    } finally {
+      currentOperationId.current = null;
+    }
+  }
+
+  async function downloadDirectModelToLibrary(): Promise<void> {
+    const id = crypto.randomUUID();
+    currentOperationId.current = id;
+    setAction({ busy: true, message: "モデルをダウンロード中", error: null });
+    setDownloadProgress(0);
+    try {
+      const entries = await window.illustMK.models.downloadDirect({
+        url: modelDirectUrl,
+        fileName: modelDirectFileName || undefined,
+        targetType: modelDirectType,
+        baseModel: modelDirectBase,
+        usage: modelDirectUsage,
+        operationId: id
+      });
+      setModelLibrary(entries);
+      setSelectedModelId(entries[0]?.id ?? null);
+      setDownloadProgress(100);
+      setAction({ busy: false, message: "完了しました", error: null });
+      await refreshStatus();
+    } catch (error) {
+      const errorText = error instanceof Error ? error.message : String(error);
+      appendLog("stderr", errorText, id);
+      setAction({ busy: false, message: "失敗しました", error: errorText });
+    } finally {
+      currentOperationId.current = null;
+    }
+  }
+
+  async function installModelLibraryRequiredComponent(checkpoint: ModelLibraryEntry, component: CivitaiRequiredComponent): Promise<void> {
+    const componentType = component.type.toLowerCase() === "vae" ? "vae" : component.type.toLowerCase() === "text encoder" ? "clip" : null;
+    if (!componentType) return;
+    const id = crypto.randomUUID();
+    currentOperationId.current = id;
+    setAction({ busy: true, message: `${component.name} をダウンロード中`, error: null });
+    setDownloadProgress(0);
+    try {
+      let entries = await window.illustMK.models.downloadDirect({
+        url: component.downloadUrl,
+        fileName: component.name,
+        targetType: componentType,
+        operationId: id
+      });
+      entries = await window.illustMK.models.save({
+        id: checkpoint.id,
+        [componentType === "vae" ? "selectedVae" : "selectedClip"]: component.name
+      });
+      setModelLibrary(entries);
+      if (checkpoint.active) {
+        if (componentType === "vae") setSelectedVae(component.name);
+        else setSelectedClip(component.name);
+      }
+      setDownloadProgress(100);
+      setAction({ busy: false, message: "完了しました", error: null });
+      await refreshStatus();
+    } catch (error) {
+      const errorText = error instanceof Error ? error.message : String(error);
+      appendLog("stderr", errorText, id);
+      setAction({ busy: false, message: "失敗しました", error: errorText });
+    } finally {
+      currentOperationId.current = null;
+    }
+  }
+
+  async function deleteSelectedModelLibraryEntry(): Promise<void> {
+    const entry = modelLibrary.find((item) => item.id === selectedModelId);
+    if (!entry) return;
+    if (entry.active) {
+      window.alert("アクティブなCheckpointは削除できません。先に別のCheckpointをアクティブにしてください。");
+      return;
+    }
+    const historyCount = promptHistory.filter((history) => JSON.stringify(history).includes(entry.fileName)).length;
+    const reference = historyCount ? `\n${historyCount}件の生成履歴がこのファイル名を参照しています。` : "";
+    if (!window.confirm(`${entry.name} を削除します。元に戻せません。${reference}`)) return;
+    await runAction("モデルを削除中", () => window.illustMK.models.delete(entry.id), (entries) => {
+      setModelLibrary(entries);
+      setSelectedModelId(entries[0]?.id ?? null);
+      void refreshStatus();
+    });
+  }
+
   async function reloadDataPaths(): Promise<void> {
     setDataPaths(await window.illustMK.runtime.dataPaths());
   }
@@ -1014,7 +1292,7 @@ function App() {
   }
 
   async function refreshAfterDataPathChange(): Promise<void> {
-    await Promise.all([refreshStatus(), refreshOllamaStatus(), loadLoraProjects(), loadPromptHistory()]);
+    await Promise.all([refreshStatus(), refreshOllamaStatus(), loadLoraProjects(), loadPromptHistory(), loadModelLibrary(), loadSavedPoses()]);
   }
 
   function resetDataPathDependentState(): void {
@@ -1025,6 +1303,11 @@ function App() {
     setSelectedClip("");
     setSelectedLoras([]);
     setPoseConditioning(createDefaultPoseConditioning());
+    setSavedPoses([]);
+    setSelectedSavedPoseId("");
+    setPoseTitle("");
+    setModelLibrary([]);
+    setSelectedModelId(null);
     setPositiveLoraTriggerIds([]);
     setSelectedLoraProjectId(null);
     setLoraProjects([]);
@@ -2231,7 +2514,7 @@ function App() {
           runtimeTab={runtimeTab}
           ollamaModel={ollamaModel}
           selectedCheckpoint={selectedCheckpointInfo}
-          checkpointBaseModel={selectedCheckpoint ? checkpointBaseModels[selectedCheckpoint] : ""}
+          checkpointBaseModel={modelLibrary.find((entry) => entry.type === "checkpoint" && entry.active)?.baseModel || (selectedCheckpoint ? checkpointBaseModels[selectedCheckpoint] : "")}
           usageHistory={usageHistory}
         />
       </header>
@@ -2239,6 +2522,9 @@ function App() {
       <nav className="main-tabs">
         <button className={mainTab === "environment" ? "tab active" : "tab"} onClick={() => setMainTab("environment")}>
           環境
+        </button>
+        <button className={mainTab === "models" ? "tab active" : "tab"} onClick={() => setMainTab("models")}>
+          モデル
         </button>
         <button className={mainTab === "llm" ? "tab active" : "tab"} onClick={() => setMainTab("llm")}>
           チャット
@@ -2899,6 +3185,136 @@ function App() {
             </div>
           </section>
         </section>
+      ) : mainTab === "models" ? (
+        <section className="model-library-layout">
+          <section className="panel model-library-sidebar">
+            <PanelTitle icon={<Boxes size={18} />} title="モデル" />
+            <div className="model-library-filters">
+              {(["checkpoint", "controlnet", "vae", "clip", "other"] as ModelAssetType[]).map((type) => (
+                <button
+                  key={type}
+                  className={modelTypeFilters.includes(type) ? "filter-chip active" : "filter-chip"}
+                  onClick={() => setModelTypeFilters((current) => current.includes(type) ? current.filter((item) => item !== type) : [...current, type])}
+                >
+                  {modelTypeLabel(type)}
+                </button>
+              ))}
+              <button className="filter-chip" onClick={() => setModelTypeFilters([])}>リセット</button>
+            </div>
+            <div className="model-library-list">
+              {filteredModelLibrary.length ? filteredModelLibrary.map((entry) => (
+                <button
+                  type="button"
+                  key={entry.id}
+                  className={["model-library-card", entry.id === selectedModelId ? "selected" : "", entry.active ? "active-model" : ""].filter(Boolean).join(" ")}
+                  onClick={() => setSelectedModelId(entry.id)}
+                >
+                  <span className="model-library-thumb">
+                    {entry.thumbnailDataUrl ? <img src={entry.thumbnailDataUrl} alt="" /> : <ImageIcon size={22} />}
+                  </span>
+                  <span className="model-library-card-body">
+                    <strong>{entry.name}</strong>
+                    <span className="model-library-tags">
+                      <em>{modelTypeLabel(entry.type)}</em>
+                      {entry.baseModel ? <em>{entry.baseModel}</em> : null}
+                      {entry.usage ? <em>{entry.usage}</em> : null}
+                      <em>{entry.format}</em>
+                      <em>{entry.sizeLabel}</em>
+                    </span>
+                  </span>
+                  {entry.active ? <b>ACTIVE</b> : null}
+                </button>
+              )) : <p className="empty">このDataPathにはモデルがありません。</p>}
+            </div>
+            <div className="model-library-actions">
+              <button onClick={() => setModelImportOpen(true)}><Plus size={16} />インポート</button>
+              <button onClick={() => setModelCatalogOpen(true)}><Download size={16} />カタログ</button>
+              <button onClick={() => void loadModelLibrary()}><RefreshCw size={16} />更新</button>
+              <button className="danger" disabled={!selectedModel || selectedModel.active} onClick={() => void deleteSelectedModelLibraryEntry()}><Trash2 size={16} />削除</button>
+            </div>
+          </section>
+          <section className="panel model-library-detail">
+            <PanelTitle icon={<Boxes size={18} />} title={selectedModel ? modelTypeLabel(selectedModel.type) : "モデル詳細"} />
+            {selectedModel ? (
+              <div className="model-detail-content">
+                <div className="model-detail-hero">
+                  <div className="model-detail-image">
+                    {selectedModel.thumbnailDataUrl ? <img src={selectedModel.thumbnailDataUrl} alt="" /> : <ImageIcon size={46} />}
+                  </div>
+                  <div className="model-detail-fields">
+                    <div className="field">
+                      <label>タイトル</label>
+                      <input value={selectedModel.name} onChange={(event) => updateModelDraft({ name: event.target.value })} />
+                    </div>
+                    <div className="two-columns">
+                      <div className="field">
+                        <label>BASE MODEL</label>
+                        <input value={selectedModel.baseModel} onChange={(event) => updateModelDraft({ baseModel: event.target.value })} placeholder="Illustrious / SDXL / Anima..." />
+                      </div>
+                      <div className="field">
+                        <label>用途</label>
+                        <input value={selectedModel.usage} onChange={(event) => updateModelDraft({ usage: event.target.value })} placeholder="OpenPose / Depth..." />
+                      </div>
+                    </div>
+                    <div className="model-file-summary">
+                      <span>{selectedModel.fileName}</span>
+                      <span>{selectedModel.format}</span>
+                      <span>{selectedModel.sizeLabel}</span>
+                    </div>
+                  </div>
+                </div>
+                {selectedModel.type === "checkpoint" ? (
+                  <>
+                    <div className="checkpoint-linked-assets">
+                      <div className="field">
+                        <label>VAE</label>
+                        <select value={selectedModel.selectedVae ?? ""} onChange={(event) => updateModelDraft({ selectedVae: event.target.value })}>
+                          <option value="">内蔵 / 未指定</option>
+                          {modelLibrary.filter((item) => item.type === "vae").map((item) => <option value={item.fileName} key={item.id}>{item.name}</option>)}
+                        </select>
+                      </div>
+                      <div className="field">
+                        <label>CLIP</label>
+                        <select value={selectedModel.selectedClip ?? ""} onChange={(event) => updateModelDraft({ selectedClip: event.target.value })}>
+                          <option value="">内蔵 / 未指定</option>
+                          {modelLibrary.filter((item) => item.type === "clip").map((item) => <option value={item.fileName} key={item.id}>{item.name}</option>)}
+                        </select>
+                      </div>
+                    </div>
+                    {selectedModel.requiredComponents?.length ? (
+                      <div className="model-required-components">
+                        <strong>推奨コンポーネント</strong>
+                        {selectedModel.requiredComponents.map((component) => {
+                          const targetType = component.type.toLowerCase() === "vae" ? "vae" : component.type.toLowerCase() === "text encoder" ? "clip" : null;
+                          const installed = targetType ? modelLibrary.some((entry) => entry.type === targetType && entry.fileName === component.name) : false;
+                          return (
+                            <div className="model-required-row" key={`${component.type}-${component.name}`}>
+                              <span>{component.name}<small>{component.type} / {Math.round(component.sizeKB / 1024)} MB</small></span>
+                              <button disabled={action.busy || installed || !targetType} onClick={() => void installModelLibraryRequiredComponent(selectedModel, component)}>{installed ? "導入済み" : "推奨ダウンロード"}</button>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    ) : null}
+                  </>
+                ) : null}
+                <div className="model-detail-actions">
+                  {selectedModel.sourcePageUrl ? (
+                    <button onClick={() => void window.illustMK.app.openExternal(selectedModel.sourcePageUrl!)}><ExternalLink size={16} />Webページ</button>
+                  ) : null}
+                  {selectedModel.type === "checkpoint" ? (
+                    <button className={selectedModel.active ? "active" : ""} disabled={selectedModel.active} onClick={() => void activateSelectedModel()}>
+                      <CheckCircle2 size={16} />{selectedModel.active ? "使用中" : "このCheckpointを使用"}
+                    </button>
+                  ) : null}
+                  <button className="primary" onClick={() => void saveSelectedModel()}><Save size={16} />更新</button>
+                </div>
+              </div>
+            ) : (
+              <div className="placeholder compact"><Boxes size={40} /><p>左の一覧からモデルを選択してください。</p></div>
+            )}
+          </section>
+        </section>
       ) : mainTab === "llm" ? (
         <section className="llm-chat-layout">
           <section className="panel llm-chat-panel">
@@ -3329,12 +3745,18 @@ function App() {
             ) : generateTab === "pose" ? (
               <PoseEditor
                 value={poseConditioning}
-                controlNetModels={(status?.controlnet ?? []).map((file) => file.name)}
+                controlNetModels={modelLibrary.filter((entry) => entry.type === "controlnet" && (entry.usage.toLowerCase().includes("openpose") || entry.fileName.toLowerCase().includes("openpose") || entry.fileName.toLowerCase().includes("pose"))).map((entry) => entry.fileName)}
                 onChange={(next) => {
                   setRestoredGenerationSettings(null);
                   setPoseConditioning(next);
                 }}
-                onImportControlNet={() => void importModelAsset("controlnet")}
+                savedPoses={savedPoses}
+                selectedSavedPoseId={selectedSavedPoseId}
+                poseTitle={poseTitle}
+                onPoseTitleChange={setPoseTitle}
+                onSelectSavedPose={loadSelectedPose}
+                onSavePose={() => void saveCurrentPose()}
+                onDeletePose={() => void deleteSelectedPose()}
                 outputWidth={generationWidth}
                 outputHeight={generationHeight}
                 disabled={action.busy}
@@ -3509,6 +3931,91 @@ function App() {
                 更新
               </button>
             </div>
+          </section>
+        </div>
+      ) : null}
+      {modelCatalogOpen ? (
+        <div className="modal-backdrop">
+          <section className="modal-panel model-catalog-modal">
+            <div className="modal-header">
+              <PanelTitle icon={<Download size={18} />} title="モデルカタログ" />
+              <button className="icon-button" onClick={() => setModelCatalogOpen(false)} title="閉じる"><X size={17} /></button>
+            </div>
+            <div className="model-mode-tabs">
+              <button className={modelCatalogMode === "civitai" ? "runtime-tab active" : "runtime-tab"} onClick={() => setModelCatalogMode("civitai")}>Civitai</button>
+              <button className={modelCatalogMode === "url" ? "runtime-tab active" : "runtime-tab"} onClick={() => setModelCatalogMode("url")}>URL直接</button>
+            </div>
+            {modelCatalogMode === "civitai" ? (
+              <>
+                <div className="catalog-control-grid">
+                  <div className="field"><label>期間</label><select value={modelCatalogPeriod} onChange={(event) => setModelCatalogPeriod(event.target.value as typeof modelCatalogPeriod)}><option value="Day">今日</option><option value="Week">1週間</option><option value="Month">1ヶ月</option><option value="Year">1年</option><option value="AllTime">累計</option></select></div>
+                  <div className="field"><label>条件</label><select value={modelCatalogSort} onChange={(event) => setModelCatalogSort(event.target.value as typeof modelCatalogSort)}><option value="Most Downloaded">人気順</option><option value="Highest Rated">評価順</option><option value="Newest">新着順</option></select></div>
+                  <button className="primary catalog-action" disabled={action.busy} onClick={() => void searchModelCatalog(true)}>人気Top10を表示</button>
+                </div>
+                <div className="field">
+                  <label>検索キーワード</label>
+                  <div className="inline">
+                    <input value={modelCatalogQuery} onChange={(event) => setModelCatalogQuery(event.target.value)} placeholder="OpenPose, Illustrious, anime..." onKeyDown={(event) => { if (event.key === "Enter") void searchModelCatalog(false); }} />
+                    <button className="icon-button" disabled={action.busy} onClick={() => void searchModelCatalog(false)} title="検索"><RefreshCw size={17} /></button>
+                  </div>
+                </div>
+                <div className="model-catalog-filter-band">
+                  <label>MODEL TYPE</label>
+                  <div className="filter-buttons">
+                    {(["checkpoint", "controlnet", "vae", "other"] as ModelAssetType[]).map((type) => (
+                      <button key={type} className={modelCatalogTypes.includes(type) ? "filter-chip active" : "filter-chip"} onClick={() => setModelCatalogTypes((current) => current.includes(type) ? current.filter((item) => item !== type) : [...current, type])}>{modelTypeLabel(type)}</button>
+                    ))}
+                    <button className="filter-chip openpose-shortcut" onClick={() => { setModelCatalogTypes(["controlnet"]); setModelCatalogQuery("OpenPose"); }}>OpenPose</button>
+                  </div>
+                </div>
+                {modelCatalogTypes.includes("checkpoint") ? (
+                  <div className="model-catalog-filter-band">
+                    <label>BASE MODEL</label>
+                    <div className="filter-buttons">
+                      {allBaseFilters.map((filter) => <button key={filter.name} className={baseFilters.includes(filter.name) ? "filter-chip active" : "filter-chip"} onClick={() => toggleBaseFilter(filter.name)}>{filter.name}</button>)}
+                      <button className="filter-chip" onClick={() => setBaseFilters(defaultBaseFilters)}>リセット</button>
+                    </div>
+                  </div>
+                ) : null}
+                <div className="model-catalog-results">
+                  {modelCatalogResults.map((model) => (
+                    <article className="model-catalog-card" key={`${model.id}-${model.versionId}`}>
+                      {model.imageUrl ? <img src={model.imageUrl} alt="" /> : <div className="catalog-no-image"><ImageIcon size={30} /></div>}
+                      <div className="model-catalog-card-body">
+                        <strong>{model.name}</strong>
+                        <span>{model.creator} / {model.type} / {model.baseModel || "base不明"}</span>
+                        <span>{Math.round(model.sizeKB / 1024)} MB / DL {model.downloadCount.toLocaleString()}</span>
+                        <div className="catalog-card-actions">
+                          <button disabled={action.busy} onClick={() => void downloadCatalogModelToLibrary(model)}><Download size={15} />Download</button>
+                          <button disabled={!model.pageUrl} onClick={() => void window.illustMK.app.openExternal(model.pageUrl)}><ExternalLink size={15} />Web</button>
+                        </div>
+                      </div>
+                    </article>
+                  ))}
+                  {!modelCatalogResults.length ? <p className="empty">条件を設定して検索してください。</p> : null}
+                </div>
+              </>
+            ) : (
+              <div className="model-direct-form">
+                <div className="field"><label>種類</label><select value={modelDirectType} onChange={(event) => setModelDirectType(event.target.value as ModelAssetType)}>{(["checkpoint", "controlnet", "vae", "clip", "other"] as ModelAssetType[]).map((type) => <option value={type} key={type}>{modelTypeLabel(type)}</option>)}</select></div>
+                <div className="field"><label>URL</label><input value={modelDirectUrl} onChange={(event) => setModelDirectUrl(event.target.value)} placeholder="https://.../model.safetensors" /></div>
+                <div className="field"><label>保存名</label><input value={modelDirectFileName} onChange={(event) => setModelDirectFileName(event.target.value)} placeholder="未指定ならURLから決定" /></div>
+                <div className="two-columns">
+                  <div className="field"><label>BASE MODEL</label><input value={modelDirectBase} onChange={(event) => setModelDirectBase(event.target.value)} /></div>
+                  <div className="field"><label>用途</label><input value={modelDirectUsage} onChange={(event) => setModelDirectUsage(event.target.value)} placeholder="OpenPoseなど" /></div>
+                </div>
+                <button className="primary" disabled={!modelDirectUrl.trim() || action.busy} onClick={() => void downloadDirectModelToLibrary()}><Download size={17} />ダウンロード</button>
+              </div>
+            )}
+          </section>
+        </div>
+      ) : null}
+      {modelImportOpen ? (
+        <div className="modal-backdrop stacked">
+          <section className="modal-panel model-import-modal">
+            <div className="modal-header"><PanelTitle icon={<FolderOpen size={18} />} title="モデルをインポート" /><button className="icon-button" onClick={() => setModelImportOpen(false)} title="閉じる"><X size={17} /></button></div>
+            <div className="field"><label>種類</label><select value={modelImportType} onChange={(event) => setModelImportType(event.target.value as ModelAssetType)}>{(["checkpoint", "controlnet", "vae", "clip", "other"] as ModelAssetType[]).map((type) => <option value={type} key={type}>{modelTypeLabel(type)}</option>)}</select></div>
+            <div className="modal-actions"><button onClick={() => setModelImportOpen(false)}>キャンセル</button><button className="primary" onClick={() => void importModelLibraryFile()}><FolderOpen size={16} />ファイルを選択</button></div>
           </section>
         </div>
       ) : null}
@@ -4782,6 +5289,14 @@ function sameGenerationLoras(left: GenerationLora[], right: GenerationLora[]): b
     const other = right[index];
     return Boolean(other) && value.name === other.name && value.modelStrength === other.modelStrength && value.clipStrength === other.clipStrength;
   });
+}
+
+function modelTypeLabel(type: ModelAssetType): string {
+  if (type === "checkpoint") return "Checkpoint";
+  if (type === "controlnet") return "ControlNet";
+  if (type === "vae") return "VAE";
+  if (type === "clip") return "CLIP";
+  return "その他";
 }
 
 function samePoseConditioning(left: PoseConditioning | undefined, right: PoseConditioning): boolean {

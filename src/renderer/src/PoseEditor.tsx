@@ -2,14 +2,20 @@ import { useEffect, useRef, useState } from "react";
 import * as THREE from "three";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
 import { TransformControls } from "three/examples/jsm/controls/TransformControls.js";
-import { Download, RotateCcw } from "lucide-react";
-import type { PoseConditioning, PoseJointRotation } from "../../main/runtime";
+import { RotateCcw, Save, Trash2 } from "lucide-react";
+import type { PoseConditioning, PoseJointRotation, SavedPose } from "../../main/runtime";
 
 type PoseEditorProps = {
   value: PoseConditioning;
   controlNetModels: string[];
   onChange: (value: PoseConditioning) => void;
-  onImportControlNet: () => void;
+  savedPoses: SavedPose[];
+  selectedSavedPoseId: string;
+  poseTitle: string;
+  onPoseTitleChange: (title: string) => void;
+  onSelectSavedPose: (id: string) => void;
+  onSavePose: () => void;
+  onDeletePose: () => void;
   outputWidth: number;
   outputHeight: number;
   disabled?: boolean;
@@ -92,7 +98,7 @@ export function createDefaultPoseConditioning(): PoseConditioning {
   };
 }
 
-export function PoseEditor({ value, controlNetModels, onChange, onImportControlNet, outputWidth, outputHeight, disabled = false }: PoseEditorProps) {
+export function PoseEditor({ value, controlNetModels, onChange, savedPoses, selectedSavedPoseId, poseTitle, onPoseTitleChange, onSelectSavedPose, onSavePose, onDeletePose, outputWidth, outputHeight, disabled = false }: PoseEditorProps) {
   const hostRef = useRef<HTMLDivElement | null>(null);
   const valueRef = useRef(value);
   const onChangeRef = useRef(onChange);
@@ -194,7 +200,7 @@ export function PoseEditor({ value, controlNetModels, onChange, onImportControlN
 
     const resize = () => {
       const width = Math.max(host.clientWidth, 320);
-      const height = Math.max(host.clientHeight, 420);
+      const height = Math.max(host.clientHeight, 220);
       renderer.setSize(width, height, false);
       camera.aspect = width / height;
       camera.updateProjectionMatrix();
@@ -247,6 +253,21 @@ export function PoseEditor({ value, controlNetModels, onChange, onImportControlN
 
   return (
     <div className="pose-editor">
+      <div className="pose-library-bar">
+        <div className="field">
+          <label>タイトル</label>
+          <input value={poseTitle} onChange={(event) => onPoseTitleChange(event.target.value)} placeholder="立ちポーズ、振り向きなど" />
+        </div>
+        <div className="field">
+          <label>保存済みポーズ</label>
+          <select value={selectedSavedPoseId} onChange={(event) => onSelectSavedPose(event.target.value)}>
+            <option value="">新規</option>
+            {savedPoses.map((pose) => <option key={pose.id} value={pose.id}>{pose.title} / {new Date(pose.updatedAt).toLocaleString("ja-JP", { hour12: false })}</option>)}
+          </select>
+        </div>
+        <button type="button" disabled={disabled || !poseTitle.trim()} onClick={onSavePose}><Save size={16} />保存</button>
+        <button type="button" className="danger icon-button" disabled={disabled || !selectedSavedPoseId} onClick={onDeletePose} title="保存ポーズを削除"><Trash2 size={16} /></button>
+      </div>
       <div className="pose-viewport-wrap">
         <div className="pose-viewport" ref={hostRef} />
         <div className="pose-selection">選択中: {jointLabels[selectedJoint] ?? selectedJoint}</div>
@@ -267,10 +288,6 @@ export function PoseEditor({ value, controlNetModels, onChange, onImportControlN
               <option value="">選択してください</option>
               {controlNetModels.map((name) => <option key={name} value={name}>{name}</option>)}
             </select>
-            <button type="button" onClick={onImportControlNet} disabled={disabled}>
-              <Download size={16} />
-              インポート
-            </button>
           </div>
         </div>
         <div className="pose-strength-field">
@@ -294,7 +311,7 @@ export function PoseEditor({ value, controlNetModels, onChange, onImportControlN
           {value.enabled ? "有効" : "無効"}
         </button>
       </div>
-      {!controlNetModels.length ? <p className="pose-warning">OpenPose用ControlNetモデルをインポートすると有効化できます。</p> : null}
+      {!controlNetModels.length ? <p className="pose-warning">「モデル」タブからOpenPose用ControlNetモデルを導入してください。</p> : null}
     </div>
   );
 }
