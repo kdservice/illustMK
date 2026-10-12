@@ -1895,7 +1895,7 @@ label {
   min-height: 0;
   height: auto;
   display: grid;
-  grid-template-rows: auto minmax(140px, 1fr) auto auto;
+  grid-template-rows: auto auto minmax(140px, 1fr) auto auto;
   gap: 10px;
   overflow: hidden;
 }
@@ -1909,6 +1909,22 @@ label {
 
 .pose-library-bar .field {
   margin-bottom: 0;
+}
+
+.pose-assistant-bar {
+  display: grid;
+  grid-template-columns: auto minmax(180px, 1fr) 42px minmax(0, 0.8fr);
+  gap: 8px;
+  align-items: center;
+  min-height: 42px;
+}
+
+.pose-assistant-bar > span {
+  overflow: hidden;
+  color: #9db1d8;
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .pose-viewport-wrap {
@@ -1945,6 +1961,13 @@ label {
   position: absolute;
   top: 10px;
   right: 10px;
+  background: rgba(10, 20, 42, 0.9);
+}
+
+.pose-camera-reset {
+  position: absolute;
+  top: 10px;
+  right: 58px;
   background: rgba(10, 20, 42, 0.9);
 }
 
@@ -2979,7 +3002,7 @@ label {
 
 @media (max-height: 850px) {
   .pose-editor {
-    grid-template-rows: auto minmax(110px, 1fr) auto auto;
+    grid-template-rows: auto auto minmax(110px, 1fr) auto auto;
   }
 
   .pose-viewport-wrap {

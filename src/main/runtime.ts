@@ -392,6 +392,18 @@ export type PoseConditioning = {
   cameraTarget: [number, number, number];
 };
 
+export type PoseAssistantRequest = {
+  ollamaUrl: string;
+  model: string;
+  instruction: string;
+  currentPose: PoseConditioning;
+};
+
+export type PoseAssistantResult = {
+  pose: PoseConditioning;
+  summary: string;
+};
+
 export type GenerationLora = {
   name: string;
   modelStrength: number;
@@ -2206,6 +2218,76 @@ export async function sendLlmChatPrompt(request: LlmChatRequest): Promise<LlmCha
   return history;
 }
 
+export async function generatePoseWithOllama(request: PoseAssistantRequest): Promise<PoseAssistantResult> {
+  const instruction = request.instruction.trim();
+  if (!instruction) throw new Error("作りたいポーズを入力してください。");
+  if (!request.model.trim()) throw new Error("Ollamaモデルを選択してください。");
+  await assertOllamaReady(request.ollamaUrl);
+
+  const jointNames = Object.keys(request.currentPose.jointRotations);
+  const prompt = [
+    "あなたは3Dデッサン人形のポーズ設定アシスタントです。",
+    "依頼を人体の自然なポーズとして解釈し、各関節のローカルXYZ回転をラジアンで指定してください。",
+    "値は-3.1416から3.1416の範囲です。左右を取り違えず、接地・重心・腕脚の連動を考慮してください。",
+    "現在値を基準にせず、依頼されたポーズ全体を完成させる値を返してください。",
+    `使用可能な関節名: ${jointNames.join(", ")}`,
+    "出力は説明やMarkdownを含めず、次のJSONだけにしてください。",
+    '{"jointRotations":{"hips":[0,0,0]},"summary":"変更内容の短い日本語"}',
+    "jointRotationsには使用可能な全関節を必ず含め、各値は数値3個の配列にしてください。",
+    `現在の関節値: ${JSON.stringify(request.currentPose.jointRotations)}`,
+    `依頼: ${instruction}`
+  ].join("\n");
+  const response = await generateOllamaJson(request.ollamaUrl, request.model, prompt);
+  const parsed = parsePoseAssistantResponse(response);
+  const rotations: Record<string, PoseJointRotation> = {};
+  for (const name of jointNames) {
+    const candidate = parsed.jointRotations?.[name];
+    const fallback = request.currentPose.jointRotations[name];
+    rotations[name] = normalizePoseRotation(candidate, fallback);
+  }
+  const preset = posePresetForInstruction(instruction, rotations);
+  const finalRotations = preset ?? rotations;
+  const changedJointCount = jointNames.filter((name) => {
+    const before = request.currentPose.jointRotations[name];
+    const after = finalRotations[name];
+    return before && after && before.some((value, index) => Math.abs(value - after[index]) > 0.02);
+  }).length;
+  if (changedJointCount < 2) {
+    throw new Error("LLMが有効な関節変更を返しませんでした。姿勢や手足の向きをもう少し具体的に入力してください。");
+  }
+  return {
+    pose: { ...request.currentPose, jointRotations: finalRotations },
+    summary: typeof parsed.summary === "string" && parsed.summary.trim() ? parsed.summary.trim() : `${instruction}のポーズを設定しました。`
+  };
+}
+
+function posePresetForInstruction(
+  instruction: string,
+  rotations: Record<string, PoseJointRotation>
+): Record<string, PoseJointRotation> | null {
+  if (!/(体育座り|膝抱え|膝を抱)/.test(instruction)) return null;
+  return {
+    ...rotations,
+    hips: [0.18, 0, 0],
+    spine: [-0.3, 0, 0],
+    chest: [-0.22, 0, 0],
+    neck: [0.18, 0, 0],
+    head: [0.18, 0, 0],
+    leftShoulder: [-0.42, -0.08, 0.42],
+    leftElbow: [1.12, 0.12, -0.28],
+    leftWrist: [0, 0, 0],
+    rightShoulder: [-0.42, 0.08, -0.42],
+    rightElbow: [1.12, -0.12, 0.28],
+    rightWrist: [0, 0, 0],
+    leftHip: [-1.58, 0, -0.1],
+    leftKnee: [2.48, 0, 0.06],
+    leftAnkle: [-0.72, 0, 0],
+    rightHip: [-1.58, 0, 0.1],
+    rightKnee: [2.48, 0, -0.06],
+    rightAnkle: [-0.72, 0, 0]
+  };
+}
+
 export async function getIllustrationTags(): Promise<IllustrationTag[]> {
   try {
     const text = await readFile(illustrationTagsPath, "utf8");
@@ -3644,6 +3726,54 @@ async function generateOllamaText(ollamaUrl: string, model: string, prompt: stri
   }
   const json = (await response.json()) as { response?: string };
   return String(json.response ?? "");
+}
+
+async function generateOllamaJson(ollamaUrl: string, model: string, prompt: string): Promise<string> {
+  const response = await fetch(`${ollamaUrl.replace(/\/$/, "")}/api/generate`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      model,
+      stream: false,
+      format: "json",
+      options: { temperature: 0.1 },
+      prompt
+    })
+  });
+  if (!response.ok) {
+    throw new Error(`Ollamaポーズ生成に失敗しました: HTTP ${response.status}`);
+  }
+  const json = (await response.json()) as { response?: string };
+  return String(json.response ?? "");
+}
+
+function parsePoseAssistantResponse(response: string): {
+  jointRotations?: Record<string, unknown>;
+  summary?: string;
+} {
+  const cleaned = response
+    .replace(/<think>[\s\S]*?<\/think>/gi, "")
+    .replace(/```(?:json)?/gi, "")
+    .trim();
+  const start = cleaned.indexOf("{");
+  const end = cleaned.lastIndexOf("}");
+  if (start < 0 || end <= start) {
+    throw new Error("LLMのポーズ応答をJSONとして認識できませんでした。依頼を短くして再実行してください。");
+  }
+  try {
+    const parsed = JSON.parse(cleaned.slice(start, end + 1)) as unknown;
+    if (!parsed || typeof parsed !== "object") throw new Error("invalid object");
+    return parsed as { jointRotations?: Record<string, unknown>; summary?: string };
+  } catch {
+    throw new Error("LLMのポーズ応答JSONが不正でした。依頼を短くして再実行してください。");
+  }
+}
+
+function normalizePoseRotation(value: unknown, fallback: PoseJointRotation): PoseJointRotation {
+  if (!Array.isArray(value) || value.length !== 3 || value.some((item) => !Number.isFinite(Number(item)))) {
+    return [...fallback] as PoseJointRotation;
+  }
+  return value.map((item) => Math.max(-Math.PI, Math.min(Math.PI, Number(item)))) as PoseJointRotation;
 }
 
 async function saveIllustrationTags(tags: IllustrationTag[]): Promise<void> {

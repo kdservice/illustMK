@@ -20,6 +20,8 @@ import type {
   IllustrationTag,
   OllamaStatus,
   PoseConditioning,
+  PoseAssistantRequest,
+  PoseAssistantResult,
   PromptEnhanceRequest,
   PromptEnhanceResult,
   PromptHistoryEntry,
@@ -119,7 +121,8 @@ const api = {
   poses: {
     list: (): Promise<SavedPose[]> => ipcRenderer.invoke("poses:list"),
     save: (request: { id?: string; title: string; pose: PoseConditioning }): Promise<SavedPose[]> => ipcRenderer.invoke("poses:save", request),
-    delete: (id: string): Promise<SavedPose[]> => ipcRenderer.invoke("poses:delete", id)
+    delete: (id: string): Promise<SavedPose[]> => ipcRenderer.invoke("poses:delete", id),
+    assist: (request: PoseAssistantRequest): Promise<PoseAssistantResult> => ipcRenderer.invoke("poses:assist", request)
   },
   ollama: {
     status: (ollamaUrl?: string): Promise<OllamaStatus> => ipcRenderer.invoke("ollama:status", ollamaUrl),

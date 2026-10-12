@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import * as THREE from "three";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
 import { TransformControls } from "three/examples/jsm/controls/TransformControls.js";
-import { RotateCcw, Save, Trash2 } from "lucide-react";
+import { Bot, Camera, RotateCcw, Save, Send, Trash2 } from "lucide-react";
 import type { PoseConditioning, PoseJointRotation, SavedPose } from "../../main/runtime";
 
 type PoseEditorProps = {
@@ -16,6 +16,7 @@ type PoseEditorProps = {
   onSelectSavedPose: (id: string) => void;
   onSavePose: () => void;
   onDeletePose: () => void;
+  onAssistPose: (instruction: string) => Promise<string>;
   outputWidth: number;
   outputHeight: number;
   disabled?: boolean;
@@ -47,22 +48,39 @@ const jointLabels: Record<string, string> = {
   rightAnkle: "右足首"
 };
 
+// OpenPose BODY_18の接続順と配色。headは顔の代表点（nose）として扱う。
 const openPoseLinks: Array<[string, string, string]> = [
-  ["head", "neck", "#ff0000"],
-  ["neck", "rightShoulder", "#ff5500"],
-  ["rightShoulder", "rightElbow", "#ffaa00"],
-  ["rightElbow", "rightWrist", "#ffff00"],
-  ["neck", "leftShoulder", "#aaff00"],
-  ["leftShoulder", "leftElbow", "#55ff00"],
-  ["leftElbow", "leftWrist", "#00ff00"],
-  ["neck", "hips", "#00ff55"],
-  ["hips", "rightHip", "#00ffaa"],
-  ["rightHip", "rightKnee", "#00ffff"],
-  ["rightKnee", "rightAnkle", "#00aaff"],
-  ["hips", "leftHip", "#0055ff"],
-  ["leftHip", "leftKnee", "#0000ff"],
-  ["leftKnee", "leftAnkle", "#5500ff"]
+  ["neck", "rightShoulder", "#ff0000"],
+  ["rightShoulder", "rightElbow", "#ff5500"],
+  ["rightElbow", "rightWrist", "#ffaa00"],
+  ["neck", "leftShoulder", "#ffff00"],
+  ["leftShoulder", "leftElbow", "#aaff00"],
+  ["leftElbow", "leftWrist", "#55ff00"],
+  ["neck", "rightHip", "#00ff55"],
+  ["rightHip", "rightKnee", "#00ffaa"],
+  ["rightKnee", "rightAnkle", "#00ffff"],
+  ["neck", "leftHip", "#00aaff"],
+  ["leftHip", "leftKnee", "#0055ff"],
+  ["leftKnee", "leftAnkle", "#0000ff"],
+  ["neck", "head", "#aa00ff"]
 ];
+
+const openPosePointColors: Record<string, string> = {
+  head: "#ff0000",
+  neck: "#ff5500",
+  rightShoulder: "#ffaa00",
+  rightElbow: "#ffff00",
+  rightWrist: "#aaff00",
+  leftShoulder: "#55ff00",
+  leftElbow: "#00ff00",
+  leftWrist: "#00ff55",
+  rightHip: "#00ffaa",
+  rightKnee: "#00ffff",
+  rightAnkle: "#00aaff",
+  leftHip: "#0055ff",
+  leftKnee: "#0000ff",
+  leftAnkle: "#5500ff"
+};
 
 const defaultRotations: Record<string, PoseJointRotation> = {
   hips: [0, 0, 0],
@@ -98,18 +116,29 @@ export function createDefaultPoseConditioning(): PoseConditioning {
   };
 }
 
-export function PoseEditor({ value, controlNetModels, onChange, savedPoses, selectedSavedPoseId, poseTitle, onPoseTitleChange, onSelectSavedPose, onSavePose, onDeletePose, outputWidth, outputHeight, disabled = false }: PoseEditorProps) {
+export function PoseEditor({ value, controlNetModels, onChange, savedPoses, selectedSavedPoseId, poseTitle, onPoseTitleChange, onSelectSavedPose, onSavePose, onDeletePose, onAssistPose, outputWidth, outputHeight, disabled = false }: PoseEditorProps) {
   const hostRef = useRef<HTMLDivElement | null>(null);
   const valueRef = useRef(value);
   const onChangeRef = useRef(onChange);
   const applyValueRef = useRef<((next: PoseConditioning) => void) | null>(null);
+  const capturePoseRef = useRef<(() => string) | null>(null);
   const [selectedJoint, setSelectedJoint] = useState("hips");
+  const [assistantInstruction, setAssistantInstruction] = useState("");
+  const [assistantMessage, setAssistantMessage] = useState("");
+  const [assistantBusy, setAssistantBusy] = useState(false);
 
   valueRef.current = value;
   onChangeRef.current = onChange;
 
   useEffect(() => {
     applyValueRef.current?.(value);
+    const frame = requestAnimationFrame(() => {
+      const imageDataUrl = capturePoseRef.current?.();
+      if (imageDataUrl && imageDataUrl !== valueRef.current.imageDataUrl) {
+        onChangeRef.current({ ...valueRef.current, imageDataUrl });
+      }
+    });
+    return () => cancelAnimationFrame(frame);
   }, [value.jointRotations, value.cameraPosition, value.cameraTarget]);
 
   useEffect(() => {
@@ -183,6 +212,10 @@ export function PoseEditor({ value, controlNetModels, onChange, savedPoses, sele
         cameraTarget: orbit.target.toArray() as [number, number, number]
       });
     };
+    capturePoseRef.current = () => {
+      scene.updateMatrixWorld(true);
+      return renderOpenPoseImage(rig, camera, valueRef.current, outputWidth, outputHeight);
+    };
 
     const selectAtPointer = (event: PointerEvent) => {
       if (transform.dragging) return;
@@ -243,12 +276,32 @@ export function PoseEditor({ value, controlNetModels, onChange, savedPoses, sele
       });
       renderer.domElement.remove();
       applyValueRef.current = null;
+      capturePoseRef.current = null;
     };
   }, [outputHeight, outputWidth]);
 
   const resetPose = () => {
     const reset = { ...createDefaultPoseConditioning(), enabled: value.enabled, controlNet: value.controlNet };
     onChange(reset);
+  };
+
+  const resetCamera = () => {
+    const defaults = createDefaultPoseConditioning();
+    onChange({ ...value, cameraPosition: defaults.cameraPosition, cameraTarget: defaults.cameraTarget });
+  };
+
+  const runAssistant = async () => {
+    const instruction = assistantInstruction.trim();
+    if (!instruction || assistantBusy || disabled) return;
+    setAssistantBusy(true);
+    setAssistantMessage("");
+    try {
+      setAssistantMessage(await onAssistPose(instruction));
+    } catch (error) {
+      setAssistantMessage(error instanceof Error ? error.message : String(error));
+    } finally {
+      setAssistantBusy(false);
+    }
   };
 
   return (
@@ -268,10 +321,29 @@ export function PoseEditor({ value, controlNetModels, onChange, savedPoses, sele
         <button type="button" disabled={disabled || !poseTitle.trim()} onClick={onSavePose}><Save size={16} />保存</button>
         <button type="button" className="danger icon-button" disabled={disabled || !selectedSavedPoseId} onClick={onDeletePose} title="保存ポーズを削除"><Trash2 size={16} /></button>
       </div>
+      <div className="pose-assistant-bar">
+        <Bot size={17} />
+        <input
+          value={assistantInstruction}
+          onChange={(event) => setAssistantInstruction(event.target.value)}
+          onKeyDown={(event) => {
+            if (event.key === "Enter" && !event.nativeEvent.isComposing) void runAssistant();
+          }}
+          placeholder="体育座り、走っているポーズなど"
+          disabled={disabled || assistantBusy}
+        />
+        <button type="button" className="icon-button" onClick={() => void runAssistant()} disabled={disabled || assistantBusy || !assistantInstruction.trim()} title="LLMでポーズを設定">
+          <Send size={16} />
+        </button>
+        {assistantMessage ? <span title={assistantMessage}>{assistantMessage}</span> : null}
+      </div>
       <div className="pose-viewport-wrap">
         <div className="pose-viewport" ref={hostRef} />
         <div className="pose-selection">選択中: {jointLabels[selectedJoint] ?? selectedJoint}</div>
         {value.imageDataUrl ? <img className="pose-map-preview" src={value.imageDataUrl} alt="OpenPose入力プレビュー" /> : null}
+        <button className="pose-camera-reset icon-button" type="button" onClick={resetCamera} title="視点だけリセット">
+          <Camera size={16} />
+        </button>
         <button className="pose-reset icon-button" type="button" onClick={resetPose} title="ポーズと視点をリセット">
           <RotateCcw size={16} />
         </button>
@@ -445,14 +517,13 @@ function renderOpenPoseImage(
     context.stroke();
   }
   const radius = Math.max(4, Math.round(Math.min(canvas.width, canvas.height) * 0.01));
-  let colorIndex = 0;
-  for (const point of points.values()) {
-    if (!point.visible) continue;
-    context.fillStyle = `hsl(${(colorIndex * 23) % 360} 100% 55%)`;
+  for (const [name, color] of Object.entries(openPosePointColors)) {
+    const point = points.get(name);
+    if (!point?.visible) continue;
+    context.fillStyle = color;
     context.beginPath();
     context.arc(point.x, point.y, radius, 0, Math.PI * 2);
     context.fill();
-    colorIndex += 1;
   }
   return canvas.toDataURL("image/png");
 }

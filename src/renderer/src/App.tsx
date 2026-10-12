@@ -1045,6 +1045,31 @@ function App() {
     });
   }
 
+  async function assistCurrentPose(instruction: string): Promise<string> {
+    const id = crypto.randomUUID();
+    currentOperationId.current = id;
+    appendLog("info", `LLMへポーズを依頼: ${instruction}`, id);
+    setAction({ busy: true, message: "LLMでポーズを設定中", error: null });
+    try {
+      const result = await window.illustMK.poses.assist({
+        ollamaUrl,
+        model: ollamaModel,
+        instruction,
+        currentPose: poseConditioning
+      });
+      setRestoredGenerationSettings(null);
+      setPoseConditioning(result.pose);
+      appendLog("info", result.summary, id);
+      setAction({ busy: false, message: "完了しました", error: null });
+      return result.summary;
+    } catch (error) {
+      const errorText = error instanceof Error ? error.message : String(error);
+      appendLog("stderr", errorText, id);
+      setAction({ busy: false, message: "失敗しました", error: errorText });
+      throw error;
+    }
+  }
+
   function updateModelDraft(patch: Partial<ModelLibraryEntry>): void {
     if (!selectedModelId) return;
     setModelLibrary((current) => current.map((entry) => entry.id === selectedModelId ? { ...entry, ...patch } : entry));
@@ -2392,9 +2417,10 @@ function App() {
           };
         })
       },
-      availableAssets: {
+      installedAssetsReferenceOnly: {
+        note: "参照用のインストール済み一覧です。生成へ適用したLoRAは loraState.requestLoras のみです。",
         checkpoints: status?.checkpoints.map((file) => file.name) ?? [],
-        loras: status?.loras.map((file) => file.name) ?? [],
+        availableLorasNotAppliedAutomatically: status?.loras.map((file) => file.name) ?? [],
         vae: status?.vae.map((file) => file.name) ?? [],
         clip: status?.clip.map((file) => file.name) ?? []
       }
@@ -3757,6 +3783,7 @@ function App() {
                 onSelectSavedPose={loadSelectedPose}
                 onSavePose={() => void saveCurrentPose()}
                 onDeletePose={() => void deleteSelectedPose()}
+                onAssistPose={assistCurrentPose}
                 outputWidth={generationWidth}
                 outputHeight={generationHeight}
                 disabled={action.busy}
