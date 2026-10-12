@@ -322,11 +322,12 @@ function registerIpc(): void {
   );
   ipcMain.handle("runtime:delete-model", (_event, request: DeleteModelRequest) => deleteModelFile(request));
   ipcMain.handle("runtime:import-model-asset", async (_event, request: Omit<ImportModelAssetRequest, "sourcePath">) => {
-    const label = request.targetType === "vae" ? "VAE" : "CLIP/text encoder";
+    const label = request.targetType === "vae" ? "VAE" : request.targetType === "clip" ? "CLIP/text encoder" : "ControlNet";
+    const extensions = request.targetType === "controlnet" ? ["safetensors", "pth", "pt", "ckpt", "bin"] : ["safetensors"];
     const options: OpenDialogOptions = {
-      title: `${label} safetensorsをインポート`,
+      title: `${label}モデルをインポート`,
       properties: ["openFile"],
-      filters: [{ name: `${label} safetensors`, extensions: ["safetensors"] }]
+      filters: [{ name: `${label} model`, extensions }]
     };
     const result = mainWindow ? await dialog.showOpenDialog(mainWindow, options) : await dialog.showOpenDialog(options);
     if (result.canceled || !result.filePaths[0]) return null;

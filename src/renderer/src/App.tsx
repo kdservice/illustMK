@@ -40,11 +40,13 @@ import type {
   PromptEnhanceMode,
   PromptGenerationSettings,
   PromptHistoryEntry,
+  PoseConditioning,
   RuntimePaths,
   RuntimeStatus,
   TestGenerationRequest,
   TestGenerationResult
 } from "../../main/runtime";
+import { createDefaultPoseConditioning, PoseEditor } from "./PoseEditor";
 import "./styles/app.css";
 
 type ActionState = {
@@ -238,6 +240,7 @@ function App() {
   const [generationCfg, setGenerationCfg] = useState(7);
   const [seedMode, setSeedMode] = useState<"random" | "fixed">("random");
   const [seedValue, setSeedValue] = useState(-1);
+  const [poseConditioning, setPoseConditioning] = useState<PoseConditioning>(() => createDefaultPoseConditioning());
   const [promptHistory, setPromptHistory] = useState<PromptHistoryEntry[]>([]);
   const [promptHistoryOpen, setPromptHistoryOpen] = useState(false);
   const [restoredGenerationSettings, setRestoredGenerationSettings] = useState<PromptGenerationSettings | null>(null);
@@ -290,7 +293,7 @@ function App() {
   const [mainTab, setMainTab] = useState<"environment" | "llm" | "lora" | "generate">("environment");
   const [runtimeTab, setRuntimeTab] = useState<"macos" | "docker">("macos");
   const [modelAddMode, setModelAddMode] = useState<"catalog" | "url">("catalog");
-  const [generateTab, setGenerateTab] = useState<"prompt" | "lora" | "options">("prompt");
+  const [generateTab, setGenerateTab] = useState<"prompt" | "lora" | "options" | "pose">("prompt");
   const logViewRef = useRef<HTMLDivElement | null>(null);
   const currentOperationId = useRef<string | null>(null);
   const repeatStopRequested = useRef(false);
@@ -400,7 +403,10 @@ function App() {
         selectedCheckpointInfo.hasVae ? "VAE内蔵" : selectedVae ? `外部VAE: ${selectedVae}` : "外部VAEが必要"
       ].join(" / ")
     : "未選択";
-  const canGenerate = Boolean(status?.comfyReachable && selectedCheckpointGenerationReady && !action.busy);
+  const poseConditioningReady = !poseConditioning.enabled || Boolean(
+    poseConditioning.imageDataUrl && poseConditioning.controlNet && status?.controlnet.some((file) => file.name === poseConditioning.controlNet)
+  );
+  const canGenerate = Boolean(status?.comfyReachable && selectedCheckpointGenerationReady && poseConditioningReady && !action.busy);
   const canDownloadLlm = Boolean(ollamaStatus?.reachable && ollamaStatus.dataLinked && llmPullName.trim() && !action.busy);
   const canSendLlmPrompt = Boolean(ollamaStatus?.reachable && ollamaStatus.dataLinked && ollamaModel.trim() && llmPrompt.trim() && !action.busy);
   const llmPromptDisabledReason = useMemo(() => {
@@ -858,13 +864,14 @@ function App() {
     await deleteModelAsset("vae", selectedVae);
   }
 
-  async function importModelAsset(targetType: "vae" | "clip"): Promise<void> {
-    const label = targetType === "vae" ? "VAE" : "CLIP/text encoder";
+  async function importModelAsset(targetType: "vae" | "clip" | "controlnet"): Promise<void> {
+    const label = targetType === "vae" ? "VAE" : targetType === "clip" ? "CLIP/text encoder" : "ControlNet";
     await runAction(`${label}をインポート中`, () => window.illustMK.runtime.importModelAsset({ targetType }), (result) => {
       if (!result) return;
       const fileName = result.path.split(/[\\/]/).pop() ?? "";
       if (targetType === "vae") setSelectedVae(fileName);
       if (targetType === "clip") setSelectedClip(fileName);
+      if (targetType === "controlnet") setPoseConditioning((current) => ({ ...current, controlNet: fileName }));
       appendLog("info", result.message);
       void refreshStatus();
     });
@@ -1017,6 +1024,7 @@ function App() {
     setSelectedVae("");
     setSelectedClip("");
     setSelectedLoras([]);
+    setPoseConditioning(createDefaultPoseConditioning());
     setPositiveLoraTriggerIds([]);
     setSelectedLoraProjectId(null);
     setLoraProjects([]);
@@ -1132,9 +1140,17 @@ function App() {
     setGenerationCfg(settings?.cfg ?? entry.cfg);
     setSeedMode(settings?.seedMode ?? (entry.seed >= 0 ? "fixed" : "random"));
     setSeedValue(settings?.seedValue ?? entry.seed);
+    setPoseConditioning(
+      settings?.poseConditioning ?? settings?.generationRequest?.poseConditioning ?? createDefaultPoseConditioning()
+    );
     if (settings?.baseFilters) setBaseFilters(settings.baseFilters);
     if (settings?.selectedModelAddMode === "catalog" || settings?.selectedModelAddMode === "url") setModelAddMode(settings.selectedModelAddMode);
-    if (settings?.generationTab === "prompt" || settings?.generationTab === "lora" || settings?.generationTab === "options") setGenerateTab(settings.generationTab);
+    if (
+      settings?.generationTab === "prompt" ||
+      settings?.generationTab === "lora" ||
+      settings?.generationTab === "options" ||
+      settings?.generationTab === "pose"
+    ) setGenerateTab(settings.generationTab);
     setImageMemo(entry.memo ?? "");
     setLastHistoryId(entry.id);
     if (entry.imageDataUrl || entry.imagePath) setLastImage(entry.imageDataUrl ?? entry.imagePath ?? null);
@@ -1161,6 +1177,7 @@ function App() {
     setGenerationCfg(7);
     setSeedMode("random");
     setSeedValue(-1);
+    setPoseConditioning(createDefaultPoseConditioning());
     setGenerationResult(null);
     setLastImage(null);
     setLastHistoryId(null);
@@ -1869,7 +1886,8 @@ function App() {
       seed,
       comfyUrl,
       vae: selectedVae || undefined,
-      clip: selectedClip || undefined
+      clip: selectedClip || undefined,
+      poseConditioning: poseConditioning.enabled ? poseConditioning : undefined
     };
   }
 
@@ -2036,6 +2054,7 @@ function App() {
         ollamaUrl,
         ollamaModel,
         generateTab,
+        poseConditioning,
         modelAddMode,
         baseFilters
       },
@@ -2129,7 +2148,8 @@ function App() {
     sameStringArray(restoredGenerationSettings.positivePromptTagIds, positivePromptTagIds) &&
     sameStringArray(restoredGenerationSettings.positiveOptionTagIds, positiveOptionTagIds) &&
     sameStringArray(restoredGenerationSettings.negativeOptionTagIds, negativeOptionTagIds) &&
-    sameStringArray(restoredGenerationSettings.positiveLoraTriggerIds, positiveLoraTriggerIds)
+    sameStringArray(restoredGenerationSettings.positiveLoraTriggerIds, positiveLoraTriggerIds) &&
+    samePoseConditioning(restoredGenerationSettings.poseConditioning, poseConditioning)
   );
   const testRequest: TestGenerationRequest = restoredRequestApplies && restoredGenerationSettings?.generationRequest
     ? restoredGenerationSettings.generationRequest
@@ -2166,7 +2186,8 @@ function App() {
       ollamaModel,
       selectedModelAddMode: modelAddMode,
       baseFilters,
-      generationTab: generateTab
+      generationTab: generateTab,
+      poseConditioning: request.poseConditioning
     };
   }
 
@@ -3204,6 +3225,10 @@ function App() {
                 LoRA
                 {selectedLoras.length ? <span>{selectedLoras.length}</span> : null}
               </button>
+              <button className={generateTab === "pose" ? "runtime-tab active" : "runtime-tab"} onClick={() => setGenerateTab("pose")}>
+                デッサン
+                {poseConditioning.enabled ? <span>ON</span> : null}
+              </button>
               <button className={generateTab === "options" ? "runtime-tab active" : "runtime-tab"} onClick={() => setGenerateTab("options")}>
                 生成オプション
               </button>
@@ -3300,6 +3325,19 @@ function App() {
                 onToggleLora={toggleGenerationLora}
                 onUpdateLora={updateGenerationLora}
                 onClearLoras={() => setSelectedLoras([])}
+              />
+            ) : generateTab === "pose" ? (
+              <PoseEditor
+                value={poseConditioning}
+                controlNetModels={(status?.controlnet ?? []).map((file) => file.name)}
+                onChange={(next) => {
+                  setRestoredGenerationSettings(null);
+                  setPoseConditioning(next);
+                }}
+                onImportControlNet={() => void importModelAsset("controlnet")}
+                outputWidth={generationWidth}
+                outputHeight={generationHeight}
+                disabled={action.busy}
               />
             ) : (
               <div className="generation-controls">
@@ -4744,6 +4782,18 @@ function sameGenerationLoras(left: GenerationLora[], right: GenerationLora[]): b
     const other = right[index];
     return Boolean(other) && value.name === other.name && value.modelStrength === other.modelStrength && value.clipStrength === other.clipStrength;
   });
+}
+
+function samePoseConditioning(left: PoseConditioning | undefined, right: PoseConditioning): boolean {
+  if (!left?.enabled && !right.enabled) return true;
+  if (!left || left.enabled !== right.enabled) return false;
+  return (
+    left.controlNet === right.controlNet &&
+    left.strength === right.strength &&
+    left.startPercent === right.startPercent &&
+    left.endPercent === right.endPercent &&
+    left.imageDataUrl === right.imageDataUrl
+  );
 }
 
 function formatGenerationDuration(milliseconds: number): string {

@@ -69,7 +69,7 @@ const api = {
     },
     downloadModel: (request: DownloadRequest): Promise<DownloadResult> =>
       ipcRenderer.invoke("runtime:download-model", request),
-    importModelAsset: (request: { targetType: "vae" | "clip" }): Promise<DownloadResult | null> =>
+    importModelAsset: (request: { targetType: "vae" | "clip" | "controlnet" }): Promise<DownloadResult | null> =>
       ipcRenderer.invoke("runtime:import-model-asset", request),
     deleteModel: (request: DeleteModelRequest): Promise<string> => ipcRenderer.invoke("runtime:delete-model", request),
     searchCivitai: (options: {

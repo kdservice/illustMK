@@ -32,6 +32,7 @@ export type RuntimePaths = {
   loras: string;
   vae: string;
   clip: string;
+  controlnet: string;
   outputs: string;
   workflows: string;
   loraProjects: string;
@@ -103,6 +104,7 @@ export type RuntimeStatus = {
   loras: ModelFileInfo[];
   vae: ModelFileInfo[];
   clip: ModelFileInfo[];
+  controlnet: ModelFileInfo[];
   outputs: string[];
   systemUsage: SystemUsage;
 };
@@ -138,7 +140,7 @@ export type DeleteModelRequest = {
 };
 
 export type ImportModelAssetRequest = {
-  targetType: "vae" | "clip";
+  targetType: "vae" | "clip" | "controlnet";
   sourcePath: string;
 };
 
@@ -312,6 +314,21 @@ export type TestGenerationRequest = {
   comfyUrl: string;
   vae?: string;
   clip?: string;
+  poseConditioning?: PoseConditioning;
+};
+
+export type PoseJointRotation = [number, number, number];
+
+export type PoseConditioning = {
+  enabled: boolean;
+  imageDataUrl: string;
+  controlNet: string;
+  strength: number;
+  startPercent: number;
+  endPercent: number;
+  jointRotations: Record<string, PoseJointRotation>;
+  cameraPosition: [number, number, number];
+  cameraTarget: [number, number, number];
 };
 
 export type GenerationLora = {
@@ -490,6 +507,7 @@ export type PromptGenerationSettings = {
   selectedModelAddMode?: string;
   baseFilters?: string[];
   generationTab?: string;
+  poseConditioning?: PoseConditioning;
 };
 
 export type UpdatePromptHistoryMemoRequest = {
@@ -599,6 +617,7 @@ function getRuntimePathsForRoot(runtimeRootPath: string): RuntimePaths {
     loras: join(root, "models", "loras"),
     vae: join(root, "models", "vae"),
     clip: join(root, "models", "clip"),
+    controlnet: join(root, "models", "controlnet"),
     outputs: join(root, "outputs"),
     workflows: join(root, "workflows"),
     loraProjects: join(root, "lora-projects"),
@@ -766,6 +785,7 @@ export async function ensureRuntimeFiles(): Promise<RuntimePaths> {
     mkdir(paths.loras, { recursive: true }),
     mkdir(paths.vae, { recursive: true }),
     mkdir(paths.clip, { recursive: true }),
+    mkdir(paths.controlnet, { recursive: true }),
     mkdir(paths.outputs, { recursive: true }),
     mkdir(paths.workflows, { recursive: true }),
     mkdir(paths.loraProjects, { recursive: true }),
@@ -782,6 +802,8 @@ export async function ensureRuntimeFiles(): Promise<RuntimePaths> {
   await writeFile(join(paths.docker, "Dockerfile"), dockerfileText(), "utf8");
   await writeFile(paths.composeFile, composeText(paths), "utf8");
   await writeFile(join(paths.workflows, "phase1-test-generation.json"), JSON.stringify(testWorkflowTemplate(), null, 2), "utf8");
+  await writeNativeExtraModelPaths(paths);
+  await syncNativeControlNetLinks(paths);
   return paths;
 }
 
@@ -828,6 +850,7 @@ export async function getStatus(comfyUrl = `http://127.0.0.1:${comfyPort}`): Pro
     loras,
     vae,
     clip,
+    controlnet,
     outputs,
     containerState,
     systemUsage
@@ -846,6 +869,7 @@ export async function getStatus(comfyUrl = `http://127.0.0.1:${comfyPort}`): Pro
       listModelFiles(paths.loras),
       listModelFiles(paths.vae),
       listModelFiles(paths.clip),
+      listModelFiles(paths.controlnet),
       listFiles(paths.outputs),
       getContainerState(),
       getSystemUsage()
@@ -875,6 +899,7 @@ export async function getStatus(comfyUrl = `http://127.0.0.1:${comfyPort}`): Pro
     loras,
     vae,
     clip,
+    controlnet,
     outputs,
     systemUsage
   };
@@ -1288,8 +1313,11 @@ export async function deleteModelFile(request: DeleteModelRequest): Promise<stri
 export async function importModelAsset(request: ImportModelAssetRequest): Promise<DownloadResult> {
   if (!request.sourcePath.trim()) throw new Error("インポートするファイルを選択してください。");
   const paths = await ensureRuntimeFiles();
-  const targetDir = request.targetType === "vae" ? paths.vae : paths.clip;
-  const fileName = normalizeSafetensorsName(basename(request.sourcePath));
+  const targetDir = request.targetType === "vae" ? paths.vae : request.targetType === "clip" ? paths.clip : paths.controlnet;
+  const sourceName = basename(request.sourcePath);
+  const fileName = request.targetType === "controlnet"
+    ? sanitizeControlNetFileName(sourceName)
+    : normalizeSafetensorsName(sourceName);
   const destination = join(targetDir, fileName);
   const from = resolve(request.sourcePath);
   const to = resolve(destination);
@@ -1298,6 +1326,7 @@ export async function importModelAsset(request: ImportModelAssetRequest): Promis
   if (relation.startsWith("..") || resolve(targetDir, relation) !== from) {
     await cp(from, to);
   }
+  if (request.targetType === "controlnet") await syncNativeControlNetLinks(paths);
   const digest = await sha256File(to);
   return {
     ok: true,
@@ -1305,6 +1334,26 @@ export async function importModelAsset(request: ImportModelAssetRequest): Promis
     sha256: digest,
     message: `${fileName} をインポートしました。`
   };
+}
+
+async function syncNativeControlNetLinks(paths: RuntimePaths): Promise<void> {
+  if (!(await exists(paths.nativeComfy))) return;
+  const nativeControlNetDir = join(paths.nativeComfy, "models", "controlnet");
+  await mkdir(nativeControlNetDir, { recursive: true });
+  for (const fileName of await listFiles(paths.controlnet)) {
+    if (!/\.(safetensors|pth|pt|ckpt|bin)$/i.test(fileName)) continue;
+    const linkPath = join(nativeControlNetDir, fileName);
+    const linkExists = await lstat(linkPath).then(() => true).catch(() => false);
+    if (linkExists) continue;
+    await symlink(join(paths.controlnet, fileName), linkPath).catch(() => undefined);
+  }
+}
+
+function sanitizeControlNetFileName(value: string): string {
+  const extension = value.toLowerCase().match(/\.(safetensors|pth|pt|ckpt|bin)$/)?.[0];
+  if (!extension) throw new Error("ControlNetモデルは .safetensors / .pth / .pt / .ckpt / .bin を選択してください。");
+  const base = safeFileName(value.slice(0, -extension.length));
+  return `${base}${extension}`;
 }
 
 export async function searchCivitaiModels(options: {
@@ -2615,6 +2664,11 @@ async function promptHistoryMissingAssets(entry: PromptHistoryEntry, paths: Runt
   }
   for (const lora of entry.loras ?? []) checks.push(["LoRA", lora.name, paths.loras]);
   for (const lora of settings?.loras ?? []) checks.push(["LoRA", lora.name, paths.loras]);
+  checks.push([
+    "ControlNet",
+    settings?.poseConditioning?.enabled ? settings.poseConditioning.controlNet : undefined,
+    paths.controlnet
+  ]);
 
   const missing: string[] = [];
   const seen = new Set<string>();
@@ -3351,6 +3405,38 @@ export async function runTestGeneration(request: TestGenerationRequest): Promise
   applyLorasToWorkflow(workflow, request.loras ?? [], clipSource);
   workflow["6"].inputs.text = request.prompt;
   workflow["7"].inputs.text = request.negativePrompt;
+  if (request.poseConditioning?.enabled) {
+    const pose = request.poseConditioning;
+    if (!pose.imageDataUrl) {
+      return { ok: false, message: "デッサンのポーズ画像がありません。デッサンタブでポーズを確認してください。" };
+    }
+    if (!pose.controlNet.trim() || !(await exists(join(paths.controlnet, pose.controlNet)))) {
+      return { ok: false, message: `OpenPose用ControlNetモデルが見つかりません: ${pose.controlNet || "未選択"}` };
+    }
+    const poseImageName = await uploadPoseImage(request.comfyUrl, pose.imageDataUrl);
+    workflow["12"] = {
+      class_type: "LoadImage",
+      inputs: { image: poseImageName }
+    };
+    workflow["13"] = {
+      class_type: "ControlNetLoader",
+      inputs: { control_net_name: pose.controlNet }
+    };
+    workflow["14"] = {
+      class_type: "ControlNetApplyAdvanced",
+      inputs: {
+        positive: ["6", 0],
+        negative: ["7", 0],
+        control_net: ["13", 0],
+        image: ["12", 0],
+        strength: pose.strength,
+        start_percent: pose.startPercent,
+        end_percent: pose.endPercent
+      }
+    };
+    workflow["3"].inputs.positive = ["14", 0];
+    workflow["3"].inputs.negative = ["14", 1];
+  }
   workflow["5"].inputs.width = request.width;
   workflow["5"].inputs.height = request.height;
   workflow["5"].inputs.batch_size = 1;
@@ -3416,6 +3502,25 @@ export async function runTestGeneration(request: TestGenerationRequest): Promise
     message: "生成完了を待機しましたが、新しい画像を確認できませんでした。",
     promptId
   };
+}
+
+async function uploadPoseImage(comfyUrl: string, imageDataUrl: string): Promise<string> {
+  const match = imageDataUrl.match(/^data:(image\/(?:png|jpeg|webp));base64,(.+)$/);
+  if (!match) throw new Error("デッサンのポーズ画像形式が不正です。");
+  const mime = match[1];
+  const extension = mime === "image/jpeg" ? "jpg" : mime.split("/")[1];
+  const fileName = `illustmk-pose-${randomUUID()}.${extension}`;
+  const form = new FormData();
+  form.append("image", new Blob([Buffer.from(match[2], "base64")], { type: mime }), fileName);
+  form.append("type", "input");
+  form.append("overwrite", "true");
+  const response = await fetch(`${comfyUrl.replace(/\/$/, "")}/upload/image`, { method: "POST", body: form });
+  if (!response.ok) {
+    throw new Error(`ComfyUIへのポーズ画像アップロードに失敗しました: HTTP ${response.status}\n${await response.text()}`);
+  }
+  const json = (await response.json()) as { name?: string; subfolder?: string };
+  if (!json.name) throw new Error("ComfyUIからポーズ画像名が返りませんでした。");
+  return json.subfolder ? `${json.subfolder}/${json.name}` : json.name;
 }
 
 function findPromptHistoryImage(history: unknown, outputsDir: string): string | null {
@@ -3606,6 +3711,8 @@ function dockerRunArgs(paths: RuntimePaths): string[] {
     `${paths.vae}:/opt/ComfyUI/models/vae:ro`,
     "-v",
     `${paths.clip}:/opt/ComfyUI/models/clip:ro`,
+    "-v",
+    `${paths.controlnet}:/opt/ComfyUI/models/controlnet:ro`,
     "-v",
     `${paths.outputs}:/data/outputs:rw`,
     "--security-opt",
@@ -4053,6 +4160,7 @@ async function writeNativeExtraModelPaths(paths: RuntimePaths): Promise<void> {
   loras: models/loras
   vae: models/vae
   clip: models/clip
+  controlnet: models/controlnet
 `;
   await writeFile(join(paths.nativeComfy, "extra_model_paths.yaml"), yaml, "utf8");
 }
@@ -4391,6 +4499,7 @@ function composeText(paths: RuntimePaths): string {
       - "${paths.loras}:/opt/ComfyUI/models/loras:ro"
       - "${paths.vae}:/opt/ComfyUI/models/vae:ro"
       - "${paths.clip}:/opt/ComfyUI/models/clip:ro"
+      - "${paths.controlnet}:/opt/ComfyUI/models/controlnet:ro"
       - "${paths.outputs}:/data/outputs:rw"
     security_opt:
       - no-new-privileges:true
