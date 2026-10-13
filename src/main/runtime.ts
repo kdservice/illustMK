@@ -387,9 +387,15 @@ export type PoseConditioning = {
   strength: number;
   startPercent: number;
   endPercent: number;
+  depthImageDataUrl?: string;
+  depthControlNet?: string;
+  depthStrength?: number;
+  depthStartPercent?: number;
+  depthEndPercent?: number;
   jointRotations: Record<string, PoseJointRotation>;
   cameraPosition: [number, number, number];
   cameraTarget: [number, number, number];
+  cameraFov?: number;
   referenceImageDataUrl?: string;
   visionModel?: string;
   positivePrompt?: string;
@@ -3204,6 +3210,11 @@ async function promptHistoryMissingAssets(entry: PromptHistoryEntry, paths: Runt
     settings?.poseConditioning?.enabled ? settings.poseConditioning.controlNet : undefined,
     paths.controlnet
   ]);
+  checks.push([
+    "Depth ControlNet",
+    settings?.poseConditioning?.enabled ? settings.poseConditioning.depthControlNet : undefined,
+    paths.controlnet
+  ]);
 
   const missing: string[] = [];
   const seen = new Set<string>();
@@ -4046,6 +4057,37 @@ export async function runTestGeneration(request: TestGenerationRequest): Promise
     };
     workflow["3"].inputs.positive = ["14", 0];
     workflow["3"].inputs.negative = ["14", 1];
+    if (pose.depthControlNet?.trim()) {
+      if (!pose.depthImageDataUrl) {
+        return { ok: false, message: "デッサンのDepth画像がありません。デッサンタブで視点・画角を確認してください。" };
+      }
+      if (!(await exists(join(paths.controlnet, pose.depthControlNet)))) {
+        return { ok: false, message: `Depth用ControlNetモデルが見つかりません: ${pose.depthControlNet}` };
+      }
+      const depthImageName = await uploadPoseImage(request.comfyUrl, pose.depthImageDataUrl);
+      workflow["15"] = {
+        class_type: "LoadImage",
+        inputs: { image: depthImageName }
+      };
+      workflow["16"] = {
+        class_type: "ControlNetLoader",
+        inputs: { control_net_name: pose.depthControlNet }
+      };
+      workflow["17"] = {
+        class_type: "ControlNetApplyAdvanced",
+        inputs: {
+          positive: ["14", 0],
+          negative: ["14", 1],
+          control_net: ["16", 0],
+          image: ["15", 0],
+          strength: pose.depthStrength ?? 0.65,
+          start_percent: pose.depthStartPercent ?? 0,
+          end_percent: pose.depthEndPercent ?? 0.8
+        }
+      };
+      workflow["3"].inputs.positive = ["17", 0];
+      workflow["3"].inputs.negative = ["17", 1];
+    }
   }
   workflow["5"].inputs.width = request.width;
   workflow["5"].inputs.height = request.height;

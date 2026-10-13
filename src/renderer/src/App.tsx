@@ -447,6 +447,10 @@ function App() {
     poseConditioning.imageDataUrl &&
     poseConditioning.controlNet &&
     status?.controlnet.some((file) => file.name === poseConditioning.controlNet) &&
+    (!poseConditioning.depthControlNet || (
+      poseConditioning.depthImageDataUrl &&
+      status?.controlnet.some((file) => file.name === poseConditioning.depthControlNet)
+    )) &&
     poseAnalysisReady
   );
   const canGenerate = Boolean(status?.comfyReachable && selectedCheckpointGenerationReady && poseConditioningReady && !action.busy);
@@ -917,7 +921,11 @@ function App() {
       const fileName = result.path.split(/[\\/]/).pop() ?? "";
       if (targetType === "vae") setSelectedVae(fileName);
       if (targetType === "clip") setSelectedClip(fileName);
-      if (targetType === "controlnet") setPoseConditioning((current) => ({ ...current, controlNet: fileName }));
+      if (targetType === "controlnet") {
+        setPoseConditioning((current) => fileName.toLowerCase().includes("depth")
+          ? { ...current, depthControlNet: fileName }
+          : { ...current, controlNet: fileName });
+      }
       appendLog("info", result.message);
       void refreshStatus();
     });
@@ -3853,6 +3861,7 @@ function App() {
               <PoseEditor
                 value={poseConditioning}
                 controlNetModels={modelLibrary.filter((entry) => entry.type === "controlnet" && (entry.usage.toLowerCase().includes("openpose") || entry.fileName.toLowerCase().includes("openpose") || entry.fileName.toLowerCase().includes("pose"))).map((entry) => entry.fileName)}
+                depthControlNetModels={modelLibrary.filter((entry) => entry.type === "controlnet" && (entry.usage.toLowerCase().includes("depth") || entry.fileName.toLowerCase().includes("depth"))).map((entry) => entry.fileName)}
                 onChange={(next) => {
                   setRestoredGenerationSettings(null);
                   setPoseConditioning(next);
@@ -4075,7 +4084,8 @@ function App() {
                     {(["checkpoint", "controlnet", "vae", "other"] as ModelAssetType[]).map((type) => (
                       <button key={type} className={modelCatalogTypes.includes(type) ? "filter-chip active" : "filter-chip"} onClick={() => setModelCatalogTypes([type])}>{modelTypeLabel(type)}</button>
                     ))}
-                    <button className="filter-chip openpose-shortcut" onClick={() => { setModelCatalogTypes(["controlnet"]); setModelCatalogQuery("OpenPose"); }}>OpenPose</button>
+                    <button className="filter-chip openpose-shortcut" onClick={() => { setModelCatalogTypes(["controlnet"]); setModelCatalogPeriod("AllTime"); setModelCatalogQuery("OpenPose"); }}>OpenPose</button>
+                    <button className="filter-chip" onClick={() => { setModelCatalogTypes(["controlnet"]); setModelCatalogPeriod("AllTime"); setModelCatalogQuery("depth"); }}>Depth</button>
                   </div>
                 </div>
                 {modelCatalogTypes.includes("checkpoint") ? (
@@ -5417,7 +5427,13 @@ function samePoseConditioning(left: PoseConditioning | undefined, right: PoseCon
     left.strength === right.strength &&
     left.startPercent === right.startPercent &&
     left.endPercent === right.endPercent &&
+    (left.depthControlNet ?? "") === (right.depthControlNet ?? "") &&
+    (left.depthStrength ?? 0.65) === (right.depthStrength ?? 0.65) &&
+    (left.depthStartPercent ?? 0) === (right.depthStartPercent ?? 0) &&
+    (left.depthEndPercent ?? 0.8) === (right.depthEndPercent ?? 0.8) &&
     left.imageDataUrl === right.imageDataUrl &&
+    (left.depthImageDataUrl ?? "") === (right.depthImageDataUrl ?? "") &&
+    (left.cameraFov ?? 38) === (right.cameraFov ?? 38) &&
     left.referenceImageDataUrl === right.referenceImageDataUrl &&
     left.visionModel === right.visionModel &&
     left.positivePrompt === right.positivePrompt &&

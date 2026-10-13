@@ -8,6 +8,7 @@ import type { PoseConditioning, PoseJointRotation, SavedPose } from "../../main/
 type PoseEditorProps = {
   value: PoseConditioning;
   controlNetModels: string[];
+  depthControlNetModels: string[];
   onChange: (value: PoseConditioning) => void;
   savedPoses: SavedPose[];
   selectedSavedPoseId: string;
@@ -113,9 +114,15 @@ export function createDefaultPoseConditioning(): PoseConditioning {
     strength: 0.9,
     startPercent: 0,
     endPercent: 0.9,
+    depthImageDataUrl: "",
+    depthControlNet: "",
+    depthStrength: 0.65,
+    depthStartPercent: 0,
+    depthEndPercent: 0.8,
     jointRotations: structuredClone(defaultRotations),
     cameraPosition: [0, 4.4, 10],
     cameraTarget: [0, 3.8, 0],
+    cameraFov: 38,
     referenceImageDataUrl: "",
     visionModel: "",
     positivePrompt: "",
@@ -124,12 +131,13 @@ export function createDefaultPoseConditioning(): PoseConditioning {
   };
 }
 
-export function PoseEditor({ value, controlNetModels, onChange, savedPoses, selectedSavedPoseId, poseTitle, onPoseTitleChange, onSelectSavedPose, onSavePose, onDeletePose, onAssistPose, visionModels, onAnalyzePose, outputWidth, outputHeight, disabled = false }: PoseEditorProps) {
+export function PoseEditor({ value, controlNetModels, depthControlNetModels, onChange, savedPoses, selectedSavedPoseId, poseTitle, onPoseTitleChange, onSelectSavedPose, onSavePose, onDeletePose, onAssistPose, visionModels, onAnalyzePose, outputWidth, outputHeight, disabled = false }: PoseEditorProps) {
   const hostRef = useRef<HTMLDivElement | null>(null);
   const valueRef = useRef(value);
   const onChangeRef = useRef(onChange);
   const applyValueRef = useRef<((next: PoseConditioning) => void) | null>(null);
   const capturePoseRef = useRef<(() => string) | null>(null);
+  const captureDepthRef = useRef<(() => string) | null>(null);
   const captureReferenceRef = useRef<(() => string) | null>(null);
   const [selectedJoint, setSelectedJoint] = useState("hips");
   const [assistantInstruction, setAssistantInstruction] = useState("");
@@ -144,27 +152,30 @@ export function PoseEditor({ value, controlNetModels, onChange, savedPoses, sele
     applyValueRef.current?.(value);
     const frame = requestAnimationFrame(() => {
       const imageDataUrl = capturePoseRef.current?.();
+      const depthImageDataUrl = captureDepthRef.current?.();
       const referenceImageDataUrl = captureReferenceRef.current?.();
       if (
         (imageDataUrl && imageDataUrl !== valueRef.current.imageDataUrl) ||
+        (depthImageDataUrl && depthImageDataUrl !== valueRef.current.depthImageDataUrl) ||
         (referenceImageDataUrl && referenceImageDataUrl !== valueRef.current.referenceImageDataUrl)
       ) {
         onChangeRef.current({
           ...valueRef.current,
           imageDataUrl: imageDataUrl || valueRef.current.imageDataUrl,
+          depthImageDataUrl: depthImageDataUrl || valueRef.current.depthImageDataUrl,
           referenceImageDataUrl: referenceImageDataUrl || valueRef.current.referenceImageDataUrl
         });
       }
     });
     return () => cancelAnimationFrame(frame);
-  }, [value.jointRotations, value.cameraPosition, value.cameraTarget]);
+  }, [value.jointRotations, value.cameraPosition, value.cameraTarget, value.cameraFov]);
 
   useEffect(() => {
     const host = hostRef.current;
     if (!host) return;
     const scene = new THREE.Scene();
     scene.background = new THREE.Color(0x050914);
-    const camera = new THREE.PerspectiveCamera(38, 1, 0.1, 100);
+    const camera = new THREE.PerspectiveCamera(valueRef.current.cameraFov ?? 38, 1, 0.1, 100);
     const renderer = new THREE.WebGLRenderer({ antialias: true, preserveDrawingBuffer: true });
     renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
     renderer.shadowMap.enabled = true;
@@ -208,6 +219,8 @@ export function PoseEditor({ value, controlNetModels, onChange, savedPoses, sele
         joint.rotation.set(rotation[0], rotation[1], rotation[2]);
       }
       camera.position.fromArray(next.cameraPosition);
+      camera.fov = next.cameraFov ?? 38;
+      camera.updateProjectionMatrix();
       orbit.target.fromArray(next.cameraTarget);
       orbit.update();
       applying = false;
@@ -226,18 +239,24 @@ export function PoseEditor({ value, controlNetModels, onChange, savedPoses, sele
       onChangeRef.current({
         ...current,
         imageDataUrl: renderOpenPoseImage(rig, camera, current, outputWidth, outputHeight),
-        referenceImageDataUrl: renderMannequinImage(renderer, scene, camera, transformHelper),
+        depthImageDataUrl: renderDepthImage(renderer, scene, rig, floor, camera, transformHelper, outputWidth, outputHeight),
+        referenceImageDataUrl: renderMannequinImage(renderer, scene, camera, transformHelper, outputWidth, outputHeight),
         analysisStale: true,
         jointRotations: rotations,
         cameraPosition: camera.position.toArray() as [number, number, number],
-        cameraTarget: orbit.target.toArray() as [number, number, number]
+        cameraTarget: orbit.target.toArray() as [number, number, number],
+        cameraFov: camera.fov
       });
     };
     capturePoseRef.current = () => {
       scene.updateMatrixWorld(true);
       return renderOpenPoseImage(rig, camera, valueRef.current, outputWidth, outputHeight);
     };
-    captureReferenceRef.current = () => renderMannequinImage(renderer, scene, camera, transformHelper);
+    captureDepthRef.current = () => {
+      scene.updateMatrixWorld(true);
+      return renderDepthImage(renderer, scene, rig, floor, camera, transformHelper, outputWidth, outputHeight);
+    };
+    captureReferenceRef.current = () => renderMannequinImage(renderer, scene, camera, transformHelper, outputWidth, outputHeight);
 
     const selectAtPointer = (event: PointerEvent) => {
       if (transform.dragging) return;
@@ -299,6 +318,7 @@ export function PoseEditor({ value, controlNetModels, onChange, savedPoses, sele
       renderer.domElement.remove();
       applyValueRef.current = null;
       capturePoseRef.current = null;
+      captureDepthRef.current = null;
       captureReferenceRef.current = null;
     };
   }, [outputHeight, outputWidth]);
@@ -308,6 +328,7 @@ export function PoseEditor({ value, controlNetModels, onChange, savedPoses, sele
       ...createDefaultPoseConditioning(),
       enabled: value.enabled,
       controlNet: value.controlNet,
+      depthControlNet: value.depthControlNet,
       visionModel: value.visionModel
     };
     onChange(reset);
@@ -315,7 +336,7 @@ export function PoseEditor({ value, controlNetModels, onChange, savedPoses, sele
 
   const resetCamera = () => {
     const defaults = createDefaultPoseConditioning();
-    onChange({ ...value, cameraPosition: defaults.cameraPosition, cameraTarget: defaults.cameraTarget, analysisStale: true });
+    onChange({ ...value, cameraPosition: defaults.cameraPosition, cameraTarget: defaults.cameraTarget, cameraFov: defaults.cameraFov, analysisStale: true });
   };
 
   const runAssistant = async () => {
@@ -379,6 +400,19 @@ export function PoseEditor({ value, controlNetModels, onChange, savedPoses, sele
         <div className="pose-viewport" ref={hostRef} />
         <div className="pose-selection">選択中: {jointLabels[selectedJoint] ?? selectedJoint}</div>
         {value.imageDataUrl ? <img className="pose-map-preview" src={value.imageDataUrl} alt="OpenPose入力プレビュー" /> : null}
+        {value.depthImageDataUrl ? <img className="depth-map-preview" src={value.depthImageDataUrl} alt="Depth入力プレビュー" /> : null}
+        <label className="pose-fov-control">
+          <span>画角 {Math.round(value.cameraFov ?? 38)}°</span>
+          <input
+            type="range"
+            min="20"
+            max="80"
+            step="1"
+            value={value.cameraFov ?? 38}
+            onChange={(event) => onChange({ ...value, cameraFov: Number(event.target.value), analysisStale: true })}
+            disabled={disabled}
+          />
+        </label>
         <button className="pose-camera-reset icon-button" type="button" onClick={resetCamera} title="視点だけリセット">
           <Camera size={16} />
         </button>
@@ -431,29 +465,60 @@ export function PoseEditor({ value, controlNetModels, onChange, savedPoses, sele
         </div>
       </div>
       <div className="pose-footer">
-        <div className="pose-controlnet-field">
-          <label>OPENPOSE CONTROLNET</label>
-          <div className="pose-controlnet-select">
-            <select
-              value={value.controlNet}
-              onChange={(event) => onChange({ ...value, controlNet: event.target.value })}
-              disabled={disabled}
-            >
-              <option value="">選択してください</option>
-              {controlNetModels.map((name) => <option key={name} value={name}>{name}</option>)}
-            </select>
+        <div className="pose-controlnet-stack">
+          <div className="pose-controlnet-row">
+            <div className="pose-controlnet-field">
+              <label>OPENPOSE CONTROLNET</label>
+              <div className="pose-controlnet-select">
+                <select
+                  value={value.controlNet}
+                  onChange={(event) => onChange({ ...value, controlNet: event.target.value })}
+                  disabled={disabled}
+                >
+                  <option value="">選択してください</option>
+                  {controlNetModels.map((name) => <option key={name} value={name}>{name}</option>)}
+                </select>
+              </div>
+            </div>
+            <div className="pose-strength-field">
+              <label>強度 {value.strength.toFixed(2)}</label>
+              <input
+                type="range"
+                min="0"
+                max="2"
+                step="0.05"
+                value={value.strength}
+                onChange={(event) => onChange({ ...value, strength: Number(event.target.value) })}
+              />
+            </div>
           </div>
-        </div>
-        <div className="pose-strength-field">
-          <label>強度 {value.strength.toFixed(2)}</label>
-          <input
-            type="range"
-            min="0"
-            max="2"
-            step="0.05"
-            value={value.strength}
-            onChange={(event) => onChange({ ...value, strength: Number(event.target.value) })}
-          />
+          <div className="pose-controlnet-row">
+            <div className="pose-controlnet-field">
+              <label>DEPTH CONTROLNET</label>
+              <div className="pose-controlnet-select">
+                <select
+                  value={value.depthControlNet ?? ""}
+                  onChange={(event) => onChange({ ...value, depthControlNet: event.target.value })}
+                  disabled={disabled}
+                >
+                  <option value="">使用しない</option>
+                  {depthControlNetModels.map((name) => <option key={name} value={name}>{name}</option>)}
+                </select>
+              </div>
+            </div>
+            <div className="pose-strength-field">
+              <label>強度 {(value.depthStrength ?? 0.65).toFixed(2)}</label>
+              <input
+                type="range"
+                min="0"
+                max="2"
+                step="0.05"
+                value={value.depthStrength ?? 0.65}
+                onChange={(event) => onChange({ ...value, depthStrength: Number(event.target.value) })}
+                disabled={disabled || !value.depthControlNet}
+              />
+            </div>
+          </div>
         </div>
         <button
           type="button"
@@ -466,6 +531,7 @@ export function PoseEditor({ value, controlNetModels, onChange, savedPoses, sele
         </button>
       </div>
       {!controlNetModels.length ? <p className="pose-warning">「モデル」タブからOpenPose用ControlNetモデルを導入してください。</p> : null}
+      {!depthControlNetModels.length ? <p className="pose-warning">視点・画角を固定する場合は「モデル」タブからDepth用ControlNetモデルを導入してください。</p> : null}
     </div>
   );
 }
@@ -474,15 +540,135 @@ function renderMannequinImage(
   renderer: THREE.WebGLRenderer,
   scene: THREE.Scene,
   camera: THREE.Camera,
-  transformHelper: THREE.Object3D
+  transformHelper: THREE.Object3D,
+  outputWidth: number,
+  outputHeight: number
 ): string {
+  if (!(camera instanceof THREE.PerspectiveCamera)) return "";
+  const aspect = Math.max(0.35, Math.min(2.5, outputWidth / Math.max(1, outputHeight)));
+  const longSide = 768;
+  const width = Math.max(256, aspect >= 1 ? longSide : Math.round(longSide * aspect));
+  const height = Math.max(256, aspect >= 1 ? Math.round(longSide / aspect) : longSide);
+  const projectionCamera = camera.clone();
+  projectionCamera.aspect = aspect;
+  projectionCamera.updateProjectionMatrix();
+  projectionCamera.updateMatrixWorld(true);
+  const target = new THREE.WebGLRenderTarget(width, height, { format: THREE.RGBAFormat, type: THREE.UnsignedByteType, depthBuffer: true });
+  target.texture.colorSpace = THREE.SRGBColorSpace;
   const wasVisible = transformHelper.visible;
+  const previousTarget = renderer.getRenderTarget();
   transformHelper.visible = false;
-  renderer.render(scene, camera);
-  const image = renderer.domElement.toDataURL("image/png");
+  renderer.setRenderTarget(target);
+  renderer.clear();
+  renderer.render(scene, projectionCamera);
+  const pixels = new Uint8Array(width * height * 4);
+  renderer.readRenderTargetPixels(target, 0, 0, width, height, pixels);
+  renderer.setRenderTarget(previousTarget);
   transformHelper.visible = wasVisible;
   renderer.render(scene, camera);
-  return image;
+  target.dispose();
+  return rgbaPixelsToDataUrl(pixels, width, height);
+}
+
+function rgbaPixelsToDataUrl(pixels: Uint8Array, width: number, height: number): string {
+  const flipped = new Uint8ClampedArray(pixels.length);
+  const rowSize = width * 4;
+  for (let y = 0; y < height; y += 1) {
+    flipped.set(pixels.subarray(y * rowSize, (y + 1) * rowSize), (height - y - 1) * rowSize);
+  }
+  const canvas = document.createElement("canvas");
+  canvas.width = width;
+  canvas.height = height;
+  canvas.getContext("2d")?.putImageData(new ImageData(flipped, width, height), 0, 0);
+  return canvas.toDataURL("image/png");
+}
+
+function renderDepthImage(
+  renderer: THREE.WebGLRenderer,
+  scene: THREE.Scene,
+  rig: Rig,
+  floor: THREE.Object3D,
+  camera: THREE.Camera,
+  transformHelper: THREE.Object3D,
+  outputWidth: number,
+  outputHeight: number
+): string {
+  if (!(camera instanceof THREE.PerspectiveCamera)) return "";
+  const aspect = Math.max(0.35, Math.min(2.5, outputWidth / Math.max(1, outputHeight)));
+  const longSide = 768;
+  const width = Math.max(256, aspect >= 1 ? longSide : Math.round(longSide * aspect));
+  const height = Math.max(256, aspect >= 1 ? Math.round(longSide / aspect) : longSide);
+  const projectionCamera = camera.clone();
+  projectionCamera.aspect = aspect;
+  projectionCamera.updateProjectionMatrix();
+  projectionCamera.updateMatrixWorld(true);
+
+  const box = new THREE.Box3().setFromObject(rig.root);
+  const corners = [
+    new THREE.Vector3(box.min.x, box.min.y, box.min.z),
+    new THREE.Vector3(box.min.x, box.min.y, box.max.z),
+    new THREE.Vector3(box.min.x, box.max.y, box.min.z),
+    new THREE.Vector3(box.min.x, box.max.y, box.max.z),
+    new THREE.Vector3(box.max.x, box.min.y, box.min.z),
+    new THREE.Vector3(box.max.x, box.min.y, box.max.z),
+    new THREE.Vector3(box.max.x, box.max.y, box.min.z),
+    new THREE.Vector3(box.max.x, box.max.y, box.max.z)
+  ];
+  const depths = corners.map((point) => -point.applyMatrix4(projectionCamera.matrixWorldInverse).z);
+  const nearDepth = Math.max(0.01, Math.min(...depths) - 0.35);
+  const farDepth = Math.max(nearDepth + 0.1, Math.max(...depths) + 0.35);
+  const depthMaterial = new THREE.ShaderMaterial({
+    uniforms: {
+      nearDepth: { value: nearDepth },
+      farDepth: { value: farDepth }
+    },
+    vertexShader: `
+      varying float viewDepth;
+      void main() {
+        vec4 viewPosition = modelViewMatrix * vec4(position, 1.0);
+        viewDepth = -viewPosition.z;
+        gl_Position = projectionMatrix * viewPosition;
+      }
+    `,
+    fragmentShader: `
+      uniform float nearDepth;
+      uniform float farDepth;
+      varying float viewDepth;
+      void main() {
+        float depthValue = 1.0 - clamp((viewDepth - nearDepth) / (farDepth - nearDepth), 0.0, 1.0);
+        gl_FragColor = vec4(vec3(depthValue), 1.0);
+      }
+    `
+  });
+  const target = new THREE.WebGLRenderTarget(width, height, {
+    format: THREE.RGBAFormat,
+    type: THREE.UnsignedByteType,
+    depthBuffer: true
+  });
+  const previousTarget = renderer.getRenderTarget();
+  const previousOverride = scene.overrideMaterial;
+  const previousBackground = scene.background;
+  const floorVisible = floor.visible;
+  const helperVisible = transformHelper.visible;
+  floor.visible = false;
+  transformHelper.visible = false;
+  scene.overrideMaterial = depthMaterial;
+  scene.background = new THREE.Color(0x000000);
+  renderer.setRenderTarget(target);
+  renderer.clear();
+  renderer.render(scene, projectionCamera);
+  const pixels = new Uint8Array(width * height * 4);
+  renderer.readRenderTargetPixels(target, 0, 0, width, height, pixels);
+  renderer.setRenderTarget(previousTarget);
+  scene.overrideMaterial = previousOverride;
+  scene.background = previousBackground;
+  floor.visible = floorVisible;
+  transformHelper.visible = helperVisible;
+  renderer.render(scene, camera);
+
+  target.dispose();
+  depthMaterial.dispose();
+  return rgbaPixelsToDataUrl(pixels, width, height);
 }
 
 function createRig(): Rig {
