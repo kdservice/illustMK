@@ -1895,7 +1895,7 @@ label {
   min-height: 0;
   height: auto;
   display: grid;
-  grid-template-rows: auto auto minmax(140px, 1fr) auto auto auto;
+  grid-template-rows: auto auto minmax(220px, 1fr) auto auto auto;
   gap: 10px;
   overflow: hidden;
 }
@@ -1942,7 +1942,7 @@ label {
 
 .pose-library-bar {
   display: grid;
-  grid-template-columns: minmax(160px, 0.8fr) minmax(220px, 1.2fr) auto 42px;
+  grid-template-columns: minmax(150px, 0.7fr) minmax(180px, 1fr) minmax(220px, 1.2fr) auto 42px;
   gap: 8px;
   align-items: end;
 }
@@ -1951,15 +1951,15 @@ label {
   margin-bottom: 0;
 }
 
-.pose-assistant-bar {
+.pose-source-bar {
   display: grid;
-  grid-template-columns: auto minmax(180px, 1fr) 42px minmax(0, 0.8fr);
+  grid-template-columns: auto auto minmax(0, 1fr) auto;
   gap: 8px;
   align-items: center;
   min-height: 42px;
 }
 
-.pose-assistant-bar > span {
+.pose-source-bar > span {
   overflow: hidden;
   color: #9db1d8;
   font-size: 12px;
@@ -1981,6 +1981,116 @@ label {
   width: 100%;
   height: 100%;
   display: block;
+}
+
+.pose-viewport.reference-hidden {
+  visibility: hidden;
+}
+
+.pose-reference-stage {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  background: #030712;
+}
+
+.pose-viewport-wrap:has(.reference-hidden) .pose-fov-control,
+.pose-viewport-wrap:has(.reference-hidden) .pose-camera-reset,
+.pose-viewport-wrap:has(.reference-hidden) .pose-reset,
+.pose-viewport-wrap:has(.reference-hidden) .depth-map-preview {
+  display: none;
+}
+
+.pose-preprocessor-status {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  min-height: 44px;
+  padding: 8px 10px;
+  border: 1px solid #8c6324;
+  border-radius: 6px;
+  color: #ffd785;
+  background: #241a0b;
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.pose-preprocessor-status.ready {
+  border-color: #25724f;
+  color: #72e0aa;
+  background: #08251a;
+}
+
+.pose-catalog-modal {
+  width: min(1320px, calc(100vw - 48px));
+  height: min(900px, calc(100vh - 48px));
+  max-height: none;
+  display: grid;
+  grid-template-rows: auto auto auto auto minmax(0, 1fr);
+  overflow: hidden;
+}
+
+.pose-catalog-tabs,
+.pose-catalog-search,
+.pose-catalog-actions {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.pose-catalog-tabs button.active {
+  border-color: #3ec7ff;
+  background: #173e70;
+}
+
+.pose-catalog-search input {
+  flex: 1 1 auto;
+}
+
+.pose-catalog-grid {
+  min-height: 0;
+  overflow: auto;
+  display: grid;
+  grid-template-columns: repeat(5, minmax(150px, 1fr));
+  gap: 10px;
+  align-content: start;
+  padding-right: 4px;
+}
+
+.pose-catalog-card {
+  min-width: 0;
+  display: grid;
+  grid-template-rows: 180px auto auto auto;
+  gap: 8px;
+  padding: 9px;
+  border: 1px solid #244b79;
+  border-radius: 8px;
+  background: #071226;
+}
+
+.pose-catalog-card > img,
+.pose-catalog-card > .catalog-no-image {
+  width: 100%;
+  height: 180px;
+  object-fit: contain;
+  border-radius: 5px;
+  background: #02060e;
+}
+
+.pose-catalog-card strong,
+.pose-catalog-card small {
+  overflow-wrap: anywhere;
+}
+
+.pose-catalog-card small {
+  color: #91a3c9;
+}
+
+.pose-catalog-actions > button:first-child {
+  flex: 1 1 auto;
 }
 
 .pose-selection {

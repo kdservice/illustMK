@@ -2,8 +2,8 @@ import { useEffect, useRef, useState } from "react";
 import * as THREE from "three";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
 import { TransformControls } from "three/examples/jsm/controls/TransformControls.js";
-import { Bot, Camera, RotateCcw, Save, ScanSearch, Send, Trash2 } from "lucide-react";
-import type { PoseConditioning, PoseJointRotation, SavedPose } from "../../main/runtime";
+import { Camera, Download, ExternalLink, FolderOpen, Images, RotateCcw, Save, Search, Trash2, X } from "lucide-react";
+import type { CivitaiModelCard, OpenPoseAsset, OpenPoseCatalogItem, PoseConditioning, PoseExtractionResult, PoseJointRotation, PosePreprocessorStatus, SavedPose } from "../../main/runtime";
 
 type PoseEditorProps = {
   value: PoseConditioning;
@@ -17,9 +17,8 @@ type PoseEditorProps = {
   onSelectSavedPose: (id: string) => void;
   onSavePose: () => void;
   onDeletePose: () => void;
-  onAssistPose: (instruction: string) => Promise<string>;
-  visionModels: string[];
-  onAnalyzePose: () => Promise<string>;
+  comfyUrl: string;
+  onInstallPreprocessor: () => Promise<void>;
   outputWidth: number;
   outputHeight: number;
   disabled?: boolean;
@@ -111,10 +110,43 @@ const defaultRotations: Record<string, PoseJointRotation> = {
   rightAnkle: [0, 0, 0]
 };
 
+const builtInPoseTemplates: Array<{ id: string; label: string; rotations: Record<string, PoseJointRotation> }> = [
+  { id: "standing", label: "直立", rotations: templateRotations({}) },
+  { id: "running", label: "走る", rotations: templateRotations({
+    hips: [-0.08, 0.08, 0.04], spine: [-0.22, 0, 0], chest: [-0.16, 0, 0], neck: [0.18, 0, 0], head: [0.08, 0, 0],
+    leftShoulder: [-0.82, 0, -0.16], leftElbow: [-1.18, 0, -0.08], rightShoulder: [0.72, 0, 0.16], rightElbow: [-1.05, 0, 0.08],
+    leftHip: [-0.92, 0, -0.05], leftKnee: [1.72, 0, 0], leftAnkle: [-0.38, 0, 0], rightHip: [0.68, 0, 0.05], rightKnee: [0.48, 0, 0], rightAnkle: [-0.18, 0, 0]
+  }) },
+  { id: "seiza", label: "正座", rotations: templateRotations({
+    hips: [0.08, 0, 0], spine: [-0.08, 0, 0], chest: [0.04, 0, 0],
+    leftHip: [-1.25, 0, -0.12], leftKnee: [2.3, 0, 0], leftAnkle: [-0.72, 0, 0],
+    rightHip: [-1.25, 0, 0.12], rightKnee: [2.3, 0, 0], rightAnkle: [-0.72, 0, 0]
+  }) },
+  { id: "gym-sitting", label: "体育座り", rotations: templateRotations({
+    hips: [0.18, 0, 0], spine: [-0.3, 0, 0], chest: [-0.22, 0, 0], neck: [0.18, 0, 0], head: [0.18, 0, 0],
+    leftShoulder: [-0.42, -0.08, 0.42], leftElbow: [-1.12, 0.12, -0.28], rightShoulder: [-0.42, 0.08, -0.42], rightElbow: [-1.12, -0.12, 0.28],
+    leftHip: [-1.58, 0, -0.1], leftKnee: [2.48, 0, 0.06], leftAnkle: [-0.72, 0, 0], rightHip: [-1.58, 0, 0.1], rightKnee: [2.48, 0, -0.06], rightAnkle: [-0.72, 0, 0]
+  }) },
+  { id: "forward-bend", label: "前屈運動", rotations: templateRotations({
+    hips: [-0.22, 0, 0], spine: [-0.55, 0, 0], chest: [-0.45, 0, 0], neck: [0.35, 0, 0], head: [0.25, 0, 0],
+    leftShoulder: [-1.25, 0, -0.1], leftElbow: [-0.12, 0, 0], rightShoulder: [-1.25, 0, 0.1], rightElbow: [-0.12, 0, 0]
+  }) },
+  { id: "back-bend", label: "体後屈", rotations: templateRotations({
+    hips: [0.18, 0, 0], spine: [0.38, 0, 0], chest: [0.38, 0, 0], neck: [-0.28, 0, 0], head: [-0.22, 0, 0],
+    leftShoulder: [2.35, 0, -0.18], leftElbow: [-0.18, 0, 0], rightShoulder: [2.35, 0, 0.18], rightElbow: [-0.18, 0, 0]
+  }) }
+];
+
+function templateRotations(overrides: Record<string, PoseJointRotation>): Record<string, PoseJointRotation> {
+  return Object.fromEntries(Object.entries({ ...defaultRotations, ...overrides }).map(([name, rotation]) => [name, [...rotation] as PoseJointRotation]));
+}
+
 export function createDefaultPoseConditioning(): PoseConditioning {
   return {
     enabled: false,
     imageDataUrl: "",
+    inputMode: "skeleton",
+    sourceName: "3D人形を直接編集",
     controlNet: "",
     strength: 0.9,
     startPercent: 0,
@@ -136,7 +168,7 @@ export function createDefaultPoseConditioning(): PoseConditioning {
   };
 }
 
-export function PoseEditor({ value, controlNetModels, depthControlNetModels, onChange, savedPoses, selectedSavedPoseId, poseTitle, onPoseTitleChange, onSelectSavedPose, onSavePose, onDeletePose, onAssistPose, visionModels, onAnalyzePose, outputWidth, outputHeight, disabled = false }: PoseEditorProps) {
+export function PoseEditor({ value, controlNetModels, depthControlNetModels, onChange, savedPoses, selectedSavedPoseId, poseTitle, onPoseTitleChange, onSelectSavedPose, onSavePose, onDeletePose, comfyUrl, onInstallPreprocessor, outputWidth, outputHeight, disabled = false }: PoseEditorProps) {
   const hostRef = useRef<HTMLDivElement | null>(null);
   const valueRef = useRef(value);
   const onChangeRef = useRef(onChange);
@@ -146,13 +178,24 @@ export function PoseEditor({ value, controlNetModels, depthControlNetModels, onC
   const captureReferenceRef = useRef<(() => string) | null>(null);
   const capturePromptRef = useRef<(() => DerivedPosePrompts) | null>(null);
   const [selectedJoint, setSelectedJoint] = useState("hips");
-  const [assistantInstruction, setAssistantInstruction] = useState("");
-  const [assistantMessage, setAssistantMessage] = useState("");
-  const [assistantBusy, setAssistantBusy] = useState(false);
-  const [analysisMessage, setAnalysisMessage] = useState("");
+  const [selectedTemplateId, setSelectedTemplateId] = useState("");
+  const [catalogOpen, setCatalogOpen] = useState(false);
+  const [catalogSource, setCatalogSource] = useState<"openposes" | "civitai">("openposes");
+  const [catalogQuery, setCatalogQuery] = useState("");
+  const [openPoseResults, setOpenPoseResults] = useState<OpenPoseCatalogItem[]>([]);
+  const [civitaiResults, setCivitaiResults] = useState<CivitaiModelCard[]>([]);
+  const [catalogBusy, setCatalogBusy] = useState(false);
+  const [catalogError, setCatalogError] = useState("");
+  const [sourceBusy, setSourceBusy] = useState(false);
+  const [sourceError, setSourceError] = useState("");
+  const [preprocessorStatus, setPreprocessorStatus] = useState<PosePreprocessorStatus | null>(null);
 
   valueRef.current = value;
   onChangeRef.current = onChange;
+
+  useEffect(() => {
+    void window.illustMK.poses.preprocessorStatus(comfyUrl).then(setPreprocessorStatus).catch(() => undefined);
+  }, [comfyUrl]);
 
   useEffect(() => {
     applyValueRef.current?.(value);
@@ -352,33 +395,131 @@ export function PoseEditor({ value, controlNetModels, depthControlNetModels, onC
     onChange({ ...value, cameraPosition: defaults.cameraPosition, cameraTarget: defaults.cameraTarget, cameraFov: defaults.cameraFov, analysisStale: true });
   };
 
-  const runAssistant = async () => {
-    const instruction = assistantInstruction.trim();
-    if (!instruction || assistantBusy || disabled) return;
-    setAssistantBusy(true);
-    setAssistantMessage("");
+  const applyBuiltInTemplate = (templateId: string) => {
+    setSelectedTemplateId(templateId);
+    const template = builtInPoseTemplates.find((item) => item.id === templateId);
+    if (!template) return;
+    onChange({
+      ...value,
+      jointRotations: structuredClone(template.rotations),
+      inputMode: "skeleton",
+      sourceName: `基本テンプレート: ${template.label}`,
+      sourcePageUrl: undefined,
+      analysisStale: true
+    });
+  };
+
+  const refreshPreprocessorStatus = async () => {
+    setPreprocessorStatus(await window.illustMK.poses.preprocessorStatus(comfyUrl));
+  };
+
+  const openCatalog = async () => {
+    setCatalogOpen(true);
+    setCatalogError("");
+    await Promise.all([searchCatalog("openposes"), refreshPreprocessorStatus()]);
+  };
+
+  const searchCatalog = async (source = catalogSource) => {
+    setCatalogBusy(true);
+    setCatalogError("");
     try {
-      setAssistantMessage(await onAssistPose(instruction));
+      if (source === "openposes") {
+        setOpenPoseResults(await window.illustMK.poses.searchOpenPoses(catalogQuery));
+      } else {
+        const result = await window.illustMK.runtime.searchCivitaiPage({
+          query: catalogQuery.trim() || "OpenPose",
+          sort: "Most Downloaded",
+          period: "AllTime",
+          limit: 40,
+          nsfw: false,
+          type: "Poses"
+        });
+        setCivitaiResults(result.models);
+      }
     } catch (error) {
-      setAssistantMessage(error instanceof Error ? error.message : String(error));
+      setCatalogError(error instanceof Error ? error.message : String(error));
     } finally {
-      setAssistantBusy(false);
+      setCatalogBusy(false);
     }
   };
 
-  const runVisionAnalysis = async () => {
-    if (disabled || !value.visionModel || !value.referenceImageDataUrl) return;
-    setAnalysisMessage("");
+  const applyOpenPoseAsset = async (item: OpenPoseCatalogItem) => {
+    setCatalogBusy(true);
+    setCatalogError("");
     try {
-      setAnalysisMessage(await onAnalyzePose());
+      const asset = await window.illustMK.poses.getOpenPose(item.id);
+      applyExtractedPose(asset, `OpenPoses: ${item.name}`, item.name, "https://openposes.com/");
+      setCatalogOpen(false);
     } catch (error) {
-      setAnalysisMessage(error instanceof Error ? error.message : String(error));
+      setCatalogError(error instanceof Error ? error.message : String(error));
+    } finally {
+      setCatalogBusy(false);
+    }
+  };
+
+  const applyExtractedPose = (asset: OpenPoseAsset | PoseExtractionResult, sourceName: string, title: string, sourcePageUrl?: string) => {
+    const defaults = createDefaultPoseConditioning();
+    onChange({
+      ...value,
+      imageDataUrl: renderCatalogOpenPose(asset, outputWidth, outputHeight),
+      inputMode: "skeleton",
+      sourceName,
+      sourcePageUrl,
+      jointRotations: openPoseKeypointsToRotations(asset),
+      cameraPosition: defaults.cameraPosition,
+      cameraTarget: defaults.cameraTarget,
+      cameraFov: defaults.cameraFov,
+      depthImageDataUrl: "",
+      depthControlNet: "",
+      positivePrompt: "",
+      negativePrompt: "",
+      analysisStale: true
+    });
+    onPoseTitleChange(title.replace(/\.[^.]+$/, ""));
+  };
+
+  const importLocalImage = async () => {
+    setSourceBusy(true);
+    setSourceError("");
+    try {
+      const imported = await window.illustMK.poses.importImage();
+      if (!imported) return;
+      const extracted = await window.illustMK.poses.extractImage({ comfyUrl, imageDataUrl: imported.imageDataUrl });
+      applyExtractedPose(extracted, `画像: ${imported.name}`, imported.name);
+    } catch (error) {
+      setSourceError(error instanceof Error ? error.message : String(error));
+    } finally {
+      setSourceBusy(false);
+      await refreshPreprocessorStatus();
+    }
+  };
+
+  const applyCivitaiImage = async (model: CivitaiModelCard) => {
+    if (!model.imageUrl) return;
+    setCatalogBusy(true);
+    setCatalogError("");
+    try {
+      const imported = await window.illustMK.poses.importRemoteImage({ url: model.imageUrl, sourcePageUrl: model.pageUrl });
+      const extracted = await window.illustMK.poses.extractImage({ comfyUrl, imageDataUrl: imported.imageDataUrl });
+      applyExtractedPose(extracted, `Civitai: ${model.name}`, model.name, model.pageUrl);
+      setCatalogOpen(false);
+    } catch (error) {
+      setCatalogError(error instanceof Error ? error.message : String(error));
+    } finally {
+      setCatalogBusy(false);
     }
   };
 
   return (
     <div className="pose-editor">
       <div className="pose-library-bar">
+        <div className="field">
+          <label>基本テンプレート</label>
+          <select value={selectedTemplateId} onChange={(event) => applyBuiltInTemplate(event.target.value)}>
+            <option value="">選択してください</option>
+            {builtInPoseTemplates.map((template) => <option key={template.id} value={template.id}>{template.label}</option>)}
+          </select>
+        </div>
         <div className="field">
           <label>タイトル</label>
           <input value={poseTitle} onChange={(event) => onPoseTitleChange(event.target.value)} placeholder="立ちポーズ、振り向きなど" />
@@ -393,22 +534,21 @@ export function PoseEditor({ value, controlNetModels, depthControlNetModels, onC
         <button type="button" disabled={disabled || !poseTitle.trim()} onClick={onSavePose}><Save size={16} />保存</button>
         <button type="button" className="danger icon-button" disabled={disabled || !selectedSavedPoseId} onClick={onDeletePose} title="保存ポーズを削除"><Trash2 size={16} /></button>
       </div>
-      <div className="pose-assistant-bar">
-        <Bot size={17} />
-        <input
-          value={assistantInstruction}
-          onChange={(event) => setAssistantInstruction(event.target.value)}
-          onKeyDown={(event) => {
-            if (event.key === "Enter" && !event.nativeEvent.isComposing) void runAssistant();
-          }}
-          placeholder="体育座り、走っているポーズなど"
-          disabled={disabled || assistantBusy}
-        />
-        <button type="button" className="icon-button" onClick={() => void runAssistant()} disabled={disabled || assistantBusy || !assistantInstruction.trim()} title="LLMでポーズを設定">
-          <Send size={16} />
+      <div className="pose-source-bar">
+        <button type="button" onClick={() => void openCatalog()} disabled={disabled}>
+          <Images size={16} />ポーズカタログ
         </button>
-        {assistantMessage ? <span title={assistantMessage}>{assistantMessage}</span> : null}
+        <button type="button" onClick={() => void importLocalImage()} disabled={disabled}>
+          <FolderOpen size={16} />{sourceBusy ? "関節解析中" : "画像からポーズ"}
+        </button>
+        <span>{value.sourceName || "3D人形を直接編集"}</span>
+        {value.sourcePageUrl ? (
+          <button type="button" className="icon-button" onClick={() => void window.illustMK.app.openExternal(value.sourcePageUrl!)} title="素材ページを開く">
+            <ExternalLink size={16} />
+          </button>
+        ) : null}
       </div>
+      {sourceError ? <p className="pose-warning">{sourceError}</p> : null}
       <div className="pose-viewport-wrap">
         <div className="pose-viewport" ref={hostRef} />
         <div className="pose-selection">選択中: {jointLabels[selectedJoint] ?? selectedJoint}</div>
@@ -433,50 +573,16 @@ export function PoseEditor({ value, controlNetModels, depthControlNetModels, onC
           <RotateCcw size={16} />
         </button>
       </div>
-      <div className="pose-vision-panel">
-        <div className="pose-vision-toolbar">
-          <div className="field">
-            <label>画像対応VLM</label>
-            <select
-              value={value.visionModel ?? ""}
-              onChange={(event) => onChange({ ...value, visionModel: event.target.value, analysisStale: true })}
-              disabled={disabled}
-            >
-              <option value="">選択してください</option>
-              {visionModels.map((name) => <option key={name} value={name}>{name}</option>)}
-            </select>
-          </div>
-          <button
-            type="button"
-            disabled={disabled || !value.visionModel || !value.referenceImageDataUrl}
-            onClick={() => void runVisionAnalysis()}
-          >
-            <ScanSearch size={16} />
-            {value.analysisStale ? "ポーズ解析" : "解析更新"}
-          </button>
-          <span className={value.analysisStale ? "pose-analysis-status stale" : "pose-analysis-status"}>
-            {analysisMessage || (value.analysisStale ? "生成時に自動解析します" : "解析済み")}
-          </span>
+      {preprocessorStatus && !preprocessorStatus.available ? (
+        <div className={preprocessorStatus?.available ? "pose-preprocessor-status ready" : "pose-preprocessor-status"}>
+          <span>画像からデッサン人形へ取り込むにはDWPoseが必要です。{preprocessorStatus.message}</span>
+          {!preprocessorStatus?.available ? (
+            <button type="button" disabled={disabled} onClick={async () => { await onInstallPreprocessor(); await refreshPreprocessorStatus(); }}>
+              <Download size={16} />DWPoseをインストール
+            </button>
+          ) : null}
         </div>
-        <div className="pose-prompt-fields">
-          <div className="field">
-            <label>POSE POSITIVE</label>
-            <input
-              value={value.positivePrompt ?? ""}
-              onChange={(event) => onChange({ ...value, positivePrompt: event.target.value, analysisStale: false })}
-              placeholder="VLM解析結果。生成時に自動追加"
-            />
-          </div>
-          <div className="field">
-            <label>POSE NEGATIVE</label>
-            <input
-              value={value.negativePrompt ?? ""}
-              onChange={(event) => onChange({ ...value, negativePrompt: event.target.value, analysisStale: false })}
-              placeholder="競合する姿勢。生成時に自動追加"
-            />
-          </div>
-        </div>
-      </div>
+      ) : null}
       <div className="pose-footer">
         <div className="pose-controlnet-stack">
           <div className="pose-controlnet-row">
@@ -545,8 +651,152 @@ export function PoseEditor({ value, controlNetModels, depthControlNetModels, onC
       </div>
       {!controlNetModels.length ? <p className="pose-warning">「モデル」タブからOpenPose用ControlNetモデルを導入してください。</p> : null}
       {!depthControlNetModels.length ? <p className="pose-warning">視点・画角を固定する場合は「モデル」タブからDepth用ControlNetモデルを導入してください。</p> : null}
+      {catalogOpen ? (
+        <div className="modal-backdrop stacked" onMouseDown={() => setCatalogOpen(false)}>
+          <section className="modal-panel pose-catalog-modal" onMouseDown={(event) => event.stopPropagation()}>
+            <div className="modal-header">
+              <h2>ポーズカタログ</h2>
+              <button type="button" className="icon-button" onClick={() => setCatalogOpen(false)} title="閉じる"><X size={18} /></button>
+            </div>
+            <div className="pose-catalog-tabs">
+              <button type="button" className={catalogSource === "openposes" ? "active" : ""} onClick={() => { setCatalogSource("openposes"); void searchCatalog("openposes"); }}>OpenPoses</button>
+              <button type="button" className={catalogSource === "civitai" ? "active" : ""} onClick={() => { setCatalogSource("civitai"); void searchCatalog("civitai"); }}>Civitai</button>
+            </div>
+            <div className="pose-catalog-search">
+              <input value={catalogQuery} onChange={(event) => setCatalogQuery(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter" && !event.nativeEvent.isComposing) void searchCatalog(); }} placeholder={catalogSource === "openposes" ? "standing, sitting, dance..." : "OpenPose、座る、走る..."} />
+              <button type="button" onClick={() => void searchCatalog()} disabled={catalogBusy}><Search size={16} />検索</button>
+            </div>
+            {catalogError ? <p className="pose-warning">{catalogError}</p> : null}
+            <div className="pose-catalog-grid">
+              {catalogSource === "openposes" ? openPoseResults.map((item) => (
+                <article className="pose-catalog-card" key={item.id}>
+                  <img src={item.previewUrl} alt={item.name} />
+                  <strong>{item.name}</strong>
+                  <small>{item.tags.join(" / ")}</small>
+                  <button type="button" disabled={catalogBusy} onClick={() => void applyOpenPoseAsset(item)}>適用</button>
+                </article>
+              )) : civitaiResults.map((model) => (
+                <article className="pose-catalog-card" key={`${model.id}-${model.versionId}`}>
+                  {model.imageUrl ? <img src={model.imageUrl} alt={model.name} /> : <div className="catalog-no-image">No Image</div>}
+                  <strong>{model.name}</strong>
+                  <small>{model.creator} / DL {model.downloadCount.toLocaleString()}</small>
+                  <div className="pose-catalog-actions">
+                    <button type="button" disabled={catalogBusy || !model.imageUrl} onClick={() => void applyCivitaiImage(model)}>取り込んで適用</button>
+                    <button type="button" className="icon-button" disabled={!model.pageUrl} onClick={() => void window.illustMK.app.openExternal(model.pageUrl)} title="Civitaiページを開く"><ExternalLink size={16} /></button>
+                  </div>
+                </article>
+              ))}
+            </div>
+          </section>
+        </div>
+      ) : null}
     </div>
   );
+}
+
+type OpenPoseKeypointSource = Pick<OpenPoseAsset, "canvasWidth" | "canvasHeight" | "keypoints">;
+
+function openPoseKeypointsToRotations(asset: OpenPoseKeypointSource): Record<string, PoseJointRotation> {
+  type Point = { x: number; y: number; confidence: number };
+  const point = (index: number): Point => ({
+    x: Number(asset.keypoints[index * 3] ?? 0),
+    y: Number(asset.keypoints[index * 3 + 1] ?? 0),
+    confidence: Number(asset.keypoints[index * 3 + 2] ?? 0)
+  });
+  const valid = (value: Point) => value.confidence > 0.01 && Number.isFinite(value.x) && Number.isFinite(value.y);
+  const midpoint = (a: Point, b: Point): Point => ({
+    x: (a.x + b.x) / 2,
+    y: (a.y + b.y) / 2,
+    confidence: Math.min(a.confidence, b.confidence)
+  });
+  const downAngle = (from: Point, to: Point) => Math.atan2(to.x - from.x, to.y - from.y);
+  const upAngle = (from: Point, to: Point) => Math.atan2(-(to.x - from.x), -(to.y - from.y));
+  const normalizeAngle = (angle: number) => Math.atan2(Math.sin(angle), Math.cos(angle));
+  const rotations = structuredClone(defaultRotations);
+  const setZ = (name: string, angle: number) => {
+    const current = rotations[name] ?? [0, 0, 0];
+    rotations[name] = [current[0], current[1], normalizeAngle(angle)];
+  };
+
+  const neck = point(1);
+  const nose = point(0);
+  const rightHip = point(8);
+  const leftHip = point(11);
+  let torsoAngle = 0;
+  if (valid(neck) && valid(rightHip) && valid(leftHip)) {
+    torsoAngle = upAngle(midpoint(rightHip, leftHip), neck);
+    setZ("spine", torsoAngle * 0.58);
+    setZ("chest", torsoAngle * 0.42);
+  }
+  if (valid(neck) && valid(nose)) {
+    const headAngle = upAngle(neck, nose);
+    const localHeadAngle = normalizeAngle(headAngle - torsoAngle);
+    setZ("neck", localHeadAngle * 0.45);
+    setZ("head", localHeadAngle * 0.55);
+  }
+
+  const applyChain = (jointNames: [string, string], indices: [number, number, number], parentAngle: number) => {
+    const [start, middle, end] = indices.map(point);
+    if (!valid(start) || !valid(middle)) return;
+    const firstAngle = downAngle(start, middle);
+    setZ(jointNames[0], firstAngle - parentAngle);
+    if (valid(end)) setZ(jointNames[1], downAngle(middle, end) - firstAngle);
+  };
+
+  const armChains: Array<[Point, [number, number, number]]> = [
+    [point(2), [2, 3, 4]],
+    [point(5), [5, 6, 7]]
+  ];
+  armChains.sort((a, b) => a[0].x - b[0].x);
+  applyChain(["leftShoulder", "leftElbow"], armChains[0][1], torsoAngle);
+  applyChain(["rightShoulder", "rightElbow"], armChains[1][1], torsoAngle);
+
+  const legChains: Array<[Point, [number, number, number]]> = [
+    [point(8), [8, 9, 10]],
+    [point(11), [11, 12, 13]]
+  ];
+  legChains.sort((a, b) => a[0].x - b[0].x);
+  applyChain(["leftHip", "leftKnee"], legChains[0][1], 0);
+  applyChain(["rightHip", "rightKnee"], legChains[1][1], 0);
+  return rotations;
+}
+
+function renderCatalogOpenPose(asset: OpenPoseKeypointSource, outputWidth: number, outputHeight: number): string {
+  const canvas = document.createElement("canvas");
+  canvas.width = Math.max(256, outputWidth);
+  canvas.height = Math.max(256, outputHeight);
+  const context = canvas.getContext("2d");
+  if (!context) throw new Error("OpenPose画像を描画できませんでした。");
+  context.fillStyle = "#000";
+  context.fillRect(0, 0, canvas.width, canvas.height);
+  const scale = Math.min(canvas.width / asset.canvasWidth, canvas.height / asset.canvasHeight);
+  const offsetX = (canvas.width - asset.canvasWidth * scale) / 2;
+  const offsetY = (canvas.height - asset.canvasHeight * scale) / 2;
+  const points = Array.from({ length: 18 }, (_, index) => ({
+    x: offsetX + Number(asset.keypoints[index * 3] ?? 0) * scale,
+    y: offsetY + Number(asset.keypoints[index * 3 + 1] ?? 0) * scale,
+    confidence: Number(asset.keypoints[index * 3 + 2] ?? 0)
+  }));
+  const links: Array<[number, number]> = [[1, 2], [1, 5], [2, 3], [3, 4], [5, 6], [6, 7], [1, 8], [8, 9], [9, 10], [1, 11], [11, 12], [12, 13], [1, 0], [0, 14], [14, 16], [0, 15], [15, 17]];
+  const colors = ["#ff0000", "#ff5500", "#ffaa00", "#ffff00", "#aaff00", "#55ff00", "#00ff00", "#00ff55", "#00ffaa", "#00ffff", "#00aaff", "#0055ff", "#0000ff", "#5500ff", "#aa00ff", "#ff00ff", "#ff00aa", "#ff0055"];
+  context.lineCap = "round";
+  context.lineWidth = Math.max(4, 9 * scale);
+  links.forEach(([from, to], index) => {
+    if (points[from].confidence <= 0 || points[to].confidence <= 0) return;
+    context.strokeStyle = colors[index % colors.length];
+    context.beginPath();
+    context.moveTo(points[from].x, points[from].y);
+    context.lineTo(points[to].x, points[to].y);
+    context.stroke();
+  });
+  points.forEach((point, index) => {
+    if (point.confidence <= 0) return;
+    context.fillStyle = colors[index % colors.length];
+    context.beginPath();
+    context.arc(point.x, point.y, Math.max(3, 7 * scale), 0, Math.PI * 2);
+    context.fill();
+  });
+  return canvas.toDataURL("image/png");
 }
 
 function derivePosePrompts(
@@ -575,8 +825,19 @@ function derivePosePrompts(
   let pose = "standing pose";
   let conflict = "sitting, lying down";
   if (bothKneesBent && leftHip[0] < -0.7 && rightHip[0] < -0.7) {
-    pose = "deep crouching pose, both knees bent, hips lowered";
-    conflict = "standing upright, straight legs";
+    if (spinePitch > -0.18) {
+      pose = "formal seiza kneeling pose, sitting upright on both heels, knees together";
+      conflict = "standing upright, legs extended, cross-legged sitting";
+    } else {
+      pose = "compact seated stretch, both knees drawn up toward the chest";
+      conflict = "standing upright, straight legs";
+    }
+  } else if (spinePitch < -0.55 && leftKnee[0] < 0.55 && rightKnee[0] < 0.55) {
+    pose = "standing forward bend stretch, waist folded forward, both legs straight";
+    conflict = "torso leaning backward, bent knees";
+  } else if (spinePitch > 0.45 && leftKnee[0] < 0.65 && rightKnee[0] < 0.65) {
+    pose = "standing back bend stretch, chest lifted, torso arched backward";
+    conflict = "torso bending forward, sitting";
   } else if (hipStride > 1.05 && kneeAsymmetry > 0.55) {
     pose = "dynamic running pose, one knee raised forward, opposite leg extended backward";
     conflict = "standing still, sitting, both legs straight together";

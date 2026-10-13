@@ -25,6 +25,9 @@ import {
   getStatus,
   getModelLibrary,
   getSavedPoses,
+  getOpenPoseAsset,
+  extractPoseKeypoints,
+  getPosePreprocessorStatus,
   getAppSettings,
   getIllustrationTags,
   getLlmChatHistory,
@@ -33,7 +36,6 @@ import {
   getOllamaStatus,
   getSavedPromptHistory,
   generateTagJapaneseDescription,
-  generatePoseWithOllama,
   analyzePoseImageWithOllama,
   initNativeRuntime,
   installLoraRuntime,
@@ -42,6 +44,7 @@ import {
   importLoraFile,
   installOllama,
   installNativeRuntime,
+  installPosePreprocessor,
   pullOllamaModel,
   pauseLoraTrainingProject,
   runTestGeneration,
@@ -51,6 +54,7 @@ import {
   saveAppSettings,
   saveModelLibraryEntry,
   savePose,
+  searchOpenPoseCatalog,
   setActiveModelLibraryEntry,
   addDataPath,
   saveIllustrationTag,
@@ -78,6 +82,8 @@ import {
   updateDataPathMemo,
   updatePromptHistoryMemo,
   updateLoraTrainingProjectThumbnail,
+  readPoseImage,
+  downloadRemotePoseImage,
   clearPromptHistory,
   clearLoraTrainingProjects,
   clearLlmChatHistory,
@@ -95,8 +101,8 @@ import {
   type LoraTrainingRunParams,
   type LlmChatRequest,
   type PromptEnhanceRequest,
-  type PoseAssistantRequest,
   type PoseVisionRequest,
+  type PoseExtractionRequest,
   type SaveLoraCaptionWorkspaceRequest,
   type SaveIllustrationTagRequest,
   type SaveLoraTrainingProjectRequest,
@@ -279,6 +285,9 @@ function registerIpc(): void {
       if (request.operation === "native-install") {
         return await installNativeRuntime((log) => sendLog(log.level, log.line));
       }
+      if (request.operation === "pose-preprocessor-install") {
+        return await installPosePreprocessor((log) => sendLog(log.level, log.line));
+      }
       if (request.operation === "lora-install") {
         return await installLoraRuntime((log) => sendLog(log.level, log.line));
       }
@@ -388,7 +397,23 @@ function registerIpc(): void {
   ipcMain.handle("poses:list", () => getSavedPoses());
   ipcMain.handle("poses:save", (_event, request) => savePose(request));
   ipcMain.handle("poses:delete", (_event, id: string) => deleteSavedPose(id));
-  ipcMain.handle("poses:assist", (_event, request: PoseAssistantRequest) => generatePoseWithOllama(request));
+  ipcMain.handle("poses:search-openposes", (_event, query: string) => searchOpenPoseCatalog(query));
+  ipcMain.handle("poses:get-openpose", (_event, id: string) => getOpenPoseAsset(id));
+  ipcMain.handle("poses:import-image", async () => {
+    const options: OpenDialogOptions = {
+      title: "ポーズ元画像を選択",
+      properties: ["openFile"],
+      filters: [{ name: "画像", extensions: ["png", "jpg", "jpeg", "webp"] }]
+    };
+    const result = mainWindow ? await dialog.showOpenDialog(mainWindow, options) : await dialog.showOpenDialog(options);
+    if (result.canceled || !result.filePaths[0]) return null;
+    return readPoseImage(result.filePaths[0]);
+  });
+  ipcMain.handle("poses:import-remote-image", (_event, request: { url: string; sourcePageUrl?: string }) =>
+    downloadRemotePoseImage(request.url, request.sourcePageUrl)
+  );
+  ipcMain.handle("poses:extract-image", (_event, request: PoseExtractionRequest) => extractPoseKeypoints(request));
+  ipcMain.handle("poses:preprocessor-status", (_event, comfyUrl?: string) => getPosePreprocessorStatus(comfyUrl));
   ipcMain.handle("poses:analyze", (_event, request: PoseVisionRequest) => analyzePoseImageWithOllama(request));
   ipcMain.handle("runtime:search-huggingface-llm", (_event, options) => searchHuggingFaceLlmModels(options));
   ipcMain.handle("runtime:test-generate", (_event, request: TestGenerationRequest) => runTestGeneration(request));

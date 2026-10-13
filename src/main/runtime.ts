@@ -203,6 +203,42 @@ export type SavedPose = {
   pose: PoseConditioning;
 };
 
+export type OpenPoseCatalogItem = {
+  id: string;
+  name: string;
+  tags: string[];
+  previewUrl: string;
+};
+
+export type OpenPoseAsset = OpenPoseCatalogItem & {
+  canvasWidth: number;
+  canvasHeight: number;
+  keypoints: number[];
+};
+
+export type PoseImageImport = {
+  name: string;
+  imageDataUrl: string;
+  sourcePageUrl?: string;
+};
+
+export type PoseExtractionRequest = {
+  comfyUrl: string;
+  imageDataUrl: string;
+};
+
+export type PoseExtractionResult = {
+  canvasWidth: number;
+  canvasHeight: number;
+  keypoints: number[];
+};
+
+export type PosePreprocessorStatus = {
+  installed: boolean;
+  available: boolean;
+  message: string;
+};
+
 export type DownloadResult = {
   ok: boolean;
   path: string;
@@ -383,6 +419,9 @@ export type PoseJointRotation = [number, number, number];
 export type PoseConditioning = {
   enabled: boolean;
   imageDataUrl: string;
+  inputMode?: "skeleton" | "external-skeleton" | "reference";
+  sourceName?: string;
+  sourcePageUrl?: string;
   controlNet: string;
   strength: number;
   startPercent: number;
@@ -401,18 +440,6 @@ export type PoseConditioning = {
   positivePrompt?: string;
   negativePrompt?: string;
   analysisStale?: boolean;
-};
-
-export type PoseAssistantRequest = {
-  ollamaUrl: string;
-  model: string;
-  instruction: string;
-  currentPose: PoseConditioning;
-};
-
-export type PoseAssistantResult = {
-  pose: PoseConditioning;
-  summary: string;
 };
 
 export type PoseVisionRequest = {
@@ -615,7 +642,7 @@ export type DeletePromptHistoryEntryRequest = {
   id: string;
 };
 
-type FetchContext = "Civitai検索" | "Civitaiダウンロード" | "Civitaiサムネイル" | "モデルサムネイル";
+type FetchContext = "Civitai検索" | "Civitaiダウンロード" | "Civitaiサムネイル" | "モデルサムネイル" | "OpenPoses取得" | "ポーズ画像取得";
 
 export type TestGenerationResult = {
   ok: boolean;
@@ -668,6 +695,26 @@ const defaultLoraCaptionTags: Array<{ japaneseName: string; englishName: string 
   { japaneseName: "mychar", englishName: "mychar" },
   { japaneseName: "1girl", englishName: "1girl" },
   { japaneseName: "solo", englishName: "solo" }
+];
+const openPoseCatalog: Array<{ id: string; tags: string[] }> = [
+  { id: "tpose_01", tags: ["standing", "t-pose"] }, { id: "tpose_02", tags: ["standing", "t-pose"] },
+  { id: "standing_01", tags: ["standing"] }, { id: "standing_02", tags: ["standing"] }, { id: "standing_03", tags: ["standing", "crossed arms"] },
+  { id: "standing_04", tags: ["standing", "raised arms"] }, { id: "standing_05", tags: ["standing", "raised arms"] }, { id: "standing_06", tags: ["standing"] },
+  { id: "standing_07", tags: ["standing"] }, { id: "standing_08", tags: ["standing"] }, { id: "standing_09", tags: ["standing", "raised arms"] },
+  { id: "standing_10", tags: ["standing", "leaning", "crossed arms"] }, { id: "standing_13", tags: ["standing"] }, { id: "standing_14", tags: ["standing"] },
+  { id: "standing_15", tags: ["standing"] }, { id: "standing_16", tags: ["standing", "raised arms"] }, { id: "standing_17", tags: ["standing"] },
+  { id: "standing_18", tags: ["standing", "crossed arms"] }, { id: "standing_19", tags: ["standing"] }, { id: "standing_20", tags: ["standing"] },
+  { id: "standing_21", tags: ["standing"] }, { id: "flexing_01", tags: ["standing", "flexing", "raised arms"] },
+  { id: "flexing_02", tags: ["standing", "flexing", "raised arms"] }, { id: "flexing_03", tags: ["standing", "flexing", "raised arms"] },
+  { id: "laying_02", tags: ["laying"] }, { id: "laying_03", tags: ["laying"] }, { id: "laying_05", tags: ["laying"] },
+  { id: "jumping_01", tags: ["jumping", "raised arms"] }, { id: "jumping_02", tags: ["jumping", "raised arms"] },
+  { id: "jumping_03", tags: ["jumping", "raised arms"] }, { id: "jumping_04", tags: ["jumping"] }, { id: "jumping_05", tags: ["jumping", "raised arms"] },
+  { id: "dance_01", tags: ["dancing", "standing"] }, { id: "dance_02", tags: ["dancing", "standing"] },
+  { id: "dance_03", tags: ["dancing", "standing", "raised arms"] }, { id: "dance_04", tags: ["dancing", "standing", "raised arms"] },
+  { id: "dance_05", tags: ["dancing", "standing"] }, { id: "sitting_01", tags: ["sitting"] }, { id: "sitting_02", tags: ["sitting"] },
+  { id: "sitting_03", tags: ["sitting"] }, { id: "sitting_05", tags: ["sitting"] }, { id: "sitting_06", tags: ["sitting"] },
+  { id: "sitting_11", tags: ["sitting", "kneeling"] }, { id: "sitting_14", tags: ["sitting", "kneeling"] },
+  { id: "sitting_15", tags: ["sitting", "kneeling"] }, { id: "sitting_16", tags: ["sitting"] }
 ];
 const dockerCommandPath = [
   ...dockerDesktopBinPaths,
@@ -1765,6 +1812,152 @@ export async function deleteSavedPose(id: string): Promise<SavedPose[]> {
   return poses;
 }
 
+export function searchOpenPoseCatalog(query = ""): OpenPoseCatalogItem[] {
+  const needle = query.trim().toLowerCase().replace(/\s+/g, "_");
+  return openPoseCatalog
+    .filter((item) => !needle || item.id.includes(needle) || item.tags.some((tag) => tag.replace(/\s+/g, "_").includes(needle)))
+    .map((item) => ({
+      id: item.id,
+      name: item.id.replace(/_/g, " "),
+      tags: item.tags,
+      previewUrl: `https://openposes-storage.s3.ca-central-1.amazonaws.com/poses/emma_watson/jpg/${item.id}.jpg`
+    }));
+}
+
+export async function getOpenPoseAsset(id: string): Promise<OpenPoseAsset> {
+  const item = openPoseCatalog.find((candidate) => candidate.id === id);
+  if (!item) throw new Error("OpenPosesの素材が見つかりません。");
+  const url = `https://openposes-storage.s3.ca-central-1.amazonaws.com/poses/${item.id}.json`;
+  let response: Response;
+  try {
+    response = await fetch(url, { headers: { Accept: "application/json", "User-Agent": "illustMK/0.1" }, signal: AbortSignal.timeout(30000) });
+  } catch (error) {
+    throw new Error(formatFetchFailure("OpenPoses取得", url, error));
+  }
+  if (!response.ok) throw new Error(`OpenPoses取得に失敗しました: HTTP ${response.status}`);
+  const body = await response.json() as Array<{ canvas_width?: number; canvas_height?: number; people?: Array<{ pose_keypoints_2d?: number[] }> }>;
+  const source = body[0];
+  const keypoints = source?.people?.[0]?.pose_keypoints_2d;
+  if (!source || !Array.isArray(keypoints) || keypoints.length < 54) throw new Error("OpenPosesの骨格JSON形式を認識できませんでした。");
+  return {
+    id: item.id,
+    name: item.id.replace(/_/g, " "),
+    tags: item.tags,
+    previewUrl: `https://openposes-storage.s3.ca-central-1.amazonaws.com/poses/emma_watson/jpg/${item.id}.jpg`,
+    canvasWidth: Number(source.canvas_width) || 768,
+    canvasHeight: Number(source.canvas_height) || 768,
+    keypoints: keypoints.map(Number)
+  };
+}
+
+export async function readPoseImage(sourcePath: string, sourcePageUrl?: string): Promise<PoseImageImport> {
+  if (!/\.(png|jpe?g|webp)$/i.test(sourcePath)) throw new Error("PNG / JPEG / WebP画像を選択してください。");
+  const imageDataUrlValue = await imagePathToDataUrl(sourcePath);
+  if (!imageDataUrlValue) throw new Error("画像を読み込めませんでした。");
+  return { name: basename(sourcePath), imageDataUrl: imageDataUrlValue, sourcePageUrl };
+}
+
+export async function downloadRemotePoseImage(urlValue: string, sourcePageUrl?: string): Promise<PoseImageImport> {
+  const url = new URL(urlValue);
+  if (!/^https:$/.test(url.protocol)) throw new Error("HTTPS画像URLを指定してください。");
+  let response: Response;
+  try {
+    response = await fetch(url, {
+      headers: { Accept: "image/avif,image/webp,image/png,image/jpeg,*/*", "User-Agent": "illustMK/0.1" },
+      signal: AbortSignal.timeout(30000)
+    });
+  } catch (error) {
+    throw new Error(formatFetchFailure("ポーズ画像取得", url.toString(), error));
+  }
+  if (!response.ok) throw new Error(`ポーズ画像取得に失敗しました: HTTP ${response.status}`);
+  const contentType = (response.headers.get("content-type") ?? "").split(";")[0];
+  const mime = ["image/png", "image/jpeg", "image/webp"].includes(contentType) ? contentType : "image/jpeg";
+  const data = Buffer.from(await response.arrayBuffer());
+  if (!data.length) throw new Error("取得した画像が空です。");
+  return {
+    name: basename(url.pathname) || "Civitai pose",
+    imageDataUrl: `data:${mime};base64,${data.toString("base64")}`,
+    sourcePageUrl
+  };
+}
+
+export async function extractPoseKeypoints(request: PoseExtractionRequest): Promise<PoseExtractionResult> {
+  const status = await getPosePreprocessorStatus(request.comfyUrl);
+  if (!status.available) throw new Error(`画像から関節を抽出できません。${status.message}`);
+  const imageName = await uploadPoseImage(request.comfyUrl, request.imageDataUrl);
+  const workflow: Record<string, { class_type: string; inputs: Record<string, unknown> }> = {
+    "1": { class_type: "LoadImage", inputs: { image: imageName } },
+    "2": {
+      class_type: "DWPreprocessor",
+      inputs: {
+        image: ["1", 0],
+        detect_hand: "enable",
+        detect_body: "enable",
+        detect_face: "enable",
+        resolution: 768,
+        bbox_detector: "yolox_l.onnx",
+        pose_estimator: "dw-ll_ucoco_384_bs5.torchscript.pt",
+        scale_stick_for_xinsr_cn: "disable"
+      }
+    },
+    "3": { class_type: "PreviewImage", inputs: { images: ["2", 0] } }
+  };
+  const response = await fetch(`${request.comfyUrl.replace(/\/$/, "")}/prompt`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ prompt: workflow })
+  });
+  if (!response.ok) throw new Error(`DWPoseへの投入に失敗しました: HTTP ${response.status}\n${await response.text()}`);
+  const promptId = String(((await response.json()) as { prompt_id?: string }).prompt_id ?? "");
+  if (!promptId) throw new Error("DWPoseからprompt_idが返りませんでした。");
+
+  const deadline = Date.now() + 1000 * 300;
+  while (Date.now() < deadline) {
+    await delay(1000);
+    const history = await getPromptHistory(request.comfyUrl, promptId);
+    const errorMessage = extractPromptError(history);
+    if (errorMessage) throw new Error(errorMessage);
+    const result = extractOpenPoseResult(history, promptId);
+    if (result) return result;
+  }
+  throw new Error("DWPoseの関節解析が5分以内に完了しませんでした。");
+}
+
+export async function getPosePreprocessorStatus(comfyUrl = `http://127.0.0.1:${comfyPort}`): Promise<PosePreprocessorStatus> {
+  const paths = getRuntimePaths();
+  const installed = await exists(join(paths.nativeComfy, "custom_nodes", "comfyui_controlnet_aux"));
+  if (!(await checkComfy(comfyUrl))) {
+    return { installed, available: false, message: installed ? "導入済み。ComfyUI起動後に確認します。" : "未導入" };
+  }
+  try {
+    const response = await fetch(`${comfyUrl.replace(/\/$/, "")}/object_info/DWPreprocessor`, { signal: AbortSignal.timeout(10000) });
+    const json = response.ok ? await response.json() as Record<string, unknown> : {};
+    const available = Boolean(json.DWPreprocessor);
+    return { installed, available, message: available ? "DWPose利用可能" : installed ? "導入済みですがComfyUIで未認識です。再起動してください。" : "未導入" };
+  } catch {
+    return { installed, available: false, message: "ComfyUIからDWPose状態を取得できません。" };
+  }
+}
+
+export async function installPosePreprocessor(onLog: RuntimeLogSink): Promise<string> {
+  const paths = await ensureRuntimeFiles();
+  if (!(await exists(paths.nativePython)) || !(await exists(paths.nativeComfy))) {
+    throw new Error("先にmacOS ComfyUI環境をインストールしてください。");
+  }
+  const target = join(paths.nativeComfy, "custom_nodes", "comfyui_controlnet_aux");
+  const wasRunning = await checkComfy(`http://127.0.0.1:${comfyPort}`);
+  if (wasRunning) await stopNativeRuntime(onLog);
+  if (!(await exists(target))) {
+    await mkdir(dirname(target), { recursive: true });
+    await spawnNativeCommand("git", ["clone", "--depth", "1", "https://github.com/Fannovel16/comfyui_controlnet_aux.git", target], onLog);
+  } else {
+    onLog({ level: "info", line: "ComfyUI ControlNet Auxiliary Preprocessors は導入済みです。" });
+  }
+  await spawnNativeCommand(paths.nativePython, ["-m", "pip", "install", "-r", join(target, "requirements.txt")], onLog, { cwd: target });
+  if (wasRunning) await startNativeRuntime(onLog);
+  return wasRunning ? "DWPoseをインストールし、ComfyUIを再起動しました。" : "DWPoseをインストールしました。ComfyUI起動後に利用できます。";
+}
+
 async function syncNativeControlNetLinks(paths: RuntimePaths): Promise<void> {
   if (!(await exists(paths.nativeComfy))) return;
   const nativeControlNetDir = join(paths.nativeComfy, "models", "controlnet");
@@ -2241,65 +2434,6 @@ export async function sendLlmChatPrompt(request: LlmChatRequest): Promise<LlmCha
   return history;
 }
 
-export async function generatePoseWithOllama(request: PoseAssistantRequest): Promise<PoseAssistantResult> {
-  const instruction = request.instruction.trim();
-  if (!instruction) throw new Error("作りたいポーズを入力してください。");
-  const jointNames = Object.keys(request.currentPose.jointRotations);
-  const knownPreset = posePresetForInstruction(instruction, request.currentPose.jointRotations);
-  if (knownPreset) {
-    return {
-      pose: { ...request.currentPose, jointRotations: knownPreset },
-      summary: posePresetSummary(instruction)
-    };
-  }
-  if (!request.model.trim()) throw new Error("Ollamaモデルを選択してください。");
-  await assertOllamaReady(request.ollamaUrl);
-
-  const prompt = [
-    "あなたは3Dデッサン人形のポーズ設定アシスタントです。",
-    "依頼を人体の自然なポーズとして解釈してください。",
-    "この人形はY軸が上下、X回転が手足の前後運動、Z回転が左右への開閉です。",
-    "hipsは全身の親なので大きく回転させず、胴体の傾きはspineとchestへ分散してください。",
-    "肘と膝は自然な曲げ方向だけを使い、左右の腕脚を連動させてください。",
-    "現在値を基準にせず、依頼されたポーズ全体を完成させる値を返してください。",
-    `使用可能な関節名: ${jointNames.join(", ")}`,
-    "出力は説明やMarkdownを含めず、次のJSONだけにしてください。",
-    '{"jointRotations":{"hips":[0,0,0]},"summary":"変更内容の短い日本語"}',
-    "jointRotationsには使用可能な全関節を必ず含め、各値は数値3個の配列にしてください。",
-    `現在の関節値: ${JSON.stringify(request.currentPose.jointRotations)}`,
-    `依頼: ${instruction}`
-  ].join("\n");
-  const response = await generateOllamaJson(request.ollamaUrl, request.model, prompt);
-  const parsed = parsePoseAssistantResponse(response);
-  const rotations: Record<string, PoseJointRotation> = {};
-  for (const name of jointNames) {
-    const candidate = parsed.jointRotations?.[name];
-    const fallback = request.currentPose.jointRotations[name];
-    rotations[name] = normalizePoseRotation(name, candidate, fallback);
-  }
-  const finalRotations = rotations;
-  const changedJointCount = jointNames.filter((name) => {
-    const before = request.currentPose.jointRotations[name];
-    const after = finalRotations[name];
-    return before && after && before.some((value, index) => Math.abs(value - after[index]) > 0.02);
-  }).length;
-  if (changedJointCount < 2) {
-    throw new Error("LLMが有効な関節変更を返しませんでした。姿勢や手足の向きをもう少し具体的に入力してください。");
-  }
-  return {
-    pose: { ...request.currentPose, jointRotations: finalRotations },
-    summary: typeof parsed.summary === "string" && parsed.summary.trim() ? parsed.summary.trim() : `${instruction}のポーズを設定しました。`
-  };
-}
-
-function posePresetSummary(instruction: string): string {
-  if (/(走|ランニング|ダッシュ|駆け)/.test(instruction)) return "安定した走行用基本ポーズを適用しました。人形を直接動かして微調整できます。";
-  if (/(歩|ウォーキング)/.test(instruction)) return "安定した歩行用基本ポーズを適用しました。人形を直接動かして微調整できます。";
-  if (/(体育座り|膝抱え|膝を抱)/.test(instruction)) return "体育座り用基本ポーズを適用しました。人形を直接動かして微調整できます。";
-  if (/(しゃが|屈む|かがむ|スクワット)/.test(instruction)) return "しゃがみ用基本ポーズを適用しました。人形を直接動かして微調整できます。";
-  return "ジャンプ用基本ポーズを適用しました。人形を直接動かして微調整できます。";
-}
-
 export async function analyzePoseImageWithOllama(request: PoseVisionRequest): Promise<PoseVisionResult> {
   if (!request.model.trim()) throw new Error("画像対応VLMを選択してください。");
   const imageBase64 = extractImageBase64(request.imageDataUrl);
@@ -2338,69 +2472,6 @@ export async function analyzePoseImageWithOllama(request: PoseVisionRequest): Pr
   }
   const json = (await response.json()) as { message?: { content?: string } };
   return parsePoseVisionResponse(String(json.message?.content ?? ""));
-}
-
-function posePresetForInstruction(
-  instruction: string,
-  rotations: Record<string, PoseJointRotation>
-): Record<string, PoseJointRotation> | null {
-  const base = neutralPoseRotations(rotations);
-  if (/(走|ランニング|ダッシュ|駆け)/.test(instruction)) {
-    return applyPoseOverrides(base, {
-      hips: [-0.08, 0.08, 0.04], spine: [-0.22, 0, 0], chest: [-0.16, 0, 0], neck: [0.18, 0, 0], head: [0.08, 0, 0],
-      leftShoulder: [-0.82, 0, -0.16], leftElbow: [-1.18, 0, -0.08], rightShoulder: [0.72, 0, 0.16], rightElbow: [-1.05, 0, 0.08],
-      leftHip: [-0.92, 0, -0.05], leftKnee: [1.72, 0, 0], leftAnkle: [-0.38, 0, 0],
-      rightHip: [0.68, 0, 0.05], rightKnee: [0.48, 0, 0], rightAnkle: [-0.18, 0, 0]
-    });
-  }
-  if (/(歩|ウォーキング)/.test(instruction)) {
-    return applyPoseOverrides(base, {
-      hips: [0, 0.05, 0.02], spine: [-0.06, 0, 0], chest: [-0.04, 0, 0],
-      leftShoulder: [-0.35, 0, -0.18], leftElbow: [-0.28, 0, -0.06], rightShoulder: [0.32, 0, 0.18], rightElbow: [-0.25, 0, 0.06],
-      leftHip: [-0.38, 0, -0.04], leftKnee: [0.5, 0, 0], rightHip: [0.34, 0, 0.04], rightKnee: [0.12, 0, 0]
-    });
-  }
-  if (/(体育座り|膝抱え|膝を抱)/.test(instruction)) {
-    return applyPoseOverrides(base, {
-      hips: [0.18, 0, 0], spine: [-0.3, 0, 0], chest: [-0.22, 0, 0], neck: [0.18, 0, 0], head: [0.18, 0, 0],
-      leftShoulder: [-0.42, -0.08, 0.42], leftElbow: [1.12, 0.12, -0.28], rightShoulder: [-0.42, 0.08, -0.42], rightElbow: [1.12, -0.12, 0.28],
-      leftHip: [-1.58, 0, -0.1], leftKnee: [2.48, 0, 0.06], leftAnkle: [-0.72, 0, 0], rightHip: [-1.58, 0, 0.1], rightKnee: [2.48, 0, -0.06], rightAnkle: [-0.72, 0, 0]
-    });
-  }
-  if (/(しゃが|屈む|かがむ|スクワット)/.test(instruction)) {
-    return applyPoseOverrides(base, {
-      hips: [0.1, 0, 0], spine: [-0.18, 0, 0], chest: [-0.12, 0, 0],
-      leftHip: [-1.05, 0, -0.12], leftKnee: [1.95, 0, 0], leftAnkle: [-0.72, 0, 0],
-      rightHip: [-1.05, 0, 0.12], rightKnee: [1.95, 0, 0], rightAnkle: [-0.72, 0, 0]
-    });
-  }
-  if (/(跳|ジャンプ)/.test(instruction)) {
-    return applyPoseOverrides(base, {
-      hips: [-0.05, 0, 0], spine: [-0.12, 0, 0], chest: [-0.08, 0, 0],
-      leftShoulder: [2.35, 0, -0.2], leftElbow: [-0.28, 0, 0], rightShoulder: [2.35, 0, 0.2], rightElbow: [-0.28, 0, 0],
-      leftHip: [-0.48, 0, -0.08], leftKnee: [1.08, 0, 0], rightHip: [-0.62, 0, 0.08], rightKnee: [1.28, 0, 0]
-    });
-  }
-  return null;
-}
-
-function neutralPoseRotations(rotations: Record<string, PoseJointRotation>): Record<string, PoseJointRotation> {
-  const neutral: Record<string, PoseJointRotation> = {};
-  for (const name of Object.keys(rotations)) neutral[name] = [0, 0, 0];
-  neutral.leftShoulder = [0, 0, -0.22];
-  neutral.leftElbow = [0, 0, -0.08];
-  neutral.rightShoulder = [0, 0, 0.22];
-  neutral.rightElbow = [0, 0, 0.08];
-  neutral.leftHip = [0, 0, -0.04];
-  neutral.rightHip = [0, 0, 0.04];
-  return neutral;
-}
-
-function applyPoseOverrides(
-  base: Record<string, PoseJointRotation>,
-  overrides: Record<string, PoseJointRotation>
-): Record<string, PoseJointRotation> {
-  return Object.fromEntries(Object.entries({ ...base, ...overrides }).map(([name, value]) => [name, clampPoseRotation(name, value)]));
 }
 
 export async function getIllustrationTags(): Promise<IllustrationTag[]> {
@@ -3848,79 +3919,6 @@ async function generateOllamaText(ollamaUrl: string, model: string, prompt: stri
   return String(json.response ?? "");
 }
 
-async function generateOllamaJson(ollamaUrl: string, model: string, prompt: string): Promise<string> {
-  const response = await fetch(`${ollamaUrl.replace(/\/$/, "")}/api/generate`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      model,
-      stream: false,
-      format: "json",
-      options: { temperature: 0.1 },
-      prompt
-    })
-  });
-  if (!response.ok) {
-    throw new Error(`Ollamaポーズ生成に失敗しました: HTTP ${response.status}`);
-  }
-  const json = (await response.json()) as { response?: string };
-  return String(json.response ?? "");
-}
-
-function parsePoseAssistantResponse(response: string): {
-  jointRotations?: Record<string, unknown>;
-  summary?: string;
-} {
-  const cleaned = response
-    .replace(/<think>[\s\S]*?<\/think>/gi, "")
-    .replace(/```(?:json)?/gi, "")
-    .trim();
-  const start = cleaned.indexOf("{");
-  const end = cleaned.lastIndexOf("}");
-  if (start < 0 || end <= start) {
-    throw new Error("LLMのポーズ応答をJSONとして認識できませんでした。依頼を短くして再実行してください。");
-  }
-  try {
-    const parsed = JSON.parse(cleaned.slice(start, end + 1)) as unknown;
-    if (!parsed || typeof parsed !== "object") throw new Error("invalid object");
-    return parsed as { jointRotations?: Record<string, unknown>; summary?: string };
-  } catch {
-    throw new Error("LLMのポーズ応答JSONが不正でした。依頼を短くして再実行してください。");
-  }
-}
-
-const poseJointLimits: Record<string, [PoseJointRotation, PoseJointRotation]> = {
-  hips: [[-0.45, -0.55, -0.35], [0.45, 0.55, 0.35]],
-  spine: [[-0.65, -0.55, -0.45], [0.55, 0.55, 0.45]],
-  chest: [[-0.65, -0.75, -0.55], [0.55, 0.75, 0.55]],
-  neck: [[-0.55, -0.8, -0.5], [0.55, 0.8, 0.5]],
-  head: [[-0.65, -1, -0.6], [0.65, 1, 0.6]],
-  leftShoulder: [[-2.7, -1.25, -1.7], [2.7, 1.25, 1.1]],
-  rightShoulder: [[-2.7, -1.25, -1.1], [2.7, 1.25, 1.7]],
-  leftElbow: [[-2.65, -0.45, -0.65], [0.35, 0.45, 0.35]],
-  rightElbow: [[-2.65, -0.45, -0.35], [0.35, 0.45, 0.65]],
-  leftWrist: [[-0.9, -0.9, -0.9], [0.9, 0.9, 0.9]],
-  rightWrist: [[-0.9, -0.9, -0.9], [0.9, 0.9, 0.9]],
-  leftHip: [[-1.85, -0.75, -0.75], [1.15, 0.75, 0.55]],
-  rightHip: [[-1.85, -0.75, -0.55], [1.15, 0.75, 0.75]],
-  leftKnee: [[-0.1, -0.2, -0.2], [2.75, 0.2, 0.2]],
-  rightKnee: [[-0.1, -0.2, -0.2], [2.75, 0.2, 0.2]],
-  leftAnkle: [[-0.9, -0.35, -0.35], [0.65, 0.35, 0.35]],
-  rightAnkle: [[-0.9, -0.35, -0.35], [0.65, 0.35, 0.35]]
-};
-
-function normalizePoseRotation(name: string, value: unknown, fallback: PoseJointRotation): PoseJointRotation {
-  if (!Array.isArray(value) || value.length !== 3 || value.some((item) => !Number.isFinite(Number(item)))) {
-    return clampPoseRotation(name, fallback);
-  }
-  return clampPoseRotation(name, value.map(Number) as PoseJointRotation);
-}
-
-function clampPoseRotation(name: string, value: PoseJointRotation): PoseJointRotation {
-  const [minimum, maximum] = poseJointLimits[name] ?? [[-Math.PI, -Math.PI, -Math.PI], [Math.PI, Math.PI, Math.PI]];
-  return value.map((item, index) => Math.max(minimum[index], Math.min(maximum[index], item))) as PoseJointRotation;
-}
-
 function extractImageBase64(dataUrl: string): string {
   const match = dataUrl.match(/^data:image\/[a-z0-9.+-]+;base64,([a-z0-9+/=]+)$/i);
   return match?.[1] ?? "";
@@ -4116,6 +4114,27 @@ export async function runTestGeneration(request: TestGenerationRequest): Promise
       class_type: "LoadImage",
       inputs: { image: poseImageName }
     };
+    let poseImageSource: [string, number] = ["12", 0];
+    if (pose.inputMode === "reference") {
+      const preprocessorStatus = await getPosePreprocessorStatus(request.comfyUrl);
+      if (!preprocessorStatus.available) {
+        return { ok: false, message: `画像からポーズを抽出できません。${preprocessorStatus.message}` };
+      }
+      workflow["18"] = {
+        class_type: "DWPreprocessor",
+        inputs: {
+          image: ["12", 0],
+          detect_hand: "enable",
+          detect_body: "enable",
+          detect_face: "enable",
+          resolution: Math.max(512, Math.min(1024, Math.round(Math.max(request.width, request.height) / 64) * 64)),
+          bbox_detector: "yolox_l.onnx",
+          pose_estimator: "dw-ll_ucoco_384_bs5.torchscript.pt",
+          scale_stick_for_xinsr_cn: pose.controlNet.toLowerCase().includes("xinsir") ? "enable" : "disable"
+        }
+      };
+      poseImageSource = ["18", 0];
+    }
     workflow["13"] = {
       class_type: "ControlNetLoader",
       inputs: { control_net_name: pose.controlNet }
@@ -4126,7 +4145,7 @@ export async function runTestGeneration(request: TestGenerationRequest): Promise
         positive: ["6", 0],
         negative: ["7", 0],
         control_net: ["13", 0],
-        image: ["12", 0],
+        image: poseImageSource,
         strength: pose.strength,
         start_percent: pose.startPercent,
         end_percent: pose.endPercent
@@ -4320,6 +4339,42 @@ async function getPromptHistory(comfyUrl: string, promptId: string): Promise<unk
   } catch {
     return null;
   }
+}
+
+function extractOpenPoseResult(history: unknown, promptId: string): PoseExtractionResult | null {
+  if (!history || typeof history !== "object") return null;
+  const root = history as Record<string, unknown>;
+  const entry = (root[promptId] ?? Object.values(root)[0]) as Record<string, unknown> | undefined;
+  const outputs = entry?.outputs as Record<string, unknown> | undefined;
+  const nodeOutput = outputs?.["2"] as Record<string, unknown> | undefined;
+  const candidates = Array.isArray(nodeOutput?.openpose_json) ? nodeOutput.openpose_json : [nodeOutput?.openpose_json];
+  for (const candidate of candidates) {
+    let parsed: unknown = candidate;
+    if (typeof parsed === "string") {
+      try {
+        parsed = JSON.parse(parsed);
+      } catch {
+        continue;
+      }
+    }
+    const frames = Array.isArray(parsed) ? parsed : [parsed];
+    for (const frame of frames) {
+      if (!frame || typeof frame !== "object") continue;
+      const record = frame as Record<string, unknown>;
+      const people = Array.isArray(record.people) ? record.people : [];
+      const person = people[0] as Record<string, unknown> | undefined;
+      const source = person?.pose_keypoints_2d;
+      if (!Array.isArray(source)) continue;
+      const keypoints = source.flatMap((point) => Array.isArray(point) ? point.slice(0, 3).map(Number) : [Number(point)]);
+      if (keypoints.length < 54 || !keypoints.slice(0, 54).every(Number.isFinite)) continue;
+      return {
+        canvasWidth: Number(record.canvas_width) || 768,
+        canvasHeight: Number(record.canvas_height) || 768,
+        keypoints: keypoints.slice(0, 54)
+      };
+    }
+  }
+  return null;
 }
 
 function extractPromptError(history: unknown): string | null {
@@ -5055,6 +5110,8 @@ function parsePromptEnhanceResponse(text: string): PromptEnhanceResult {
 function normalizeCivitaiModel(item: unknown): CivitaiModelCard[] {
   if (!item || typeof item !== "object") return [];
   const model = item as Record<string, unknown>;
+  const modelType = String(model.type ?? "Checkpoint");
+  const isPoseResource = modelType.toLowerCase() === "poses";
   const versions = Array.isArray(model.modelVersions) ? model.modelVersions : [];
   const version = versions[0] as Record<string, unknown> | undefined;
   if (!version) return [];
@@ -5066,7 +5123,8 @@ function normalizeCivitaiModel(item: unknown): CivitaiModelCard[] {
   const file =
     safetensorFiles.find((candidate) => Boolean(candidate.primary)) ??
     safetensorFiles.find((candidate) => String(candidate.type ?? "").toLowerCase() === "model") ??
-    safetensorFiles[0];
+    safetensorFiles[0] ??
+    (isPoseResource ? (files.find((candidate) => Boolean((candidate as Record<string, unknown>).primary)) ?? files[0]) as Record<string, unknown> | undefined : undefined);
   const downloadUrl = String(file?.downloadUrl ?? version.downloadUrl ?? "");
   if (!file || !downloadUrl) return [];
 
@@ -5099,7 +5157,7 @@ function normalizeCivitaiModel(item: unknown): CivitaiModelCard[] {
     {
       id: modelId,
       name: String(model.name ?? "Unknown"),
-      type: String(model.type ?? "Checkpoint"),
+      type: modelType,
       nsfw: Boolean(model.nsfw),
       creator: String(creator.username ?? "unknown"),
       versionId,

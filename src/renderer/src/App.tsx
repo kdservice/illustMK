@@ -435,14 +435,6 @@ function App() {
         selectedCheckpointInfo.hasVae ? "VAE内蔵" : selectedVae ? `外部VAE: ${selectedVae}` : "外部VAEが必要"
       ].join(" / ")
     : "未選択";
-  const poseAnalysisReady = Boolean(
-    !poseConditioning.analysisStale && poseConditioning.positivePrompt?.trim()
-  ) || Boolean(
-    poseConditioning.referenceImageDataUrl &&
-    poseConditioning.visionModel &&
-    ollamaStatus?.reachable &&
-    ollamaStatus.dataLinked
-  );
   const poseConditioningReady = !poseConditioning.enabled || Boolean(
     poseConditioning.imageDataUrl &&
     poseConditioning.controlNet &&
@@ -450,8 +442,7 @@ function App() {
     (!poseConditioning.depthControlNet || (
       poseConditioning.depthImageDataUrl &&
       status?.controlnet.some((file) => file.name === poseConditioning.depthControlNet)
-    )) &&
-    poseAnalysisReady
+    ))
   );
   const canGenerate = Boolean(status?.comfyReachable && selectedCheckpointGenerationReady && poseConditioningReady && !action.busy);
   const canDownloadLlm = Boolean(ollamaStatus?.reachable && ollamaStatus.dataLinked && llmPullName.trim() && !action.busy);
@@ -1065,84 +1056,15 @@ function App() {
     });
   }
 
-  async function assistCurrentPose(instruction: string): Promise<string> {
-    const id = crypto.randomUUID();
-    currentOperationId.current = id;
-    appendLog("info", `LLMへポーズを依頼: ${instruction}`, id);
-    setAction({ busy: true, message: "LLMでポーズを設定中", error: null });
-    try {
-      const result = await window.illustMK.poses.assist({
-        ollamaUrl,
-        model: ollamaModel,
-        instruction,
-        currentPose: poseConditioning
-      });
-      setRestoredGenerationSettings(null);
-      setPoseConditioning({ ...result.pose, analysisStale: true });
-      appendLog("info", result.summary, id);
-      setAction({ busy: false, message: "完了しました", error: null });
-      return result.summary;
-    } catch (error) {
-      const errorText = error instanceof Error ? error.message : String(error);
-      appendLog("stderr", errorText, id);
-      setAction({ busy: false, message: "失敗しました", error: errorText });
-      throw error;
-    }
-  }
-
-  async function analyzePose(pose: PoseConditioning): Promise<{ pose: PoseConditioning; summary: string }> {
-    if (!pose.visionModel?.trim()) throw new Error("画像対応VLMを選択してください。");
-    if (!pose.referenceImageDataUrl) throw new Error("解析するデッサン人形画像がありません。");
-    const result = await window.illustMK.poses.analyze({
-      ollamaUrl,
-      model: pose.visionModel,
-      imageDataUrl: pose.referenceImageDataUrl
-    });
-    return {
-      pose: {
-        ...pose,
-        positivePrompt: pose.positivePrompt?.trim() || result.positivePrompt,
-        negativePrompt: pose.negativePrompt?.trim() || result.negativePrompt,
-        analysisStale: false
-      },
-      summary: pose.positivePrompt?.trim()
-        ? `${result.summary} 骨格座標から生成したプロンプトを優先しています。`
-        : result.summary
-    };
-  }
-
-  async function analyzeCurrentPose(): Promise<string> {
-    const id = crypto.randomUUID();
-    currentOperationId.current = id;
-    appendLog("info", `VLMでデッサンポーズを解析中: ${poseConditioning.visionModel || "未選択"}`, id);
-    setAction({ busy: true, message: "VLMでポーズを解析中", error: null });
-    try {
-      const result = await analyzePose(poseConditioning);
-      setRestoredGenerationSettings(null);
-      setPoseConditioning(result.pose);
-      appendLog("info", `Pose Positive: ${result.pose.positivePrompt || "なし"}`, id);
-      appendLog("info", `Pose Negative: ${result.pose.negativePrompt || "なし"}`, id);
-      appendLog("info", result.summary, id);
-      setAction({ busy: false, message: "完了しました", error: null });
-      return result.summary;
-    } catch (error) {
-      const errorText = error instanceof Error ? error.message : String(error);
-      appendLog("stderr", errorText, id);
-      setAction({ busy: false, message: "失敗しました", error: errorText });
-      throw error;
-    }
-  }
-
   async function ensurePoseAnalysis(pose: PoseConditioning): Promise<PoseConditioning> {
-    if (!pose.enabled) return pose;
-    if (!pose.analysisStale && pose.positivePrompt?.trim()) return pose;
-    appendLog("info", `生成前にVLMでデッサンポーズを解析します: ${pose.visionModel || "未選択"}`);
-    const result = await analyzePose(pose);
-    setPoseConditioning(result.pose);
-    appendLog("info", `Pose Positive: ${result.pose.positivePrompt || "なし"}`);
-    appendLog("info", `Pose Negative: ${result.pose.negativePrompt || "なし"}`);
-    appendLog("info", result.summary);
-    return result.pose;
+    return pose;
+  }
+
+  async function installPosePreprocessor(): Promise<void> {
+    const id = crypto.randomUUID();
+    await runAction("DWPoseをインストール中", () => window.illustMK.runtime.runOperation({ id, operation: "pose-preprocessor-install" }), () => {
+      void refreshStatus();
+    });
   }
 
   function updateModelDraft(patch: Partial<ModelLibraryEntry>): void {
@@ -3875,9 +3797,8 @@ function App() {
                 onSelectSavedPose={loadSelectedPose}
                 onSavePose={() => void saveCurrentPose()}
                 onDeletePose={() => void deleteSelectedPose()}
-                onAssistPose={assistCurrentPose}
-                visionModels={ollamaStatus?.models.map((model) => model.name) ?? []}
-                onAnalyzePose={analyzeCurrentPose}
+                comfyUrl={comfyUrl}
+                onInstallPreprocessor={installPosePreprocessor}
                 outputWidth={generationWidth}
                 outputHeight={generationHeight}
                 disabled={action.busy}
