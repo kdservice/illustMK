@@ -50,21 +50,22 @@ const jointLabels: Record<string, string> = {
   rightAnkle: "右足首"
 };
 
-// OpenPose BODY_18の接続順と配色。headは顔の代表点（nose）として扱う。
+// Xinsir OpenPose SDXLの学習ラベルに合わせたBODY_18の接続順と線色。
+// 線は公式draw_bodyposeと同じく、各BODY_18色を60%輝度で描画する。
 const openPoseLinks: Array<[string, string, string]> = [
-  ["neck", "rightShoulder", "#ff0000"],
-  ["rightShoulder", "rightElbow", "#ff5500"],
-  ["rightElbow", "rightWrist", "#ffaa00"],
-  ["neck", "leftShoulder", "#ffff00"],
-  ["leftShoulder", "leftElbow", "#aaff00"],
-  ["leftElbow", "leftWrist", "#55ff00"],
-  ["neck", "rightHip", "#00ff55"],
-  ["rightHip", "rightKnee", "#00ffaa"],
-  ["rightKnee", "rightAnkle", "#00ffff"],
-  ["neck", "leftHip", "#00aaff"],
-  ["leftHip", "leftKnee", "#0055ff"],
-  ["leftKnee", "leftAnkle", "#0000ff"],
-  ["neck", "head", "#aa00ff"]
+  ["neck", "rightShoulder", "#990000"],
+  ["neck", "leftShoulder", "#993300"],
+  ["rightShoulder", "rightElbow", "#996600"],
+  ["rightElbow", "rightWrist", "#999900"],
+  ["leftShoulder", "leftElbow", "#669900"],
+  ["leftElbow", "leftWrist", "#339900"],
+  ["neck", "rightHip", "#009900"],
+  ["rightHip", "rightKnee", "#009933"],
+  ["rightKnee", "rightAnkle", "#009966"],
+  ["neck", "leftHip", "#009999"],
+  ["leftHip", "leftKnee", "#006699"],
+  ["leftKnee", "leftAnkle", "#003399"],
+  ["neck", "head", "#000099"]
 ];
 
 const openPosePointColors: Record<string, string> = {
@@ -601,7 +602,10 @@ function renderOpenPoseImage(
   }
   context.lineCap = "round";
   context.lineJoin = "round";
-  context.lineWidth = Math.max(4, Math.round(Math.min(canvas.width, canvas.height) * 0.012));
+  const maxSide = Math.max(canvas.width, canvas.height);
+  const xinsirScale = maxSide < 500 ? 1 : maxSide < 1000 ? 2 : Math.min(7, Math.floor(maxSide / 1000) + 2);
+  // 公式実装のellipse半径(stickwidth * scale)をCanvasの直径へ換算する。
+  context.lineWidth = 8 * xinsirScale;
   for (const [from, to, color] of openPoseLinks) {
     const a = points.get(from);
     const b = points.get(to);
@@ -612,7 +616,7 @@ function renderOpenPoseImage(
     context.lineTo(b.x, b.y);
     context.stroke();
   }
-  const radius = Math.max(4, Math.round(Math.min(canvas.width, canvas.height) * 0.01));
+  const radius = 4 * xinsirScale;
   for (const [name, color] of Object.entries(openPosePointColors)) {
     const point = points.get(name);
     if (!point?.visible) continue;
