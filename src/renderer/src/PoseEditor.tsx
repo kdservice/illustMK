@@ -35,6 +35,11 @@ type DerivedPosePrompts = {
   negativePrompt: string;
 };
 
+type JointLimit = {
+  min: PoseJointRotation;
+  max: PoseJointRotation;
+};
+
 const jointLabels: Record<string, string> = {
   hips: "腰",
   spine: "背中",
@@ -70,7 +75,11 @@ const openPoseLinks: Array<[string, string, string]> = [
   ["neck", "leftHip", "#009999"],
   ["leftHip", "leftKnee", "#006699"],
   ["leftKnee", "leftAnkle", "#003399"],
-  ["neck", "head", "#000099"]
+  ["neck", "head", "#000099"],
+  ["head", "rightEye", "#330099"],
+  ["rightEye", "rightEar", "#660099"],
+  ["head", "leftEye", "#990099"],
+  ["leftEye", "leftEar", "#990066"]
 ];
 
 const openPosePointColors: Record<string, string> = {
@@ -87,7 +96,11 @@ const openPosePointColors: Record<string, string> = {
   rightAnkle: "#00aaff",
   leftHip: "#0055ff",
   leftKnee: "#0000ff",
-  leftAnkle: "#5500ff"
+  leftAnkle: "#5500ff",
+  rightEye: "#aa00ff",
+  rightEar: "#ff00ff",
+  leftEye: "#ff00aa",
+  leftEar: "#ff0055"
 };
 
 const defaultRotations: Record<string, PoseJointRotation> = {
@@ -109,6 +122,39 @@ const defaultRotations: Record<string, PoseJointRotation> = {
   rightKnee: [0, 0, 0],
   rightAnkle: [0, 0, 0]
 };
+
+const jointLimits: Record<string, JointLimit> = {
+  hips: { min: [-0.55, -0.65, -0.45], max: [0.55, 0.65, 0.45] },
+  spine: { min: [-0.7, -0.55, -0.5], max: [0.55, 0.55, 0.5] },
+  chest: { min: [-0.65, -0.75, -0.6], max: [0.55, 0.75, 0.6] },
+  neck: { min: [-0.6, -0.85, -0.55], max: [0.6, 0.85, 0.55] },
+  head: { min: [-0.65, -1.05, -0.65], max: [0.65, 1.05, 0.65] },
+  leftShoulder: { min: [-2.75, -1.4, -1.85], max: [2.75, 1.4, 1.2] },
+  rightShoulder: { min: [-2.75, -1.4, -1.2], max: [2.75, 1.4, 1.85] },
+  leftElbow: { min: [-2.65, -0.4, -0.75], max: [0.15, 0.4, 0.3] },
+  rightElbow: { min: [-2.65, -0.4, -0.3], max: [0.15, 0.4, 0.75] },
+  leftWrist: { min: [-0.9, -0.8, -0.8], max: [0.9, 0.8, 0.8] },
+  rightWrist: { min: [-0.9, -0.8, -0.8], max: [0.9, 0.8, 0.8] },
+  leftHip: { min: [-1.9, -0.8, -0.75], max: [1.15, 0.8, 0.55] },
+  rightHip: { min: [-1.9, -0.8, -0.55], max: [1.15, 0.8, 0.75] },
+  leftKnee: { min: [-0.08, -0.18, -0.7], max: [2.75, 0.18, 0.7] },
+  rightKnee: { min: [-0.08, -0.18, -0.7], max: [2.75, 0.18, 0.7] },
+  leftAnkle: { min: [-0.85, -0.4, -0.4], max: [0.65, 0.4, 0.4] },
+  rightAnkle: { min: [-0.85, -0.4, -0.4], max: [0.65, 0.4, 0.4] }
+};
+
+function clampJointRotation(name: string, rotation: PoseJointRotation): PoseJointRotation {
+  const limit = jointLimits[name];
+  if (!limit) return rotation.map((value) => Number.isFinite(value) ? value : 0) as PoseJointRotation;
+  return rotation.map((value, axis) => Math.max(limit.min[axis], Math.min(limit.max[axis], Number.isFinite(value) ? value : 0))) as PoseJointRotation;
+}
+
+function clampJointRotations(rotations: Record<string, PoseJointRotation>): Record<string, PoseJointRotation> {
+  return Object.fromEntries(Object.entries(defaultRotations).map(([name, fallback]) => [
+    name,
+    clampJointRotation(name, rotations[name] ?? fallback)
+  ]));
+}
 
 const builtInPoseTemplates: Array<{ id: string; label: string; rotations: Record<string, PoseJointRotation> }> = [
   { id: "standing", label: "直立", rotations: templateRotations({}) },
@@ -138,12 +184,13 @@ const builtInPoseTemplates: Array<{ id: string; label: string; rotations: Record
 ];
 
 function templateRotations(overrides: Record<string, PoseJointRotation>): Record<string, PoseJointRotation> {
-  return Object.fromEntries(Object.entries({ ...defaultRotations, ...overrides }).map(([name, rotation]) => [name, [...rotation] as PoseJointRotation]));
+  return clampJointRotations(Object.fromEntries(Object.entries({ ...defaultRotations, ...overrides }).map(([name, rotation]) => [name, [...rotation] as PoseJointRotation])));
 }
 
 export function createDefaultPoseConditioning(): PoseConditioning {
   return {
     enabled: false,
+    preserveCharacterProportions: true,
     imageDataUrl: "",
     inputMode: "skeleton",
     sourceName: "3D人形を直接編集",
@@ -157,8 +204,8 @@ export function createDefaultPoseConditioning(): PoseConditioning {
     depthStartPercent: 0,
     depthEndPercent: 0.8,
     jointRotations: structuredClone(defaultRotations),
-    cameraPosition: [0, 4.4, 10],
-    cameraTarget: [0, 3.8, 0],
+    cameraPosition: [0, 2.8, 8],
+    cameraTarget: [0, 2.25, 0],
     cameraFov: 38,
     referenceImageDataUrl: "",
     visionModel: "",
@@ -207,7 +254,9 @@ export function PoseEditor({ value, controlNetModels, depthControlNetModels, onC
       if (
         (imageDataUrl && imageDataUrl !== valueRef.current.imageDataUrl) ||
         (depthImageDataUrl && depthImageDataUrl !== valueRef.current.depthImageDataUrl) ||
-        (referenceImageDataUrl && referenceImageDataUrl !== valueRef.current.referenceImageDataUrl)
+        (referenceImageDataUrl && referenceImageDataUrl !== valueRef.current.referenceImageDataUrl) ||
+        (prompts?.positivePrompt && prompts.positivePrompt !== valueRef.current.positivePrompt) ||
+        (prompts?.negativePrompt && prompts.negativePrompt !== valueRef.current.negativePrompt)
       ) {
         onChangeRef.current({
           ...valueRef.current,
@@ -221,7 +270,7 @@ export function PoseEditor({ value, controlNetModels, depthControlNetModels, onC
       }
     });
     return () => cancelAnimationFrame(frame);
-  }, [value.jointRotations, value.cameraPosition, value.cameraTarget, value.cameraFov]);
+  }, [value.jointRotations, value.cameraPosition, value.cameraTarget, value.cameraFov, value.preserveCharacterProportions]);
 
   useEffect(() => {
     const host = hostRef.current;
@@ -268,7 +317,7 @@ export function PoseEditor({ value, controlNetModels, depthControlNetModels, onC
     const applyValue = (next: PoseConditioning) => {
       applying = true;
       for (const [name, joint] of rig.joints) {
-        const rotation = next.jointRotations[name] ?? defaultRotations[name] ?? [0, 0, 0];
+        const rotation = clampJointRotation(name, next.jointRotations[name] ?? defaultRotations[name] ?? [0, 0, 0]);
         joint.rotation.set(rotation[0], rotation[1], rotation[2]);
       }
       camera.position.fromArray(next.cameraPosition);
@@ -286,7 +335,9 @@ export function PoseEditor({ value, controlNetModels, depthControlNetModels, onC
       scene.updateMatrixWorld(true);
       const rotations: Record<string, PoseJointRotation> = {};
       for (const [name, joint] of rig.joints) {
-        rotations[name] = [joint.rotation.x, joint.rotation.y, joint.rotation.z];
+        const rotation = clampJointRotation(name, [joint.rotation.x, joint.rotation.y, joint.rotation.z]);
+        joint.rotation.set(...rotation);
+        rotations[name] = rotation;
       }
       const current = valueRef.current;
       onChangeRef.current({
@@ -294,7 +345,7 @@ export function PoseEditor({ value, controlNetModels, depthControlNetModels, onC
         imageDataUrl: renderOpenPoseImage(rig, camera, current, outputWidth, outputHeight),
         depthImageDataUrl: renderDepthImage(renderer, scene, rig, floor, camera, transformHelper, outputWidth, outputHeight),
         referenceImageDataUrl: renderMannequinImage(renderer, scene, camera, transformHelper, outputWidth, outputHeight),
-        ...derivePosePrompts(rig, camera, rotations),
+        ...derivePosePrompts(rig, camera, rotations, current.preserveCharacterProportions ?? true),
         analysisStale: false,
         jointRotations: rotations,
         cameraPosition: camera.position.toArray() as [number, number, number],
@@ -311,7 +362,7 @@ export function PoseEditor({ value, controlNetModels, depthControlNetModels, onC
       return renderDepthImage(renderer, scene, rig, floor, camera, transformHelper, outputWidth, outputHeight);
     };
     captureReferenceRef.current = () => renderMannequinImage(renderer, scene, camera, transformHelper, outputWidth, outputHeight);
-    capturePromptRef.current = () => derivePosePrompts(rig, camera, valueRef.current.jointRotations);
+    capturePromptRef.current = () => derivePosePrompts(rig, camera, valueRef.current.jointRotations, valueRef.current.preserveCharacterProportions ?? true);
 
     const selectAtPointer = (event: PointerEvent) => {
       if (transform.dragging) return;
@@ -343,7 +394,14 @@ export function PoseEditor({ value, controlNetModels, depthControlNetModels, onC
       orbit.enabled = !event.value;
       if (!event.value) emitPose();
     });
-    transform.addEventListener("objectChange", emitPose);
+    transform.addEventListener("objectChange", () => {
+      const jointName = transform.object?.name;
+      if (jointName && transform.object) {
+        const rotation = clampJointRotation(jointName, [transform.object.rotation.x, transform.object.rotation.y, transform.object.rotation.z]);
+        transform.object.rotation.set(...rotation);
+      }
+      emitPose();
+    });
     orbit.addEventListener("change", emitPose);
     applyValue(valueRef.current);
     resize();
@@ -465,7 +523,7 @@ export function PoseEditor({ value, controlNetModels, depthControlNetModels, onC
       inputMode: "skeleton",
       sourceName,
       sourcePageUrl,
-      jointRotations: openPoseKeypointsToRotations(asset),
+      jointRotations: clampJointRotations(openPoseKeypointsToRotations(asset)),
       cameraPosition: defaults.cameraPosition,
       cameraTarget: defaults.cameraTarget,
       cameraFov: defaults.cameraFov,
@@ -641,6 +699,15 @@ export function PoseEditor({ value, controlNetModels, depthControlNetModels, onC
         </div>
         <button
           type="button"
+          className={value.preserveCharacterProportions !== false ? "toggle-button active pose-proportion-toggle" : "toggle-button pose-proportion-toggle"}
+          aria-pressed={value.preserveCharacterProportions !== false}
+          disabled={disabled}
+          onClick={() => onChange({ ...value, preserveCharacterProportions: value.preserveCharacterProportions === false })}
+        >
+          LoRA体型を優先
+        </button>
+        <button
+          type="button"
           className={value.enabled ? "toggle-button active pose-enabled-toggle" : "toggle-button pose-enabled-toggle"}
           aria-pressed={value.enabled}
           disabled={disabled || (!value.enabled && (!value.controlNet || !value.imageDataUrl))}
@@ -802,7 +869,8 @@ function renderCatalogOpenPose(asset: OpenPoseKeypointSource, outputWidth: numbe
 function derivePosePrompts(
   rig: Rig,
   camera: THREE.Camera,
-  rotations: Record<string, PoseJointRotation>
+  rotations: Record<string, PoseJointRotation>,
+  preserveCharacterProportions: boolean
 ): DerivedPosePrompts {
   rig.root.updateWorldMatrix(true, true);
   camera.updateWorldMatrix(true, false);
@@ -859,18 +927,39 @@ function derivePosePrompts(
   if (spinePitch < -0.22) details.push("torso leaning forward");
   else if (spinePitch > 0.22) details.push("torso leaning backward");
   details.push(cameraViewPrompt(camera));
+  details.push(faceDirectionPrompt(rig, camera));
+  if (preserveCharacterProportions) {
+    details.push("preserve the character's established age, stature, head-to-body ratio, and original body proportions from the character LoRA");
+  }
   details.push("full body, anatomically coherent limb placement");
 
   return {
     positivePrompt: details.join(", "),
-    negativePrompt: `${conflict}, contradictory limb positions, disconnected limbs`
+    negativePrompt: [
+      conflict,
+      "contradictory limb positions, disconnected limbs, twisted neck, face pointing in the wrong direction",
+      preserveCharacterProportions ? "altered body proportions, elongated body, excessively tall stature, excessively long legs, stretched torso" : ""
+    ].filter(Boolean).join(", ")
   };
+}
+
+function faceDirectionPrompt(rig: Rig, camera: THREE.Camera): string {
+  const head = rig.joints.get("head");
+  if (!head) return "face orientation consistent with head direction";
+  const headPosition = head.getWorldPosition(new THREE.Vector3());
+  const headRotation = head.getWorldQuaternion(new THREE.Quaternion());
+  const forward = new THREE.Vector3(0, 0, 1).applyQuaternion(headRotation).normalize();
+  const toCamera = camera.position.clone().sub(headPosition).normalize();
+  const facing = forward.dot(toCamera);
+  if (facing > 0.48) return "face looking toward viewer, facial features on the visible front of the head";
+  if (facing < -0.48) return "face looking away from viewer, back of head visible";
+  return "face in side profile, facial features aligned with the head direction";
 }
 
 function cameraViewPrompt(camera: THREE.Camera): string {
   const direction = camera.position.clone();
   const horizontal = Math.hypot(direction.x, direction.z) || 1;
-  const elevation = Math.atan2(direction.y - 3.8, horizontal);
+  const elevation = Math.atan2(direction.y - 2.25, horizontal);
   const azimuth = Math.atan2(direction.x, direction.z);
   const horizontalView = Math.abs(Math.sin(azimuth)) > 0.82
     ? "side view"
@@ -1057,14 +1146,22 @@ function createDepthProxy(rig: Rig): THREE.Group {
   };
 
   const hips = position("hips");
+  const spine = position("spine");
   const chest = position("chest");
   const neck = position("neck");
   const head = position("head");
-  addCapsule(hips, chest, 0.39, 0.16);
-  addEllipsoid(hips, [0.48, 0.34, 0.34], orientation("hips"));
-  addCapsule(chest, neck, 0.2, 0.11);
-  addCapsule(neck, head, 0.15, 0.1);
-  addEllipsoid(head, [0.3, 0.39, 0.32], orientation("head"));
+  addCapsule(hips, spine, 0.29, 0.18);
+  addCapsule(spine, chest, 0.3, 0.2);
+  addEllipsoid(hips, [0.42, 0.32, 0.29], orientation("hips"));
+  addEllipsoid(chest, [0.42, 0.43, 0.27], orientation("chest"));
+  addCapsule(chest, neck, 0.18, 0.12);
+  addCapsule(neck, head, 0.145, 0.1);
+  const headOrientation = orientation("head");
+  addEllipsoid(head, [0.29, 0.4, 0.3], headOrientation);
+  const faceCenter = new THREE.Vector3(0, 0, 0.25).applyQuaternion(headOrientation).add(head);
+  addEllipsoid(faceCenter, [0.215, 0.285, 0.06], headOrientation);
+  const noseEnd = new THREE.Vector3(0, -0.01, 0.4).applyQuaternion(headOrientation).add(head);
+  addCapsule(faceCenter, noseEnd, 0.045, 0.02);
 
   for (const side of ["left", "right"] as const) {
     const shoulder = position(`${side}Shoulder`);
@@ -1073,12 +1170,12 @@ function createDepthProxy(rig: Rig): THREE.Group {
     const hip = position(`${side}Hip`);
     const knee = position(`${side}Knee`);
     const ankle = position(`${side}Ankle`);
-    addCapsule(chest, shoulder, 0.18, 0.14);
-    addCapsule(shoulder, elbow, 0.15, 0.1);
-    addCapsule(elbow, wrist, 0.125, 0.09);
-    addEllipsoid(wrist, [0.13, 0.18, 0.12], orientation(`${side}Wrist`));
-    addCapsule(hip, knee, 0.2, 0.12);
-    addCapsule(knee, ankle, 0.17, 0.11);
+    addCapsule(chest, shoulder, 0.16, 0.14);
+    addCapsule(shoulder, elbow, 0.125, 0.1);
+    addCapsule(elbow, wrist, 0.105, 0.09);
+    addEllipsoid(wrist, [0.1, 0.2, 0.08], orientation(`${side}Wrist`));
+    addCapsule(hip, knee, 0.165, 0.12);
+    addCapsule(knee, ankle, 0.135, 0.11);
     const footEnd = new THREE.Vector3(0, -0.08, 0.34)
       .applyQuaternion(orientation(`${side}Ankle`))
       .add(ankle);
@@ -1104,16 +1201,16 @@ function createRig(): Rig {
   root.position.y = 0;
   const joints = new Map<string, THREE.Group>();
   const selectable: THREE.Object3D[] = [];
-  const skin = new THREE.MeshStandardMaterial({ color: 0xd9b69c, roughness: 0.72 });
-  const body = new THREE.MeshStandardMaterial({ color: 0x78a8d8, roughness: 0.62 });
-  const jointMaterial = new THREE.MeshStandardMaterial({ color: 0xf3d6bf, roughness: 0.65 });
+  const surface = new THREE.MeshStandardMaterial({ color: 0xb9bdc6, roughness: 0.64, metalness: 0.03 });
+  const jointMaterial = new THREE.MeshStandardMaterial({ color: 0xd2d4da, roughness: 0.6 });
+  const eyeMaterial = new THREE.MeshStandardMaterial({ color: 0x343944, roughness: 0.5 });
 
   const joint = (name: string, parent: THREE.Object3D, position: [number, number, number]) => {
     const group = new THREE.Group();
     group.name = name;
     group.position.set(...position);
     parent.add(group);
-    const marker = new THREE.Mesh(new THREE.SphereGeometry(0.12, 18, 14), jointMaterial);
+    const marker = new THREE.Mesh(new THREE.SphereGeometry(0.115, 22, 16), jointMaterial);
     marker.userData.jointName = name;
     marker.castShadow = true;
     group.add(marker);
@@ -1121,57 +1218,81 @@ function createRig(): Rig {
     selectable.push(marker);
     return group;
   };
-  const segment = (name: string, parent: THREE.Group, length: number, radius: number, material = skin) => {
-    const mesh = new THREE.Mesh(new THREE.CapsuleGeometry(radius, Math.max(0.04, length - radius * 2), 8, 16), material);
+  const segment = (name: string, parent: THREE.Group, length: number, radius: number) => {
+    const mesh = new THREE.Mesh(new THREE.CapsuleGeometry(radius, Math.max(0.04, length - radius * 2), 12, 24), surface);
     mesh.position.y = -length / 2;
     mesh.userData.jointName = name;
     mesh.castShadow = true;
     parent.add(mesh);
     selectable.push(mesh);
+    return mesh;
+  };
+  const ellipsoid = (
+    name: string,
+    parent: THREE.Object3D,
+    position: [number, number, number],
+    scale: [number, number, number],
+    material: THREE.Material = surface
+  ) => {
+    const mesh = new THREE.Mesh(new THREE.SphereGeometry(1, 32, 24), material);
+    mesh.position.set(...position);
+    mesh.scale.set(...scale);
+    mesh.userData.jointName = name;
+    mesh.castShadow = true;
+    parent.add(mesh);
+    selectable.push(mesh);
+    return mesh;
   };
 
-  const hips = joint("hips", root, [0, 4.25, 0]);
-  const pelvis = new THREE.Mesh(new THREE.CapsuleGeometry(0.34, 0.42, 8, 18), body);
-  pelvis.rotation.z = Math.PI / 2;
-  pelvis.userData.jointName = "hips";
-  hips.add(pelvis);
-  selectable.push(pelvis);
+  const hips = joint("hips", root, [0, 2.15, 0]);
+  ellipsoid("hips", hips, [0, 0.02, 0], [0.42, 0.31, 0.29]);
+  ellipsoid("hips", hips, [0, 0.27, 0], [0.3, 0.31, 0.23]);
 
-  const spine = joint("spine", hips, [0, 0.52, 0]);
-  const torso = new THREE.Mesh(new THREE.CapsuleGeometry(0.36, 0.72, 8, 18), body);
-  torso.position.y = 0.38;
-  torso.userData.jointName = "spine";
-  torso.castShadow = true;
-  spine.add(torso);
-  selectable.push(torso);
-  const chest = joint("chest", spine, [0, 0.86, 0]);
-  const neck = joint("neck", chest, [0, 0.55, 0]);
-  segment("neck", neck, 0.24, 0.11, skin);
-  const head = joint("head", neck, [0, 0.48, 0]);
-  const headMesh = new THREE.Mesh(new THREE.SphereGeometry(0.34, 24, 18), skin);
-  headMesh.scale.set(0.86, 1.12, 0.92);
-  headMesh.userData.jointName = "head";
-  headMesh.castShadow = true;
-  head.add(headMesh);
-  selectable.push(headMesh);
+  const spine = joint("spine", hips, [0, 0.38, 0]);
+  ellipsoid("spine", spine, [0, 0.25, 0], [0.3, 0.48, 0.23]);
+  const chest = joint("chest", spine, [0, 0.65, 0]);
+  ellipsoid("chest", chest, [0, 0.06, 0], [0.42, 0.43, 0.26]);
+  ellipsoid("chest", chest, [0, -0.2, 0], [0.34, 0.3, 0.23]);
+  const neck = joint("neck", chest, [0, 0.4, 0]);
+  ellipsoid("neck", neck, [0, 0.1, 0], [0.14, 0.24, 0.14]);
+  const head = joint("head", neck, [0, 0.38, 0]);
+  ellipsoid("head", head, [0, 0.02, 0], [0.29, 0.4, 0.3]);
+  const facePlane = ellipsoid("head", head, [0, -0.01, 0.245], [0.215, 0.285, 0.055]);
+  facePlane.scale.z = 0.055;
+  const nose = new THREE.Mesh(new THREE.ConeGeometry(0.045, 0.13, 16), surface);
+  nose.rotation.x = Math.PI / 2;
+  nose.position.set(0, -0.015, 0.355);
+  nose.userData.jointName = "head";
+  nose.castShadow = true;
+  head.add(nose);
+  selectable.push(nose);
+  for (const side of [-1, 1] as const) {
+    const eye = new THREE.Mesh(new THREE.SphereGeometry(0.02, 14, 10), eyeMaterial);
+    eye.position.set(side * 0.095, 0.075, 0.304);
+    eye.userData.jointName = "head";
+    head.add(eye);
+    selectable.push(eye);
+    ellipsoid("head", head, [side * 0.285, 0.025, 0], [0.045, 0.09, 0.06]);
+  }
 
   for (const side of [-1, 1] as const) {
     const prefix = side < 0 ? "left" : "right";
-    const shoulder = joint(`${prefix}Shoulder`, chest, [side * 0.56, 0.34, 0]);
-    segment(`${prefix}Shoulder`, shoulder, 0.9, 0.13);
-    const elbow = joint(`${prefix}Elbow`, shoulder, [0, -0.9, 0]);
-    segment(`${prefix}Elbow`, elbow, 0.82, 0.11);
-    const wrist = joint(`${prefix}Wrist`, elbow, [0, -0.82, 0]);
-    segment(`${prefix}Wrist`, wrist, 0.28, 0.1);
+    const shoulder = joint(`${prefix}Shoulder`, chest, [side * 0.43, 0.14, 0]);
+    ellipsoid(`${prefix}Shoulder`, shoulder, [0, -0.05, 0], [0.15, 0.18, 0.15]);
+    segment(`${prefix}Shoulder`, shoulder, 0.74, 0.12);
+    const elbow = joint(`${prefix}Elbow`, shoulder, [0, -0.72, 0]);
+    segment(`${prefix}Elbow`, elbow, 0.66, 0.1);
+    const wrist = joint(`${prefix}Wrist`, elbow, [0, -0.64, 0]);
+    ellipsoid(`${prefix}Wrist`, wrist, [0, -0.16, 0.025], [0.095, 0.2, 0.075]);
 
-    const hip = joint(`${prefix}Hip`, hips, [side * 0.28, -0.22, 0]);
-    segment(`${prefix}Hip`, hip, 1.25, 0.18);
-    const knee = joint(`${prefix}Knee`, hip, [0, -1.25, 0]);
-    segment(`${prefix}Knee`, knee, 1.22, 0.15);
-    const ankle = joint(`${prefix}Ankle`, knee, [0, -1.22, 0]);
-    const foot = new THREE.Mesh(new THREE.CapsuleGeometry(0.13, 0.34, 8, 14), skin);
+    const hip = joint(`${prefix}Hip`, hips, [side * 0.25, -0.15, 0]);
+    segment(`${prefix}Hip`, hip, 0.9, 0.155);
+    const knee = joint(`${prefix}Knee`, hip, [0, -0.88, 0]);
+    segment(`${prefix}Knee`, knee, 0.84, 0.125);
+    const ankle = joint(`${prefix}Ankle`, knee, [0, -0.82, 0]);
+    const foot = new THREE.Mesh(new THREE.CapsuleGeometry(0.13, 0.32, 12, 20), surface);
     foot.rotation.x = Math.PI / 2;
-    foot.position.set(0, -0.08, 0.2);
+    foot.position.set(0, -0.08, 0.22);
     foot.userData.jointName = `${prefix}Ankle`;
     foot.castShadow = true;
     ankle.add(foot);
@@ -1206,13 +1327,42 @@ function renderOpenPoseImage(
   context.fillStyle = "#000000";
   context.fillRect(0, 0, canvas.width, canvas.height);
   const points = new Map<string, { x: number; y: number; visible: boolean }>();
-  for (const [name, object] of rig.joints) {
-    const projected = object.getWorldPosition(new THREE.Vector3()).project(projectionCamera);
+  const projectPoint = (name: string, worldPosition: THREE.Vector3) => {
+    const projected = worldPosition.project(projectionCamera);
     points.set(name, {
       x: (projected.x * 0.5 + 0.5) * canvas.width,
       y: (-projected.y * 0.5 + 0.5) * canvas.height,
       visible: projected.z >= -1 && projected.z <= 1
     });
+  };
+  for (const [name, object] of rig.joints) {
+    projectPoint(name, object.getWorldPosition(new THREE.Vector3()));
+  }
+  const headJoint = rig.joints.get("head");
+  if (headJoint) {
+    const headPosition = headJoint.getWorldPosition(new THREE.Vector3());
+    const headOrientation = headJoint.getWorldQuaternion(new THREE.Quaternion());
+    const faceForward = new THREE.Vector3(0, 0, 1).applyQuaternion(headOrientation).normalize();
+    const toCamera = projectionCamera.position.clone().sub(headPosition).normalize();
+    const facing = faceForward.dot(toCamera);
+    const facialPoint = (name: string, local: [number, number, number]) => {
+      projectPoint(name, new THREE.Vector3(...local).applyQuaternion(headOrientation).add(headPosition));
+    };
+    points.delete("head");
+    if (facing > -0.25) {
+      facialPoint("head", [0, 0.02, 0.39]);
+      if (facing > 0.28) {
+        facialPoint("rightEye", [-0.1, 0.08, 0.32]);
+        facialPoint("leftEye", [0.1, 0.08, 0.32]);
+        facialPoint("rightEar", [-0.29, 0.04, 0]);
+        facialPoint("leftEar", [0.29, 0.04, 0]);
+      } else {
+        const headRight = new THREE.Vector3(1, 0, 0).applyQuaternion(headOrientation).normalize();
+        const rightSideVisible = headRight.dot(toCamera) > 0;
+        facialPoint(rightSideVisible ? "rightEye" : "leftEye", [rightSideVisible ? -0.1 : 0.1, 0.08, 0.32]);
+        facialPoint(rightSideVisible ? "rightEar" : "leftEar", [rightSideVisible ? -0.29 : 0.29, 0.04, 0]);
+      }
+    }
   }
   context.lineCap = "round";
   context.lineJoin = "round";

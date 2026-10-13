@@ -418,6 +418,7 @@ export type PoseJointRotation = [number, number, number];
 
 export type PoseConditioning = {
   enabled: boolean;
+  preserveCharacterProportions?: boolean;
   imageDataUrl: string;
   inputMode?: "skeleton" | "external-skeleton" | "reference";
   sourceName?: string;

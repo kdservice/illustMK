@@ -2171,7 +2171,7 @@ label {
 
 .pose-footer {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 120px;
+  grid-template-columns: minmax(0, 1fr) 150px 120px;
   gap: 10px;
   align-items: end;
   padding-top: 10px;
@@ -2210,6 +2210,12 @@ label {
 
 .pose-enabled-toggle {
   width: 120px;
+  min-height: 42px;
+  font-weight: 900;
+}
+
+.pose-proportion-toggle {
+  width: 150px;
   min-height: 42px;
   font-weight: 900;
 }

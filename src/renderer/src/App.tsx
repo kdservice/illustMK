@@ -5361,6 +5361,7 @@ function samePoseConditioning(left: PoseConditioning | undefined, right: PoseCon
     left.visionModel === right.visionModel &&
     left.positivePrompt === right.positivePrompt &&
     left.negativePrompt === right.negativePrompt &&
+    left.preserveCharacterProportions === right.preserveCharacterProportions &&
     left.analysisStale === right.analysisStale
   );
 }
@@ -5371,6 +5372,7 @@ function normalizePoseConditioning(value?: PoseConditioning): PoseConditioning {
   return {
     ...defaults,
     ...structuredClone(value),
+    preserveCharacterProportions: value.preserveCharacterProportions ?? true,
     jointRotations: value.jointRotations ?? defaults.jointRotations,
     cameraPosition: value.cameraPosition ?? defaults.cameraPosition,
     cameraTarget: value.cameraTarget ?? defaults.cameraTarget,
