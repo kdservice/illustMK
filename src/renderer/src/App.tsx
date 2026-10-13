@@ -28,6 +28,7 @@ import type {
   DataPathEntry,
   DownloadRequest,
   GenerationLora,
+  GenerationSeedMode,
   GenerationSceneBackground,
   GenerationSceneCharacter,
   GenerationSceneSettings,
@@ -139,6 +140,10 @@ type SavedSceneCharacter = GenerationSceneCharacter & { savedAt: string };
 type SavedSceneBackground = GenerationSceneBackground & { savedAt: string };
 type GenerationScope = "character" | "background" | "scene";
 
+const defaultSeedRange = "0-10";
+const backgroundOnlyPositivePrompt = "scenery, environment, empty scene, uninhabited";
+const backgroundOnlyNegativePrompt = "person, people, human, character, 1girl, 1boy, boy, girl, man, woman";
+
 const savedSceneCharactersKey = "illustmk.savedSceneCharacters";
 const savedSceneBackgroundsKey = "illustmk.savedSceneBackgrounds";
 const defaultCharacterPlacement = { x: 50, y: 50, scale: 100, zIndex: 1 };
@@ -164,12 +169,27 @@ function createDefaultSceneBackground(id: string = crypto.randomUUID()): Generat
     steps: 20,
     cfg: 7,
     seedMode: "random",
-    seedValue: -1
+    seedValue: -1,
+    seedRange: defaultSeedRange
   };
 }
 
 function normalizeSceneBackground(background: Partial<GenerationSceneBackground>): GenerationSceneBackground {
-  return { ...createDefaultSceneBackground(background.id), ...background };
+  return {
+    ...createDefaultSceneBackground(background.id),
+    ...background,
+    seedRange: background.seedRange ?? defaultSeedRange
+  };
+}
+
+function parseSeedRange(value: string): { start: number; end: number } {
+  const match = value.trim().match(/^(\d+)\s*-\s*(\d+)$/);
+  if (!match) throw new Error("Seed Valueは 0-10 の形式で入力してください。");
+  const start = Number(match[1]);
+  const end = Number(match[2]);
+  if (!Number.isSafeInteger(start) || !Number.isSafeInteger(end)) throw new Error("Seed Valueは安全な整数範囲で入力してください。");
+  if (start > end) throw new Error("Seed Valueは開始値を終了値以下にしてください。");
+  return { start, end };
 }
 
 function automaticCharacterX(index: number, total: number): number {
@@ -286,8 +306,9 @@ function App() {
   const [generationHeight, setGenerationHeight] = useState(1024);
   const [generationSteps, setGenerationSteps] = useState(20);
   const [generationCfg, setGenerationCfg] = useState(7);
-  const [seedMode, setSeedMode] = useState<"random" | "fixed">("random");
+  const [seedMode, setSeedMode] = useState<GenerationSeedMode>("random");
   const [seedValue, setSeedValue] = useState(-1);
+  const [seedRange, setSeedRange] = useState(defaultSeedRange);
   const [poseConditioning, setPoseConditioning] = useState<PoseConditioning>(() => createDefaultPoseConditioning());
   const [sceneCharacters, setSceneCharacters] = useState<GenerationSceneCharacter[]>([]);
   const [sceneBackground, setSceneBackground] = useState<GenerationSceneBackground | null>(null);
@@ -1549,6 +1570,7 @@ function App() {
       setGenerationCfg(settings?.cfg ?? entry.cfg);
       setSeedMode(settings?.seedMode ?? (entry.seed >= 0 ? "fixed" : "random"));
       setSeedValue(settings?.seedValue ?? entry.seed);
+      setSeedRange(settings?.seedRange ?? defaultSeedRange);
       setPoseConditioning(normalizePoseConditioning(
         settings?.poseConditioning ?? settings?.generationRequest?.poseConditioning
       ));
@@ -1584,7 +1606,8 @@ function App() {
       positiveLoraTriggerIds: [...positiveLoraTriggerIds],
       poseConditioning: structuredClone(poseConditioning),
       seedMode,
-      seedValue
+      seedValue,
+      seedRange
     };
   }
 
@@ -1603,7 +1626,8 @@ function App() {
       positiveLoraTriggerIds: [],
       poseConditioning: createDefaultPoseConditioning(),
       seedMode: "random",
-      seedValue: -1
+      seedValue: -1,
+      seedRange: defaultSeedRange
     };
   }
 
@@ -1623,6 +1647,7 @@ function App() {
     setPoseConditioning(normalizePoseConditioning(settings.poseConditioning));
     setSeedMode(settings.seedMode);
     setSeedValue(settings.seedValue);
+    setSeedRange(settings.seedRange ?? defaultSeedRange);
     setGenerateTab("prompt");
   }
 
@@ -1832,6 +1857,7 @@ function App() {
     setGenerationCfg(7);
     setSeedMode("random");
     setSeedValue(-1);
+    setSeedRange(defaultSeedRange);
     setPoseConditioning(createDefaultPoseConditioning());
     setGenerationResult(null);
     setLastImage(null);
@@ -2678,8 +2704,8 @@ function App() {
     if (scope === "background" && scene.background) {
       const backgroundRequest = composeBackgroundRequest(scene.background);
       return {
-        prompt: backgroundRequest.prompt,
-        negativePrompt: backgroundRequest.negativePrompt,
+        prompt: composeGenerationPrompt(backgroundRequest.prompt, [backgroundOnlyPositivePrompt]),
+        negativePrompt: composeGenerationPrompt(backgroundRequest.negativePrompt, [backgroundOnlyNegativePrompt]),
         checkpoint: selectedCheckpoint,
         loras: [],
         width: scene.background.width,
@@ -2740,12 +2766,14 @@ function App() {
 
   function nextGenerationSeed(): number {
     if (seedMode === "fixed" && seedValue >= 0) return seedValue;
+    if (seedMode === "sequence") return parseSeedRange(seedRange).start;
     return Math.floor(Math.random() * Number.MAX_SAFE_INTEGER);
   }
 
   function nextGenerationSeedForScope(scope: GenerationScope): number {
     if (scope === "background" && sceneBackground) {
       if (sceneBackground.seedMode === "fixed" && sceneBackground.seedValue >= 0) return sceneBackground.seedValue;
+      if (sceneBackground.seedMode === "sequence") return parseSeedRange(sceneBackground.seedRange).start;
       return Math.floor(Math.random() * Number.MAX_SAFE_INTEGER);
     }
     return nextGenerationSeed();
@@ -2826,8 +2854,12 @@ function App() {
             : "history.generationSettings.generationRequest.seed was negative; app generated concrete seed"
           : scope === "background" && sceneBackground?.seedMode === "fixed" && sceneBackground.seedValue >= 0
             ? "background.seedValue"
+            : scope === "background" && sceneBackground?.seedMode === "sequence"
+              ? "background.seedRange first value"
             : seedMode === "fixed" && seedValue >= 0
             ? "ui.seedValue"
+            : seedMode === "sequence"
+              ? "ui.seedRange first value"
             : "app generated random seed";
         const historySettings = buildGenerationHistorySettings(request, scope);
         appendLog("info", `生成種別: ${scope === "character" ? `キャラクタ (${activeSceneCharacter?.title ?? "未選択"})` : scope === "background" ? `背景 (${sceneBackground?.title ?? "未選択"})` : "総合"}`);
@@ -2851,8 +2883,15 @@ function App() {
   async function runRepeatGenerate(scope: GenerationScope): Promise<void> {
     if (repeatRunning || (scope === "character" ? !canGenerateCharacter : scope === "background" ? !canGenerateBackground : !canGenerateScene)) return;
     let repeatPose: PoseConditioning;
+    let sequenceRange: { current: number; end: number } | null = null;
     try {
       repeatPose = await ensurePoseAnalysis(poseConditioning);
+      const scopeSeedMode = scope === "background" ? sceneBackground?.seedMode : seedMode;
+      const scopeSeedRange = scope === "background" ? sceneBackground?.seedRange : seedRange;
+      if (scopeSeedMode === "sequence") {
+        const parsed = parseSeedRange(scopeSeedRange ?? defaultSeedRange);
+        sequenceRange = { current: parsed.start, end: parsed.end };
+      }
     } catch (error) {
       const errorText = error instanceof Error ? error.message : String(error);
       appendLog("stderr", errorText);
@@ -2873,7 +2912,8 @@ function App() {
       while (!repeatStopRequested.current) {
         await waitWhileRepeatPaused();
         if (repeatStopRequested.current) break;
-        const seed = nextRandomSeed(usedSeeds);
+        if (sequenceRange && sequenceRange.current > sequenceRange.end) break;
+        const seed = sequenceRange ? sequenceRange.current++ : nextRandomSeed(usedSeeds);
         usedSeeds.add(seed);
         const request = createGenerationRequest(scope, seed, repeatPose);
         const itemId = crypto.randomUUID();
@@ -2881,7 +2921,13 @@ function App() {
         try {
           const startedAt = performance.now();
           appendLog("info", `${scope === "character" ? "Character" : scope === "background" ? "Background" : "Scene"} Repeat Generate Seed: ${seed}`);
-          appendGenerationDiagnostics("manual-ui", request, request, "repeat generated random seed", buildGenerationHistorySettings(request, scope));
+          appendGenerationDiagnostics(
+            "manual-ui",
+            request,
+            request,
+            sequenceRange ? "repeat sequence seed generated by app" : "repeat random seed generated by app",
+            buildGenerationHistorySettings(request, scope)
+          );
           const requestLoras = request.loras ?? [];
           appendLog("info", `ComfyUI Positive Prompt: ${request.prompt}`);
           appendLog("info", `ComfyUI Negative Prompt: ${request.negativePrompt}`);
@@ -2967,6 +3013,7 @@ function App() {
         generationCfg,
         seedMode,
         seedValue,
+        seedRange,
         comfyUrl,
         ollamaUrl,
         ollamaModel,
@@ -3075,6 +3122,28 @@ function App() {
 
   function buildGenerationHistorySettings(request: TestGenerationRequest, scope: GenerationScope): PromptGenerationSettings {
     const background = scope === "background" ? sceneBackground : null;
+    const historyScene = currentGenerationScene();
+    if (scope === "background" && historyScene.background) {
+      historyScene.background.seedMode = "fixed";
+      historyScene.background.seedValue = request.seed;
+    }
+    if (scope === "character") {
+      const historyCharacter = historyScene.characters.find((character) => character.id === activeSceneCharacter?.id);
+      if (historyCharacter) {
+        historyCharacter.settings.seedMode = "fixed";
+        historyCharacter.settings.seedValue = request.seed;
+      }
+    }
+    if (scope === "scene") {
+      if (historyScene.background) {
+        historyScene.background.seedMode = "fixed";
+        historyScene.background.seedValue = request.seed;
+      }
+      historyScene.characters.forEach((character) => {
+        character.settings.seedMode = "fixed";
+        character.settings.seedValue = request.seed;
+      });
+    }
     return {
       generationRequest: request,
       generationScope: scope,
@@ -3102,6 +3171,7 @@ function App() {
       cfg: request.cfg,
       seedMode: "fixed",
       seedValue: request.seed,
+      seedRange: background?.seedRange ?? seedRange,
       requestSeed: request.seed,
       comfyUrl,
       ollamaUrl,
@@ -3110,7 +3180,7 @@ function App() {
       baseFilters,
       generationTab: generateTab,
       poseConditioning: request.poseConditioning,
-      scene: currentGenerationScene()
+      scene: historyScene
     };
   }
 
@@ -4398,8 +4468,15 @@ function App() {
                     <div className="field"><label>CFG</label><input type="number" min="1" max="30" step="0.5" value={sceneBackground.cfg} onChange={(event) => updateSceneBackground({ cfg: Number(event.target.value) })} /></div>
                   </div>
                   <div className="background-options-grid seed-options">
-                    <div className="field"><label>Seed</label><select value={sceneBackground.seedMode} onChange={(event) => updateSceneBackground({ seedMode: event.target.value as "random" | "fixed" })}><option value="random">Random</option><option value="fixed">Fixed</option></select></div>
-                    <div className="field"><label>Seed Value</label><input type="number" disabled={sceneBackground.seedMode === "random"} value={sceneBackground.seedValue} onChange={(event) => updateSceneBackground({ seedValue: Number(event.target.value) })} /></div>
+                    <div className="field"><label>Seed</label><select value={sceneBackground.seedMode} onChange={(event) => updateSceneBackground({ seedMode: event.target.value as GenerationSeedMode })}><option value="random">Random</option><option value="fixed">Fixed</option><option value="sequence">連番</option></select></div>
+                    <div className="field">
+                      <label>Seed Value</label>
+                      {sceneBackground.seedMode === "sequence" ? (
+                        <input value={sceneBackground.seedRange} placeholder={defaultSeedRange} onChange={(event) => updateSceneBackground({ seedRange: event.target.value })} />
+                      ) : (
+                        <input type="number" disabled={sceneBackground.seedMode === "random"} value={sceneBackground.seedValue} onChange={(event) => updateSceneBackground({ seedValue: Number(event.target.value) })} />
+                      )}
+                    </div>
                   </div>
                 </section>
                 <div className="scene-reference-grid">
@@ -4584,14 +4661,19 @@ function App() {
                 </div>
                 <div className="field">
                   <label>Seed</label>
-                  <select value={seedMode} onChange={(event) => setSeedMode(event.target.value as "random" | "fixed")}>
+                  <select value={seedMode} onChange={(event) => setSeedMode(event.target.value as GenerationSeedMode)}>
                     <option value="random">Random</option>
                     <option value="fixed">Fixed</option>
+                    <option value="sequence">連番</option>
                   </select>
                 </div>
                 <div className="field">
                   <label>Seed Value</label>
-                  <input type="number" disabled={seedMode === "random"} value={seedValue} onChange={(event) => setSeedValue(Number(event.target.value))} />
+                  {seedMode === "sequence" ? (
+                    <input value={seedRange} placeholder={defaultSeedRange} onChange={(event) => setSeedRange(event.target.value)} />
+                  ) : (
+                    <input type="number" disabled={seedMode === "random"} value={seedValue} onChange={(event) => setSeedValue(Number(event.target.value))} />
+                  )}
                 </div>
               </div>
             )}

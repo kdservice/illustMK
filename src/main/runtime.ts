@@ -638,6 +638,8 @@ export type SceneCharacterPlacement = {
   zIndex: number;
 };
 
+export type GenerationSeedMode = "random" | "fixed" | "sequence";
+
 export type SceneCharacterSettings = {
   japanesePrompt: string;
   prompt: string;
@@ -651,8 +653,9 @@ export type SceneCharacterSettings = {
   negativeOptionTagIds: string[];
   positiveLoraTriggerIds: string[];
   poseConditioning: PoseConditioning;
-  seedMode: "random" | "fixed";
+  seedMode: GenerationSeedMode;
   seedValue: number;
+  seedRange: string;
 };
 
 export type GenerationSceneCharacter = {
@@ -681,8 +684,9 @@ export type GenerationSceneBackground = {
   height: number;
   steps: number;
   cfg: number;
-  seedMode: "random" | "fixed";
+  seedMode: GenerationSeedMode;
   seedValue: number;
+  seedRange: string;
 };
 
 export type GenerationSceneSettings = {
@@ -731,8 +735,9 @@ export type PromptGenerationSettings = {
   imageSizePreset: string;
   steps: number;
   cfg: number;
-  seedMode: "random" | "fixed";
+  seedMode: GenerationSeedMode;
   seedValue: number;
+  seedRange?: string;
   requestSeed: number;
   comfyUrl: string;
   ollamaUrl: string;
