@@ -969,8 +969,14 @@ export async function getDataPaths(): Promise<DataPathEntry[]> {
   );
 }
 
-export async function addDataPath(path: string, options: { memo?: string; activate?: boolean } = {}): Promise<DataPathEntry[]> {
+export async function addDataPath(
+  path: string,
+  options: { memo?: string; activate?: boolean } = {},
+  onLog: RuntimeLogSink = () => undefined
+): Promise<DataPathEntry[]> {
   const config = await readDataPathConfig();
+  const previousPaths = getRuntimePaths();
+  const restartNative = Boolean(options.activate && await managedComfyPidForPaths(previousPaths));
   const targetPath = resolve(path);
   const now = new Date().toISOString();
   let entry = config.entries.find((item) => resolve(item.path) === targetPath);
@@ -981,16 +987,25 @@ export async function addDataPath(path: string, options: { memo?: string; activa
     entry.memo = options.memo ?? entry.memo ?? "";
     entry.updatedAt = now;
   }
-  if (options.activate) config.activeId = entry.id;
+  if (options.activate && config.activeId !== entry.id) {
+    if (restartNative) await stopNativeRuntimeForPaths(previousPaths, onLog);
+    config.activeId = entry.id;
+  }
   await writeDataPathConfig(config);
+  if (restartNative && await exists(getRuntimePaths().nativePython)) await startNativeRuntime(onLog);
   return getDataPaths();
 }
 
-export async function switchDataPath(id: string): Promise<DataPathEntry[]> {
+export async function switchDataPath(id: string, onLog: RuntimeLogSink = () => undefined): Promise<DataPathEntry[]> {
   const config = await readDataPathConfig();
   if (!config.entries.some((entry) => entry.id === id)) throw new Error("指定されたDataPathが見つかりません。");
+  if (config.activeId === id) return getDataPaths();
+  const previousPaths = getRuntimePaths();
+  const restartNative = Boolean(await managedComfyPidForPaths(previousPaths));
+  if (restartNative) await stopNativeRuntimeForPaths(previousPaths, onLog);
   config.activeId = id;
   await writeDataPathConfig(config);
+  if (restartNative && await exists(getRuntimePaths().nativePython)) await startNativeRuntime(onLog);
   return getDataPaths();
 }
 
@@ -1279,7 +1294,14 @@ export async function startNativeRuntime(onLog: RuntimeLogSink): Promise<string>
     throw new Error("macOS ComfyUI環境が未インストールです。先に「インストール」を実行してください。");
   }
   if (await checkComfy(`http://127.0.0.1:${comfyPort}`)) {
-    return "ComfyUI は既に接続可能です。";
+    const activePid = await managedComfyPidForPaths(paths);
+    if (activePid) return "ComfyUI は既に接続可能です。";
+    const stalePid = await findManagedComfyListenerPid();
+    if (!stalePid) {
+      throw new Error("ポート8188で別のComfyUIが動作しています。アプリ管理外のComfyUIを停止してから開始してください。");
+    }
+    onLog({ level: "info", line: `別DataPathのComfyUIを停止して切り替えます: pid=${stalePid}` });
+    await stopManagedComfyPid(stalePid, onLog);
   }
 
   await writeNativeExtraModelPaths(paths);
@@ -1322,10 +1344,26 @@ export async function startNativeRuntime(onLog: RuntimeLogSink): Promise<string>
 }
 
 export async function stopNativeRuntime(onLog: RuntimeLogSink): Promise<string> {
-  const pid = await readNativePid();
+  const paths = getRuntimePaths();
+  const pid = await managedComfyPidForPaths(paths) ?? await findManagedComfyListenerPid();
   if (!pid) {
-    return "macOS ComfyUI のPIDはありません。";
+    return "アプリ管理対象のmacOS ComfyUIは動作していません。";
   }
+  await stopManagedComfyPid(pid, onLog);
+  await unlink(paths.nativePid).catch(() => undefined);
+  nativeProcess = null;
+  return "macOS ComfyUI を停止しました。";
+}
+
+async function stopNativeRuntimeForPaths(paths: RuntimePaths, onLog: RuntimeLogSink): Promise<void> {
+  const pid = await managedComfyPidForPaths(paths);
+  if (!pid) return;
+  await stopManagedComfyPid(pid, onLog);
+  await unlink(paths.nativePid).catch(() => undefined);
+  nativeProcess = null;
+}
+
+async function stopManagedComfyPid(pid: number, onLog: RuntimeLogSink): Promise<void> {
   onLog({ level: "info", line: `macOS ComfyUI を停止します: pid=${pid}` });
   try {
     process.kill(pid, "SIGTERM");
@@ -1333,9 +1371,6 @@ export async function stopNativeRuntime(onLog: RuntimeLogSink): Promise<string> 
     onLog({ level: "stderr", line: normalizeCommandError(error) });
   }
   await delay(1500);
-  await unlink(getRuntimePaths().nativePid).catch(() => undefined);
-  nativeProcess = null;
-  return "macOS ComfyUI を停止しました。";
 }
 
 export async function showNativeLogs(onLog: RuntimeLogSink): Promise<string> {
@@ -4171,6 +4206,22 @@ function fetchFailureReason(name: string, code: string, message: string): string
   return "通信処理が失敗しました。ネットワーク環境とCivitai側の状態を確認してください。";
 }
 
+async function getComfyLoraNames(comfyUrl: string): Promise<Set<string> | null> {
+  try {
+    const response = await fetch(`${comfyUrl.replace(/\/$/, "")}/object_info/LoraLoader`, {
+      signal: AbortSignal.timeout(10000)
+    });
+    if (!response.ok) return null;
+    const json = await response.json() as {
+      LoraLoader?: { input?: { required?: { lora_name?: [string[]] } } };
+    };
+    const names = json.LoraLoader?.input?.required?.lora_name?.[0];
+    return Array.isArray(names) ? new Set(names.map(String)) : null;
+  } catch {
+    return null;
+  }
+}
+
 export async function runTestGeneration(request: TestGenerationRequest): Promise<TestGenerationResult> {
   const paths = getRuntimePaths();
   const modelInfo = await inspectModelFile(join(paths.checkpoints, request.checkpoint));
@@ -4191,6 +4242,24 @@ export async function runTestGeneration(request: TestGenerationRequest): Promise
         "今のテスト生成は、Checkpoint内蔵CLIP/VAE、または外部CLIP/VAE選択に対応しています。"
       ].join("\n")
     };
+  }
+  const requestedLoras = request.loras ?? [];
+  if (requestedLoras.length) {
+    const recognizedLoras = await getComfyLoraNames(request.comfyUrl);
+    if (recognizedLoras) {
+      const missingLoras = requestedLoras.filter((lora) => !recognizedLoras.has(lora.name)).map((lora) => lora.name);
+      if (missingLoras.length) {
+        return {
+          ok: false,
+          message: [
+            "選択したLoRAをComfyUIが認識していません。",
+            `未認識: ${missingLoras.join(", ")}`,
+            `現在のDataPath: ${paths.root}`,
+            "DataPath切替前のComfyUIが動いている可能性があります。環境タブでComfyUIを停止後、開始してください。"
+          ].join("\n")
+        };
+      }
+    }
   }
   const workflow = testWorkflowTemplate();
   workflow["4"].inputs.ckpt_name = request.checkpoint;
@@ -4214,7 +4283,7 @@ export async function runTestGeneration(request: TestGenerationRequest): Promise
     };
     workflow["8"].inputs.vae = ["10", 0];
   }
-  applyLorasToWorkflow(workflow, request.loras ?? [], clipSource);
+  applyLorasToWorkflow(workflow, requestedLoras, clipSource);
   workflow["6"].inputs.text = request.prompt;
   workflow["7"].inputs.text = request.negativePrompt;
   let positiveSource: [string, number] = ["6", 0];
@@ -5253,7 +5322,7 @@ async function waitForOllama(ollamaUrl: string, timeoutMs: number): Promise<bool
 }
 
 async function readNativePid(): Promise<number | null> {
-  return readPidFile(getRuntimePaths().nativePid);
+  return managedComfyPidForPaths(getRuntimePaths());
 }
 
 async function readPidFile(path: string): Promise<number | null> {
@@ -5267,14 +5336,49 @@ async function readPidFile(path: string): Promise<number | null> {
 }
 
 async function isNativeRunning(): Promise<boolean> {
-  const pid = await readNativePid();
-  if (!pid) return false;
+  return Boolean(await managedComfyPidForPaths(getRuntimePaths()));
+}
+
+async function processCommand(pid: number): Promise<string> {
   try {
-    process.kill(pid, 0);
-    return true;
+    const { stdout } = await execFileAsync("ps", ["-p", String(pid), "-o", "command="]);
+    return String(stdout).trim();
   } catch {
-    return false;
+    return "";
   }
+}
+
+function isManagedComfyCommand(command: string): boolean {
+  return /(?:^|\s)main\.py(?:\s|$)/.test(command) &&
+    command.includes("--listen 127.0.0.1") &&
+    command.includes(`--port ${comfyPort}`) &&
+    command.includes("--output-directory");
+}
+
+async function managedComfyPidForPaths(paths: RuntimePaths): Promise<number | null> {
+  const pid = await readPidFile(paths.nativePid);
+  if (pid) {
+    const command = await processCommand(pid);
+    if (isManagedComfyCommand(command) && command.includes(paths.outputs)) return pid;
+  }
+  const listenerPid = await findManagedComfyListenerPid();
+  if (!listenerPid) return null;
+  const command = await processCommand(listenerPid);
+  return command.includes(paths.outputs) ? listenerPid : null;
+}
+
+async function findManagedComfyListenerPid(): Promise<number | null> {
+  try {
+    const { stdout } = await execFileAsync("lsof", ["-nP", `-iTCP:${comfyPort}`, "-sTCP:LISTEN", "-t"]);
+    for (const value of String(stdout).split(/\s+/)) {
+      const pid = Number(value);
+      if (!Number.isInteger(pid) || pid <= 0) continue;
+      if (isManagedComfyCommand(await processCommand(pid))) return pid;
+    }
+  } catch {
+    return null;
+  }
+  return null;
 }
 
 async function sha256File(path: string): Promise<string> {

@@ -227,6 +227,9 @@ app.on("activate", async () => {
 });
 
 function registerIpc(): void {
+  const sendDataPathLog = (level: "info" | "stdout" | "stderr", line: string) => {
+    mainWindow?.webContents.send("runtime:operation-log", { id: "data-path-switch", level, line });
+  };
   ipcMain.handle("runtime:paths", () => getRuntimePaths());
   ipcMain.handle("runtime:data-paths", () => getDataPaths());
   ipcMain.handle("runtime:add-data-path", async () => {
@@ -236,7 +239,7 @@ function registerIpc(): void {
     };
     const result = mainWindow ? await dialog.showOpenDialog(mainWindow, options) : await dialog.showOpenDialog(options);
     if (result.canceled || !result.filePaths[0]) return getDataPaths();
-    return addDataPath(result.filePaths[0], { activate: true });
+    return addDataPath(result.filePaths[0], { activate: true }, (log) => sendDataPathLog(log.level, log.line));
   });
   ipcMain.handle("runtime:import-data-path", async () => {
     const options: OpenDialogOptions = {
@@ -247,7 +250,9 @@ function registerIpc(): void {
     if (result.canceled || !result.filePaths[0]) return getDataPaths();
     return addDataPath(result.filePaths[0], { activate: false });
   });
-  ipcMain.handle("runtime:switch-data-path", (_event, id: string) => switchDataPath(id));
+  ipcMain.handle("runtime:switch-data-path", (_event, id: string) =>
+    switchDataPath(id, (log) => sendDataPathLog(log.level, log.line))
+  );
   ipcMain.handle("runtime:delete-data-path", (_event, id: string) => deleteDataPath(id));
   ipcMain.handle("runtime:update-data-path-memo", (_event, request: { id: string; memo: string }) =>
     updateDataPathMemo(request.id, request.memo)
