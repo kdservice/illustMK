@@ -116,8 +116,8 @@ type CheckpointExternalSelection = {
 };
 type CheckpointRequiredComponents = Record<string, CivitaiRequiredComponent[]>;
 type CheckpointBaseModels = Record<string, string>;
-type PromptKind = "positive" | "negative";
-type TagPromptTarget = "japanese" | "positive";
+type PromptKind = "positive" | "negative" | "background-positive" | "background-negative";
+type TagPromptTarget = "japanese" | "positive" | "background-japanese" | "background-positive";
 type OptionPromptTag = {
   id: string;
   japanese: string;
@@ -137,11 +137,40 @@ type UsageSample = {
 };
 type SavedSceneCharacter = GenerationSceneCharacter & { savedAt: string };
 type SavedSceneBackground = GenerationSceneBackground & { savedAt: string };
-type GenerationScope = "character" | "scene";
+type GenerationScope = "character" | "background" | "scene";
 
 const savedSceneCharactersKey = "illustmk.savedSceneCharacters";
 const savedSceneBackgroundsKey = "illustmk.savedSceneBackgrounds";
 const defaultCharacterPlacement = { x: 50, y: 50, scale: 100, zIndex: 1 };
+
+function createDefaultSceneBackground(id: string = crypto.randomUUID()): GenerationSceneBackground {
+  return {
+    id,
+    title: "背景",
+    japanesePrompt: "",
+    prompt: "",
+    negativePrompt: "low quality, worst quality, blurry",
+    promptEnhanceMode: "balanced-detail",
+    promptNotes: "",
+    japanesePromptTagIds: [],
+    positivePromptTagIds: [],
+    positiveOptionTagIds: [],
+    negativeOptionTagIds: [],
+    referenceImageDataUrl: "",
+    referenceStrength: 0.7,
+    imageSizePreset: "768x1024",
+    width: 768,
+    height: 1024,
+    steps: 20,
+    cfg: 7,
+    seedMode: "random",
+    seedValue: -1
+  };
+}
+
+function normalizeSceneBackground(background: Partial<GenerationSceneBackground>): GenerationSceneBackground {
+  return { ...createDefaultSceneBackground(background.id), ...background };
+}
 
 function automaticCharacterX(index: number, total: number): number {
   return total > 0 ? Math.round(((index + 1) * 100) / (total + 1)) : 50;
@@ -436,6 +465,22 @@ function App() {
     () => optionPromptTags.filter((tag) => negativeOptionTagIds.includes(tag.id)),
     [negativeOptionTagIds, optionPromptTags]
   );
+  const backgroundJapanesePromptTags = useMemo(
+    () => illustrationTags.filter((tag) => sceneBackground?.japanesePromptTagIds.includes(tag.id)),
+    [illustrationTags, sceneBackground?.japanesePromptTagIds]
+  );
+  const backgroundPositivePromptTags = useMemo(
+    () => illustrationTags.filter((tag) => sceneBackground?.positivePromptTagIds.includes(tag.id)),
+    [illustrationTags, sceneBackground?.positivePromptTagIds]
+  );
+  const backgroundPositiveOptionTags = useMemo(
+    () => optionPromptTags.filter((tag) => sceneBackground?.positiveOptionTagIds.includes(tag.id)),
+    [optionPromptTags, sceneBackground?.positiveOptionTagIds]
+  );
+  const backgroundNegativeOptionTags = useMemo(
+    () => optionPromptTags.filter((tag) => sceneBackground?.negativeOptionTagIds.includes(tag.id)),
+    [optionPromptTags, sceneBackground?.negativeOptionTagIds]
+  );
   const availableLoraNames = useMemo(
     () => {
       const existingFiles = new Set((status?.loras ?? []).filter((lora) => !isStepLoraName(lora.name)).map((lora) => lora.name));
@@ -473,6 +518,7 @@ function App() {
   );
   const canGenerate = Boolean(status?.comfyReachable && selectedCheckpointGenerationReady && poseConditioningReady && !action.busy);
   const canGenerateCharacter = Boolean(canGenerate && activeSceneCharacter);
+  const canGenerateBackground = Boolean(canGenerate && sceneBackground);
   const canGenerateScene = Boolean(canGenerate && (sceneCharacters.length || sceneBackground));
   const canDownloadLlm = Boolean(ollamaStatus?.reachable && ollamaStatus.dataLinked && llmPullName.trim() && !action.busy);
   const canSendLlmPrompt = Boolean(ollamaStatus?.reachable && ollamaStatus.dataLinked && ollamaModel.trim() && llmPrompt.trim() && !action.busy);
@@ -493,6 +539,17 @@ function App() {
     if (!japanesePrompt.trim()) return "日本語プロンプトを入力してください。";
     return "変換できます。";
   }, [action.busy, japanesePrompt, ollamaModel, ollamaStatus]);
+  const canEnhanceBackgroundPrompt = Boolean(
+    ollamaStatus?.reachable && ollamaStatus.dataLinked && ollamaModel.trim() && sceneBackground?.japanesePrompt.trim() && !action.busy
+  );
+  const enhanceBackgroundPromptDisabledReason = useMemo(() => {
+    if (action.busy) return "処理中です。";
+    if (!ollamaStatus?.reachable) return "Ollama APIが未接続です。";
+    if (!ollamaStatus.dataLinked) return "Ollama保存先がDataPathに切替わっていません。";
+    if (!ollamaModel.trim()) return "LLMモデルを選択してください。";
+    if (!sceneBackground?.japanesePrompt.trim()) return "日本語プロンプトを入力してください。";
+    return "変換できます。";
+  }, [action.busy, ollamaModel, ollamaStatus, sceneBackground?.japanesePrompt]);
   const filteredLlmModels = useMemo(() => {
     const query = llmCatalogQuery.trim().toLowerCase();
     if (!query) return recommendedLlmModels;
@@ -516,7 +573,10 @@ function App() {
     void loadModelLibrary();
     void loadSavedPoses();
     setSavedSceneCharacters(readLocalArray<SavedSceneCharacter>(savedSceneCharactersKey));
-    setSavedSceneBackgrounds(readLocalArray<SavedSceneBackground>(savedSceneBackgroundsKey));
+    setSavedSceneBackgrounds(readLocalArray<SavedSceneBackground>(savedSceneBackgroundsKey).map((item) => ({
+      ...normalizeSceneBackground(item),
+      savedAt: item.savedAt
+    })));
   }, []);
 
   useEffect(() => {
@@ -1455,16 +1515,19 @@ function App() {
     if (settings?.scene) {
       const restoredScene = structuredClone(settings.scene);
       setSceneCharacters(restoredScene.characters);
-      setSceneBackground(restoredScene.background ?? null);
+      setSceneBackground(restoredScene.background ? normalizeSceneBackground(restoredScene.background) : null);
       const nextActiveId = restoredScene.activeItemId ?? restoredScene.characters[0]?.id ?? restoredScene.background?.id ?? null;
       setActiveSceneItemId(nextActiveId);
       restoredActiveCharacter = restoredScene.characters.find((character) => character.id === nextActiveId);
     }
     setRestoredGenerationSettings(settings ?? null);
-    setJapanesePrompt(settings?.japanesePrompt ?? entry.japanesePrompt ?? "");
-    setPrompt(settings?.prompt ?? entry.prompt);
-    setNegativePrompt(settings?.negativePrompt ?? entry.negativePrompt);
-    setPromptEnhanceMode(settings?.promptEnhanceMode ?? "balanced-detail");
+    const restoresBackground = settings?.generationScope === "background";
+    if (!restoresBackground) {
+      setJapanesePrompt(settings?.japanesePrompt ?? entry.japanesePrompt ?? "");
+      setPrompt(settings?.prompt ?? entry.prompt);
+      setNegativePrompt(settings?.negativePrompt ?? entry.negativePrompt);
+      setPromptEnhanceMode(settings?.promptEnhanceMode ?? "balanced-detail");
+    }
     setSelectedCheckpoint(settings?.checkpoint ?? entry.checkpoint);
     setSelectedVae(normalizeExistingAssetName(settings?.vae ?? entry.vae ?? "", status?.vae ?? []));
     setSelectedClip(normalizeExistingAssetName(settings?.clip ?? entry.clip ?? "", status?.clip ?? []));
@@ -1472,22 +1535,24 @@ function App() {
     const nextOllamaModel = settings?.ollamaModel ?? entry.llmModel;
     if (nextOllamaUrl) setOllamaUrl(nextOllamaUrl);
     if (nextOllamaModel) setOllamaModel(nextOllamaModel);
-    setJapanesePromptTagIds(settings?.japanesePromptTagIds ?? entry.japanesePromptTagIds ?? []);
-    setPositivePromptTagIds(settings?.positivePromptTagIds ?? entry.positivePromptTagIds ?? []);
-    setPositiveOptionTagIds(settings?.positiveOptionTagIds ?? entry.positiveOptionTagIds ?? []);
-    setNegativeOptionTagIds(settings?.negativeOptionTagIds ?? entry.negativeOptionTagIds ?? []);
-    setPositiveLoraTriggerIds(settings?.positiveLoraTriggerIds ?? entry.positiveLoraTriggerIds ?? []);
-    setSelectedLoras(settings?.loras ?? entry.loras ?? []);
-    setGenerationWidth(settings?.width ?? entry.width);
-    setGenerationHeight(settings?.height ?? entry.height);
-    setImageSizePreset(settings?.imageSizePreset ?? `${entry.width}x${entry.height}`);
-    setGenerationSteps(settings?.steps ?? entry.steps);
-    setGenerationCfg(settings?.cfg ?? entry.cfg);
-    setSeedMode(settings?.seedMode ?? (entry.seed >= 0 ? "fixed" : "random"));
-    setSeedValue(settings?.seedValue ?? entry.seed);
-    setPoseConditioning(normalizePoseConditioning(
-      settings?.poseConditioning ?? settings?.generationRequest?.poseConditioning
-    ));
+    if (!restoresBackground) {
+      setJapanesePromptTagIds(settings?.japanesePromptTagIds ?? entry.japanesePromptTagIds ?? []);
+      setPositivePromptTagIds(settings?.positivePromptTagIds ?? entry.positivePromptTagIds ?? []);
+      setPositiveOptionTagIds(settings?.positiveOptionTagIds ?? entry.positiveOptionTagIds ?? []);
+      setNegativeOptionTagIds(settings?.negativeOptionTagIds ?? entry.negativeOptionTagIds ?? []);
+      setPositiveLoraTriggerIds(settings?.positiveLoraTriggerIds ?? entry.positiveLoraTriggerIds ?? []);
+      setSelectedLoras(settings?.loras ?? entry.loras ?? []);
+      setGenerationWidth(settings?.width ?? entry.width);
+      setGenerationHeight(settings?.height ?? entry.height);
+      setImageSizePreset(settings?.imageSizePreset ?? `${entry.width}x${entry.height}`);
+      setGenerationSteps(settings?.steps ?? entry.steps);
+      setGenerationCfg(settings?.cfg ?? entry.cfg);
+      setSeedMode(settings?.seedMode ?? (entry.seed >= 0 ? "fixed" : "random"));
+      setSeedValue(settings?.seedValue ?? entry.seed);
+      setPoseConditioning(normalizePoseConditioning(
+        settings?.poseConditioning ?? settings?.generationRequest?.poseConditioning
+      ));
+    }
     if (settings?.baseFilters) setBaseFilters(settings.baseFilters);
     if (settings?.selectedModelAddMode === "catalog" || settings?.selectedModelAddMode === "url") setModelAddMode(settings.selectedModelAddMode);
     if (
@@ -1609,14 +1674,7 @@ function App() {
   function addSceneBackground(): void {
     const current = persistActiveSceneCharacter();
     setSceneCharacters(current);
-    const background = sceneBackground ?? {
-      id: crypto.randomUUID(),
-      title: "背景",
-      prompt: "",
-      negativePrompt: "",
-      referenceImageDataUrl: "",
-      referenceStrength: 0.7
-    };
+    const background = sceneBackground ?? createDefaultSceneBackground();
     setSceneBackground(background);
     setActiveSceneItemId(background.id);
     setSceneAddOpen(false);
@@ -1671,7 +1729,7 @@ function App() {
   }
 
   function restoreBackgroundPreset(saved: SavedSceneBackground): void {
-    const restored = { ...structuredClone(saved), id: sceneBackground?.id ?? crypto.randomUUID() };
+    const restored = normalizeSceneBackground({ ...structuredClone(saved), id: sceneBackground?.id ?? crypto.randomUUID() });
     setSceneBackground(restored);
     setActiveSceneItemId(restored.id);
     setSceneCharacters((current) => current.map((character, index) => ({
@@ -1725,7 +1783,7 @@ function App() {
   }
 
   function restoreBackgroundFromHistory(background: GenerationSceneBackground): void {
-    const restored = { ...structuredClone(background), id: sceneBackground?.id ?? crypto.randomUUID() };
+    const restored = normalizeSceneBackground({ ...structuredClone(background), id: sceneBackground?.id ?? crypto.randomUUID() });
     setSceneBackground(restored);
     setSceneCharacters((current) => current.map((character, index) => ({
       ...character,
@@ -1795,6 +1853,19 @@ function App() {
       setGenerationWidth(width);
       setGenerationHeight(height);
     }
+  }
+
+  function updateBackgroundImageSizePreset(value: string): void {
+    if (!sceneBackground) return;
+    if (value === "custom") {
+      updateSceneBackground({ imageSizePreset: value });
+      return;
+    }
+    const [width, height] = value.split("x").map(Number);
+    updateSceneBackground({
+      imageSizePreset: value,
+      ...(Number.isFinite(width) && Number.isFinite(height) ? { width, height } : {})
+    });
   }
 
   function openNewTagDialog(category = ""): void {
@@ -1891,6 +1962,22 @@ function App() {
   }
 
   function applyIllustrationTagToPrompt(tag: IllustrationTag): void {
+    if (tagPromptTarget === "background-positive") {
+      updateSceneBackground({
+        positivePromptTagIds: sceneBackground?.positivePromptTagIds.includes(tag.id)
+          ? sceneBackground.positivePromptTagIds
+          : [...(sceneBackground?.positivePromptTagIds ?? []), tag.id]
+      });
+      return;
+    }
+    if (tagPromptTarget === "background-japanese") {
+      updateSceneBackground({
+        japanesePromptTagIds: sceneBackground?.japanesePromptTagIds.includes(tag.id)
+          ? sceneBackground.japanesePromptTagIds
+          : [...(sceneBackground?.japanesePromptTagIds ?? []), tag.id]
+      });
+      return;
+    }
     if (tagPromptTarget === "positive") {
       setPositivePromptTagIds((current) => (current.includes(tag.id) ? current : [...current, tag.id]));
       return;
@@ -1938,11 +2025,31 @@ function App() {
     if (target) {
       setPositiveOptionTagIds((current) => current.filter((id) => id !== target.id));
       setNegativeOptionTagIds((current) => current.filter((id) => id !== target.id));
+      updateSceneBackground({
+        positiveOptionTagIds: sceneBackground?.positiveOptionTagIds.filter((id) => id !== target.id) ?? [],
+        negativeOptionTagIds: sceneBackground?.negativeOptionTagIds.filter((id) => id !== target.id) ?? []
+      });
     }
     setOptionTagEditorOpen(false);
   }
 
   function applyOptionPromptTag(tag: OptionPromptTag): void {
+    if (optionTagDialogTarget === "background-negative") {
+      updateSceneBackground({
+        negativeOptionTagIds: sceneBackground?.negativeOptionTagIds.includes(tag.id)
+          ? sceneBackground.negativeOptionTagIds
+          : [...(sceneBackground?.negativeOptionTagIds ?? []), tag.id]
+      });
+      return;
+    }
+    if (optionTagDialogTarget === "background-positive") {
+      updateSceneBackground({
+        positiveOptionTagIds: sceneBackground?.positiveOptionTagIds.includes(tag.id)
+          ? sceneBackground.positiveOptionTagIds
+          : [...(sceneBackground?.positiveOptionTagIds ?? []), tag.id]
+      });
+      return;
+    }
     if (optionTagDialogTarget === "negative") {
       setNegativeOptionTagIds((current) => (current.includes(tag.id) ? current : [...current, tag.id]));
       return;
@@ -1951,6 +2058,14 @@ function App() {
   }
 
   function removeOptionPromptTag(target: PromptKind, tag: OptionPromptTag): void {
+    if (target === "background-negative") {
+      updateSceneBackground({ negativeOptionTagIds: sceneBackground?.negativeOptionTagIds.filter((id) => id !== tag.id) ?? [] });
+      return;
+    }
+    if (target === "background-positive") {
+      updateSceneBackground({ positiveOptionTagIds: sceneBackground?.positiveOptionTagIds.filter((id) => id !== tag.id) ?? [] });
+      return;
+    }
     if (target === "negative") {
       setNegativeOptionTagIds((current) => current.filter((id) => id !== tag.id));
       return;
@@ -2401,6 +2516,31 @@ function App() {
     );
   }
 
+  async function enhanceBackgroundPrompt(): Promise<void> {
+    if (!sceneBackground) return;
+    await runAction(
+      "背景の日本語プロンプトを生成向けに変換中",
+      () => window.illustMK.ollama.enhancePrompt({
+        ollamaUrl,
+        model: ollamaModel,
+        japanesePrompt: sceneBackground.japanesePrompt,
+        currentPrompt: sceneBackground.prompt,
+        currentNegativePrompt: sceneBackground.negativePrompt,
+        selectedTags: backgroundJapanesePromptTags.map((tag) => ({
+          name: tag.name,
+          englishName: tag.englishName || tag.name,
+          englishDescription: tag.englishDescription
+        })),
+        mode: sceneBackground.promptEnhanceMode
+      }),
+      (result) => updateSceneBackground({
+        prompt: result.positivePrompt,
+        negativePrompt: result.negativePrompt,
+        promptNotes: result.notes
+      })
+    );
+  }
+
   function imageUrl(path: string): string {
     if (path.startsWith("data:")) return path;
     return `file://${path}`;
@@ -2497,6 +2637,22 @@ function App() {
     };
   }
 
+  function composeBackgroundRequest(background: GenerationSceneBackground): { prompt: string; negativePrompt: string } {
+    const positiveTags = illustrationTags
+      .filter((tag) => background.positivePromptTagIds.includes(tag.id))
+      .map((tag) => tag.englishDescription);
+    const positiveOptions = optionPromptTags
+      .filter((tag) => background.positiveOptionTagIds.includes(tag.id))
+      .map((tag) => tag.english);
+    const negativeOptions = optionPromptTags
+      .filter((tag) => background.negativeOptionTagIds.includes(tag.id))
+      .map((tag) => tag.english);
+    return {
+      prompt: composeGenerationPrompt(background.prompt, [...positiveTags, ...positiveOptions]),
+      negativePrompt: composeGenerationPrompt(background.negativePrompt, negativeOptions)
+    };
+  }
+
   function createGenerationRequest(scope: GenerationScope, seed: number, activePose = poseConditioning): TestGenerationRequest {
     const poseEnabled = activePose.enabled;
     const scene = currentGenerationScene();
@@ -2519,6 +2675,23 @@ function App() {
         poseConditioning: poseEnabled ? activePose : undefined
       };
     }
+    if (scope === "background" && scene.background) {
+      const backgroundRequest = composeBackgroundRequest(scene.background);
+      return {
+        prompt: backgroundRequest.prompt,
+        negativePrompt: backgroundRequest.negativePrompt,
+        checkpoint: selectedCheckpoint,
+        loras: [],
+        width: scene.background.width,
+        height: scene.background.height,
+        steps: scene.background.steps,
+        cfg: scene.background.cfg,
+        seed,
+        comfyUrl,
+        vae: selectedVae || undefined,
+        clip: selectedClip || undefined
+      };
+    }
     const sceneCharactersForRequest = scene.characters.map((character, index) => composeCharacterRequest(character, index));
     const regionalCharacters = scene.characters.map((character, index) => {
       const characterRequest = composeCharacterRequest(character, index, false);
@@ -2531,12 +2704,13 @@ function App() {
       };
     });
     const hasScene = sceneCharactersForRequest.length > 0 || Boolean(scene.background);
+    const backgroundRequest = scene.background ? composeBackgroundRequest(scene.background) : { prompt: "", negativePrompt: "" };
     const scenePrompt = composeGenerationPrompt(
-      scene.background?.prompt ?? "",
+      backgroundRequest.prompt,
       sceneCharactersForRequest.map((character) => character.prompt)
     );
     const sceneNegativePrompt = composeGenerationPrompt(
-      scene.background?.negativePrompt ?? "",
+      backgroundRequest.negativePrompt,
       sceneCharactersForRequest.map((character) => character.negativePrompt)
     );
     const sceneLoras = Array.from(new Map(
@@ -2557,8 +2731,8 @@ function App() {
       clip: selectedClip || undefined,
       poseConditioning: poseEnabled ? activePose : undefined,
       sceneConditioning: hasScene ? {
-        backgroundPrompt: scene.background?.prompt ?? "",
-        backgroundNegativePrompt: scene.background?.negativePrompt ?? "",
+        backgroundPrompt: backgroundRequest.prompt,
+        backgroundNegativePrompt: backgroundRequest.negativePrompt,
         characters: regionalCharacters
       } : undefined
     };
@@ -2567,6 +2741,14 @@ function App() {
   function nextGenerationSeed(): number {
     if (seedMode === "fixed" && seedValue >= 0) return seedValue;
     return Math.floor(Math.random() * Number.MAX_SAFE_INTEGER);
+  }
+
+  function nextGenerationSeedForScope(scope: GenerationScope): number {
+    if (scope === "background" && sceneBackground) {
+      if (sceneBackground.seedMode === "fixed" && sceneBackground.seedValue >= 0) return sceneBackground.seedValue;
+      return Math.floor(Math.random() * Number.MAX_SAFE_INTEGER);
+    }
+    return nextGenerationSeed();
   }
 
   function nextRandomSeed(excludes = new Set<number>()): number {
@@ -2589,18 +2771,19 @@ function App() {
       ...result,
       message: result.message ? `${result.message} (生成時間 ${durationText})` : `(生成時間 ${durationText})`
     };
+    const backgroundHistory = scope === "background" ? sceneBackground : null;
     const history = await window.illustMK.promptHistory.save({
       ...request,
-      prompt,
-      negativePrompt,
-      japanesePrompt,
+      prompt: backgroundHistory?.prompt ?? prompt,
+      negativePrompt: backgroundHistory?.negativePrompt ?? negativePrompt,
+      japanesePrompt: backgroundHistory?.japanesePrompt ?? japanesePrompt,
       llmModel: ollamaModel,
       llmUrl: ollamaUrl,
-      japanesePromptTagIds,
-      positivePromptTagIds,
-      positiveOptionTagIds,
-      negativeOptionTagIds,
-      positiveLoraTriggerIds,
+      japanesePromptTagIds: backgroundHistory?.japanesePromptTagIds ?? japanesePromptTagIds,
+      positivePromptTagIds: backgroundHistory?.positivePromptTagIds ?? positivePromptTagIds,
+      positiveOptionTagIds: backgroundHistory?.positiveOptionTagIds ?? positiveOptionTagIds,
+      negativeOptionTagIds: backgroundHistory?.negativeOptionTagIds ?? negativeOptionTagIds,
+      positiveLoraTriggerIds: backgroundHistory ? [] : positiveLoraTriggerIds,
       memo: imageMemo,
       generationSettings: buildGenerationHistorySettings(request, scope),
       imagePath: result.imagePath,
@@ -2616,10 +2799,10 @@ function App() {
   }
 
   async function runSingleGenerate(scope: GenerationScope): Promise<void> {
-    const allowed = scope === "character" ? canGenerateCharacter : canGenerateScene;
+    const allowed = scope === "character" ? canGenerateCharacter : scope === "background" ? canGenerateBackground : canGenerateScene;
     if (!allowed) return;
     await runAction(
-      scope === "character" ? "キャラクタを生成中" : "シーンを総合生成中",
+      scope === "character" ? "キャラクタを生成中" : scope === "background" ? "背景を生成中" : "シーンを総合生成中",
       async () => {
         const startedAt = performance.now();
         const restoredScope = restoredGenerationSettings?.generationScope ?? "character";
@@ -2627,25 +2810,27 @@ function App() {
           restoredRequestApplies &&
           restoredGenerationSettings?.generationRequest &&
           restoredScope === scope &&
-          (scope === "scene" || restoredGenerationSettings?.targetCharacterId === activeSceneCharacter?.id)
+          (scope !== "character" || restoredGenerationSettings?.targetCharacterId === activeSceneCharacter?.id)
         );
         const sourcePose = normalizePoseConditioning(
-          usesRestoredRequest ? testRequest.poseConditioning : poseConditioning
+          scope === "background" ? undefined : usesRestoredRequest ? testRequest.poseConditioning : poseConditioning
         );
         const analyzedPose = await ensurePoseAnalysis(sourcePose);
         const rawRequest = usesRestoredRequest
           ? { ...testRequest, poseConditioning: analyzedPose.enabled ? analyzedPose : undefined }
-          : createGenerationRequest(scope, nextGenerationSeed(), analyzedPose);
+          : createGenerationRequest(scope, nextGenerationSeedForScope(scope), analyzedPose);
         const request = requestWithConcreteSeed(rawRequest);
         const seedSource = usesRestoredRequest
           ? rawRequest.seed >= 0
             ? "history.generationSettings.generationRequest.seed"
             : "history.generationSettings.generationRequest.seed was negative; app generated concrete seed"
-          : seedMode === "fixed" && seedValue >= 0
+          : scope === "background" && sceneBackground?.seedMode === "fixed" && sceneBackground.seedValue >= 0
+            ? "background.seedValue"
+            : seedMode === "fixed" && seedValue >= 0
             ? "ui.seedValue"
             : "app generated random seed";
         const historySettings = buildGenerationHistorySettings(request, scope);
-        appendLog("info", `生成種別: ${scope === "character" ? `キャラクタ (${activeSceneCharacter?.title ?? "未選択"})` : "総合"}`);
+        appendLog("info", `生成種別: ${scope === "character" ? `キャラクタ (${activeSceneCharacter?.title ?? "未選択"})` : scope === "background" ? `背景 (${sceneBackground?.title ?? "未選択"})` : "総合"}`);
         appendGenerationDiagnostics(usesRestoredRequest ? "history-restored" : "manual-ui", rawRequest, request, seedSource, historySettings);
         const requestLoras = request.loras ?? [];
         appendLog("info", `ComfyUI Positive Prompt: ${request.prompt}`);
@@ -2664,7 +2849,7 @@ function App() {
   }
 
   async function runRepeatGenerate(scope: GenerationScope): Promise<void> {
-    if (repeatRunning || (scope === "character" ? !canGenerateCharacter : !canGenerateScene)) return;
+    if (repeatRunning || (scope === "character" ? !canGenerateCharacter : scope === "background" ? !canGenerateBackground : !canGenerateScene)) return;
     let repeatPose: PoseConditioning;
     try {
       repeatPose = await ensurePoseAnalysis(poseConditioning);
@@ -2681,7 +2866,8 @@ function App() {
     setRepeatPaused(false);
     repeatStopRequested.current = false;
     repeatPausedRef.current = false;
-    appendLog("info", `${scope === "character" ? "キャラクタ" : "総合"}リピート生成を開始しました。`);
+    const scopeLabel = scope === "character" ? "キャラクタ" : scope === "background" ? "背景" : "総合";
+    appendLog("info", `${scopeLabel}リピート生成を開始しました。`);
     const usedSeeds = new Set<number>();
     try {
       while (!repeatStopRequested.current) {
@@ -2694,7 +2880,7 @@ function App() {
         setRepeatItems((current) => [{ id: itemId, seed, startedAt: new Date().toISOString() }, ...current]);
         try {
           const startedAt = performance.now();
-          appendLog("info", `${scope === "character" ? "Character" : "Scene"} Repeat Generate Seed: ${seed}`);
+          appendLog("info", `${scope === "character" ? "Character" : scope === "background" ? "Background" : "Scene"} Repeat Generate Seed: ${seed}`);
           appendGenerationDiagnostics("manual-ui", request, request, "repeat generated random seed", buildGenerationHistorySettings(request, scope));
           const requestLoras = request.loras ?? [];
           appendLog("info", `ComfyUI Positive Prompt: ${request.prompt}`);
@@ -2722,7 +2908,7 @@ function App() {
       setRepeatPaused(false);
       repeatStopRequested.current = false;
       repeatPausedRef.current = false;
-      appendLog("info", `${scope === "character" ? "キャラクタ" : "総合"}リピート生成を停止しました。`);
+      appendLog("info", `${scopeLabel}リピート生成を停止しました。`);
     }
   }
 
@@ -2737,18 +2923,19 @@ function App() {
     seedSource: string,
     historySettings: PromptGenerationSettings
   ): void {
+    const manualPrefix = historySettings.generationScope === "background" ? "sceneBackground" : "ui";
     const sourceMap = {
       route,
-      prompt: route === "history-restored" ? "history.generationSettings.generationRequest.prompt" : "ui.effectivePrompt",
-      negativePrompt: route === "history-restored" ? "history.generationSettings.generationRequest.negativePrompt" : "ui.effectiveNegativePrompt",
+      prompt: route === "history-restored" ? "history.generationSettings.generationRequest.prompt" : `${manualPrefix}.effectivePrompt`,
+      negativePrompt: route === "history-restored" ? "history.generationSettings.generationRequest.negativePrompt" : `${manualPrefix}.effectiveNegativePrompt`,
       checkpoint: route === "history-restored" ? "history.generationSettings.generationRequest.checkpoint" : "ui.selectedCheckpoint",
       vae: route === "history-restored" ? "history.generationSettings.generationRequest.vae" : "ui.selectedVae",
       clip: route === "history-restored" ? "history.generationSettings.generationRequest.clip" : "ui.selectedClip",
-      loras: route === "history-restored" ? "history.generationSettings.generationRequest.loras" : "ui.activeGenerationLoras",
-      width: route === "history-restored" ? "history.generationSettings.generationRequest.width" : "ui.generationWidth",
-      height: route === "history-restored" ? "history.generationSettings.generationRequest.height" : "ui.generationHeight",
-      steps: route === "history-restored" ? "history.generationSettings.generationRequest.steps" : "ui.generationSteps",
-      cfg: route === "history-restored" ? "history.generationSettings.generationRequest.cfg" : "ui.generationCfg",
+      loras: route === "history-restored" ? "history.generationSettings.generationRequest.loras" : historySettings.generationScope === "background" ? "background generation does not apply LoRA" : "ui.activeGenerationLoras",
+      width: route === "history-restored" ? "history.generationSettings.generationRequest.width" : `${manualPrefix}.width`,
+      height: route === "history-restored" ? "history.generationSettings.generationRequest.height" : `${manualPrefix}.height`,
+      steps: route === "history-restored" ? "history.generationSettings.generationRequest.steps" : `${manualPrefix}.steps`,
+      cfg: route === "history-restored" ? "history.generationSettings.generationRequest.cfg" : `${manualPrefix}.cfg`,
       seed: seedSource,
       comfyUrl: route === "history-restored" ? "history.generationSettings.generationRequest.comfyUrl" : "ui.comfyUrl"
     };
@@ -2887,29 +3074,30 @@ function App() {
     : currentTestRequest;
 
   function buildGenerationHistorySettings(request: TestGenerationRequest, scope: GenerationScope): PromptGenerationSettings {
+    const background = scope === "background" ? sceneBackground : null;
     return {
       generationRequest: request,
       generationScope: scope,
       targetCharacterId: scope === "character" ? activeSceneCharacter?.id : undefined,
       targetCharacterTitle: scope === "character" ? activeSceneCharacter?.title : undefined,
-      japanesePrompt,
-      prompt,
+      japanesePrompt: background?.japanesePrompt ?? japanesePrompt,
+      prompt: background?.prompt ?? prompt,
       effectivePrompt: request.prompt,
-      negativePrompt,
+      negativePrompt: background?.negativePrompt ?? negativePrompt,
       effectiveNegativePrompt: request.negativePrompt,
-      promptEnhanceMode,
+      promptEnhanceMode: background?.promptEnhanceMode ?? promptEnhanceMode,
       checkpoint: selectedCheckpoint,
       vae: selectedVae,
       clip: selectedClip,
-      loras: selectedLoras,
-      japanesePromptTagIds,
-      positivePromptTagIds,
-      positiveOptionTagIds,
-      negativeOptionTagIds,
-      positiveLoraTriggerIds,
-      width: generationWidth,
-      height: generationHeight,
-      imageSizePreset,
+      loras: background ? [] : selectedLoras,
+      japanesePromptTagIds: background?.japanesePromptTagIds ?? japanesePromptTagIds,
+      positivePromptTagIds: background?.positivePromptTagIds ?? positivePromptTagIds,
+      positiveOptionTagIds: background?.positiveOptionTagIds ?? positiveOptionTagIds,
+      negativeOptionTagIds: background?.negativeOptionTagIds ?? negativeOptionTagIds,
+      positiveLoraTriggerIds: background ? [] : positiveLoraTriggerIds,
+      width: background?.width ?? generationWidth,
+      height: background?.height ?? generationHeight,
+      imageSizePreset: background?.imageSizePreset ?? imageSizePreset,
       steps: request.steps,
       cfg: request.cfg,
       seedMode: "fixed",
@@ -4144,13 +4332,76 @@ function App() {
                   <input value={sceneBackground.title} onChange={(event) => updateSceneBackground({ title: event.target.value })} />
                 </div>
                 <div className="field">
-                  <label>情景・背景プロンプト</label>
-                  <textarea rows={7} value={sceneBackground.prompt} onChange={(event) => updateSceneBackground({ prompt: event.target.value })} />
+                  <div className="prompt-field-header">
+                    <label>Japanese Prompt</label>
+                    <button onClick={() => setPromptHistoryOpen(true)}><RefreshCw size={15} />履歴</button>
+                    <button onClick={() => setTagPromptTarget("background-japanese")}><WandSparkles size={15} />背景タグ</button>
+                  </div>
+                  <textarea rows={6} value={sceneBackground.japanesePrompt} onChange={(event) => updateSceneBackground({ japanesePrompt: event.target.value })} />
+                  <AppliedIllustrationTags
+                    target="background-japanese"
+                    tags={backgroundJapanesePromptTags}
+                    onRemove={(_, tag) => updateSceneBackground({ japanesePromptTagIds: sceneBackground.japanesePromptTagIds.filter((id) => id !== tag.id) })}
+                  />
                 </div>
                 <div className="field">
-                  <label>背景用 Negative Prompt</label>
-                  <textarea rows={4} value={sceneBackground.negativePrompt} onChange={(event) => updateSceneBackground({ negativePrompt: event.target.value })} />
+                  <label>変換モード</label>
+                  <select value={sceneBackground.promptEnhanceMode} onChange={(event) => updateSceneBackground({ promptEnhanceMode: event.target.value as PromptEnhanceMode })}>
+                    <option value="balanced-detail">おすすめ: 本文 + 脚注/定義を反映</option>
+                    <option value="footnote-strict">脚注重視: 定義文を強制採用</option>
+                    <option value="main-subject">本文重視: 主文を優先</option>
+                    <option value="tag-dense">タグ密度重視: 細かいタグへ分解</option>
+                  </select>
                 </div>
+                <button className="primary" disabled={!canEnhanceBackgroundPrompt} title={enhanceBackgroundPromptDisabledReason} onClick={() => void enhanceBackgroundPrompt()}>
+                  <Bot size={17} />日本語から背景Positive / Negativeへ変換
+                </button>
+                <p className={canEnhanceBackgroundPrompt ? "result-message ready" : "result-message"}>{enhanceBackgroundPromptDisabledReason}</p>
+                {sceneBackground.promptNotes ? <p className="result-message">{sceneBackground.promptNotes}</p> : null}
+                <div className="field">
+                  <div className="prompt-field-header">
+                    <label>Positive Prompt</label>
+                    <button onClick={() => setTagPromptTarget("background-positive")}><WandSparkles size={15} />背景タグ</button>
+                    <button onClick={() => setOptionTagDialogTarget("background-positive")}><WandSparkles size={15} />オプションタグ</button>
+                  </div>
+                  <textarea rows={6} value={sceneBackground.prompt} onChange={(event) => updateSceneBackground({ prompt: event.target.value })} />
+                  <AppliedIllustrationTags
+                    target="background-positive"
+                    tags={backgroundPositivePromptTags}
+                    onRemove={(_, tag) => updateSceneBackground({ positivePromptTagIds: sceneBackground.positivePromptTagIds.filter((id) => id !== tag.id) })}
+                  />
+                  <AppliedOptionTags target="background-positive" tags={backgroundPositiveOptionTags} onRemove={removeOptionPromptTag} />
+                </div>
+                <div className="field">
+                  <div className="prompt-field-header">
+                    <label>Negative Prompt</label>
+                    <button onClick={() => setOptionTagDialogTarget("background-negative")}><WandSparkles size={15} />オプションタグ</button>
+                  </div>
+                  <textarea rows={4} value={sceneBackground.negativePrompt} onChange={(event) => updateSceneBackground({ negativePrompt: event.target.value })} />
+                  <AppliedOptionTags target="background-negative" tags={backgroundNegativeOptionTags} onRemove={removeOptionPromptTag} />
+                </div>
+                <section className="background-generation-options">
+                  <strong>生成オプション</strong>
+                  <div className="field">
+                    <label>画像サイズ</label>
+                    <select value={sceneBackground.imageSizePreset} onChange={(event) => updateBackgroundImageSizePreset(event.target.value)}>
+                      <option value="1024x1024">正方形 1024 x 1024</option>
+                      <option value="768x1024">縦 768 x 1024</option>
+                      <option value="1024x768">横 1024 x 768</option>
+                      <option value="custom">カスタム</option>
+                    </select>
+                  </div>
+                  <div className="background-options-grid">
+                    <div className="field"><label>Width</label><input type="number" min="64" step="64" value={sceneBackground.width} onChange={(event) => updateSceneBackground({ width: Number(event.target.value), imageSizePreset: "custom" })} /></div>
+                    <div className="field"><label>Height</label><input type="number" min="64" step="64" value={sceneBackground.height} onChange={(event) => updateSceneBackground({ height: Number(event.target.value), imageSizePreset: "custom" })} /></div>
+                    <div className="field"><label>Steps</label><input type="number" min="1" max="150" value={sceneBackground.steps} onChange={(event) => updateSceneBackground({ steps: Number(event.target.value) })} /></div>
+                    <div className="field"><label>CFG</label><input type="number" min="1" max="30" step="0.5" value={sceneBackground.cfg} onChange={(event) => updateSceneBackground({ cfg: Number(event.target.value) })} /></div>
+                  </div>
+                  <div className="background-options-grid seed-options">
+                    <div className="field"><label>Seed</label><select value={sceneBackground.seedMode} onChange={(event) => updateSceneBackground({ seedMode: event.target.value as "random" | "fixed" })}><option value="random">Random</option><option value="fixed">Fixed</option></select></div>
+                    <div className="field"><label>Seed Value</label><input type="number" disabled={sceneBackground.seedMode === "random"} value={sceneBackground.seedValue} onChange={(event) => updateSceneBackground({ seedValue: Number(event.target.value) })} /></div>
+                  </div>
+                </section>
                 <div className="scene-reference-grid">
                   <div className="scene-reference-preview">
                     {sceneBackground.referenceImageDataUrl ? (
@@ -4178,6 +4429,10 @@ function App() {
                 <div className="button-row">
                   <button onClick={() => setBackgroundLibraryOpen(true)}><RefreshCw size={16} />保存済み背景から復元</button>
                   <button className="primary" onClick={saveBackgroundPreset}><Save size={16} />背景を保存</button>
+                </div>
+                <div className="background-generation-actions">
+                  <button className="generate" disabled={!canGenerateBackground} onClick={() => void runSingleGenerate("background")}><WandSparkles size={18} />背景生成</button>
+                  <button className="generate secondary-generate" disabled={!canGenerateBackground || repeatRunning} onClick={() => void runRepeatGenerate("background")}><RefreshCw size={18} />背景リピート生成</button>
                 </div>
               </div>
             ) : activeSceneCharacter ? (
@@ -4627,7 +4882,10 @@ function App() {
         <div className="modal-backdrop">
           <section className="modal-panel option-tag-modal">
             <div className="modal-header">
-              <PanelTitle icon={<WandSparkles size={18} />} title={`${optionTagDialogTarget === "positive" ? "Positive" : "Negative"} オプションタグ`} />
+              <PanelTitle
+                icon={<WandSparkles size={18} />}
+                title={`${optionTagDialogTarget.startsWith("background-") ? "背景 " : ""}${optionTagDialogTarget.endsWith("positive") ? "Positive" : "Negative"} オプションタグ`}
+              />
               <button className="icon-button" onClick={() => setOptionTagDialogTarget(null)} title="閉じる">
                 <Square size={16} />
               </button>
@@ -4873,6 +5131,8 @@ function App() {
                         <span>
                           {entry.generationSettings?.generationScope === "scene"
                             ? "総合"
+                            : entry.generationSettings?.generationScope === "background"
+                              ? `背景: ${entry.generationSettings.scene?.background?.title ?? "名称未記録"}`
                             : entry.generationSettings?.generationScope === "character"
                               ? `キャラクタ: ${entry.generationSettings.targetCharacterTitle ?? "名称未記録"}`
                               : "従来生成"}

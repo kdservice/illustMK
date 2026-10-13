@@ -665,10 +665,24 @@ export type GenerationSceneCharacter = {
 export type GenerationSceneBackground = {
   id: string;
   title: string;
+  japanesePrompt: string;
   prompt: string;
   negativePrompt: string;
+  promptEnhanceMode: PromptEnhanceMode;
+  promptNotes: string;
+  japanesePromptTagIds: string[];
+  positivePromptTagIds: string[];
+  positiveOptionTagIds: string[];
+  negativeOptionTagIds: string[];
   referenceImageDataUrl: string;
   referenceStrength: number;
+  imageSizePreset: string;
+  width: number;
+  height: number;
+  steps: number;
+  cfg: number;
+  seedMode: "random" | "fixed";
+  seedValue: number;
 };
 
 export type GenerationSceneSettings = {
@@ -694,7 +708,7 @@ export type SavePromptHistoryRequest = TestGenerationRequest & {
 
 export type PromptGenerationSettings = {
   generationRequest?: TestGenerationRequest;
-  generationScope?: "character" | "scene";
+  generationScope?: "character" | "background" | "scene";
   targetCharacterId?: string;
   targetCharacterTitle?: string;
   japanesePrompt: string;

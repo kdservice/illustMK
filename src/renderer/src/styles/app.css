@@ -580,6 +580,7 @@ label {
 }
 
 .character-generation-actions,
+.background-generation-actions,
 .preview-generation-actions {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -595,7 +596,16 @@ label {
   background: #081125;
 }
 
+.background-generation-actions {
+  position: sticky;
+  bottom: 0;
+  z-index: 4;
+  padding-top: 12px;
+  background: #081125;
+}
+
 .character-generation-actions .generate,
+.background-generation-actions .generate,
 .preview-generation-actions .generate {
   width: 100%;
 }
@@ -650,6 +660,25 @@ label {
   display: grid;
   align-content: start;
   gap: 14px;
+}
+
+.background-generation-options {
+  display: grid;
+  gap: 10px;
+  padding: 12px;
+  border: 1px solid #1c2d53;
+  border-radius: 6px;
+  background: #071021;
+}
+
+.background-options-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(100px, 1fr));
+  gap: 10px;
+}
+
+.background-options-grid.seed-options {
+  grid-template-columns: repeat(2, minmax(160px, 1fr));
 }
 
 .scene-editor-heading {
