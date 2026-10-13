@@ -579,6 +579,27 @@ label {
   flex-direction: column;
 }
 
+.character-generation-actions,
+.preview-generation-actions {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.character-generation-actions {
+  position: sticky;
+  bottom: 0;
+  z-index: 4;
+  margin-top: auto;
+  padding-top: 12px;
+  background: #081125;
+}
+
+.character-generation-actions .generate,
+.preview-generation-actions .generate {
+  width: 100%;
+}
+
 .scene-item-tabs {
   display: flex;
   flex: 0 0 auto;
@@ -3277,6 +3298,7 @@ label {
 
 .preview-panel {
   display: grid;
+  grid-template-rows: auto minmax(0, 1fr) auto auto;
   gap: 12px;
 }
 

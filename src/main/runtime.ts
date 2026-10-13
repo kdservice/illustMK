@@ -679,6 +679,9 @@ export type SavePromptHistoryRequest = TestGenerationRequest & {
 
 export type PromptGenerationSettings = {
   generationRequest?: TestGenerationRequest;
+  generationScope?: "character" | "scene";
+  targetCharacterId?: string;
+  targetCharacterTitle?: string;
   japanesePrompt: string;
   prompt: string;
   effectivePrompt: string;
@@ -4301,12 +4304,14 @@ export async function runTestGeneration(request: TestGenerationRequest): Promise
       };
     }
     const historyImage = findPromptHistoryImage(history, paths.outputs);
-    if (historyImage && (await exists(historyImage))) {
+    if (historyImage) {
+      const resolvedImage = await resolvePromptHistoryImage(request.comfyUrl, historyImage);
+      if (!resolvedImage) continue;
       return {
         ok: true,
         message: "テスト生成が完了しました。",
-        imagePath: historyImage,
-        imageDataUrl: await imageDataUrl(historyImage),
+        imagePath: resolvedImage.path,
+        imageDataUrl: resolvedImage.dataUrl,
         promptId
       };
     }
@@ -4350,7 +4355,14 @@ async function uploadPoseImage(comfyUrl: string, imageDataUrl: string): Promise<
   return json.subfolder ? `${json.subfolder}/${json.name}` : json.name;
 }
 
-function findPromptHistoryImage(history: unknown, outputsDir: string): string | null {
+type PromptHistoryImage = {
+  path: string;
+  filename: string;
+  subfolder: string;
+  type: string;
+};
+
+function findPromptHistoryImage(history: unknown, outputsDir: string): PromptHistoryImage | null {
   if (!history || typeof history !== "object") return null;
   const root = history as Record<string, unknown>;
   for (const entry of Object.values(root)) {
@@ -4368,11 +4380,49 @@ function findPromptHistoryImage(history: unknown, outputsDir: string): string | 
         const subfolder = typeof imageRecord.subfolder === "string" ? imageRecord.subfolder : "";
         const type = typeof imageRecord.type === "string" ? imageRecord.type : "output";
         if (type !== "output" || !/\.(png|jpe?g|webp)$/i.test(filename)) continue;
-        return join(outputsDir, subfolder, filename);
+        const safeSubfolder = subfolder
+          .split(/[\\/]+/)
+          .filter((part) => part && part !== "." && part !== "..")
+          .join("/");
+        return {
+          path: join(outputsDir, safeSubfolder, basename(filename)),
+          filename,
+          subfolder,
+          type
+        };
       }
     }
   }
   return null;
+}
+
+async function resolvePromptHistoryImage(
+  comfyUrl: string,
+  image: PromptHistoryImage
+): Promise<{ path: string; dataUrl: string } | null> {
+  if (await exists(image.path)) {
+    return { path: image.path, dataUrl: await imageDataUrl(image.path) };
+  }
+
+  try {
+    const query = new URLSearchParams({
+      filename: image.filename,
+      subfolder: image.subfolder,
+      type: image.type
+    });
+    const response = await fetch(`${comfyUrl.replace(/\/$/, "")}/view?${query.toString()}`);
+    if (!response.ok) return null;
+    const data = Buffer.from(await response.arrayBuffer());
+    const mime = response.headers.get("content-type")?.split(";")[0] || imageMimeType(image.filename);
+    await mkdir(dirname(image.path), { recursive: true });
+    await writeFile(image.path, data);
+    return {
+      path: image.path,
+      dataUrl: `data:${mime};base64,${data.toString("base64")}`
+    };
+  } catch {
+    return null;
+  }
 }
 
 function applyLorasToWorkflow(
@@ -4404,10 +4454,14 @@ function applyLorasToWorkflow(
 }
 
 async function imageDataUrl(path: string): Promise<string> {
-  const ext = path.toLowerCase().split(".").pop();
-  const mime = ext === "jpg" || ext === "jpeg" ? "image/jpeg" : ext === "webp" ? "image/webp" : "image/png";
+  const mime = imageMimeType(path);
   const data = await readFile(path);
   return `data:${mime};base64,${data.toString("base64")}`;
+}
+
+function imageMimeType(path: string): string {
+  const ext = path.toLowerCase().split(".").pop();
+  return ext === "jpg" || ext === "jpeg" ? "image/jpeg" : ext === "webp" ? "image/webp" : "image/png";
 }
 
 async function getPromptHistory(comfyUrl: string, promptId: string): Promise<unknown> {

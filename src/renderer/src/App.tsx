@@ -137,6 +137,7 @@ type UsageSample = {
 };
 type SavedSceneCharacter = GenerationSceneCharacter & { savedAt: string };
 type SavedSceneBackground = GenerationSceneBackground & { savedAt: string };
+type GenerationScope = "character" | "scene";
 
 const savedSceneCharactersKey = "illustmk.savedSceneCharacters";
 const savedSceneBackgroundsKey = "illustmk.savedSceneBackgrounds";
@@ -467,6 +468,8 @@ function App() {
     ))
   );
   const canGenerate = Boolean(status?.comfyReachable && selectedCheckpointGenerationReady && poseConditioningReady && !action.busy);
+  const canGenerateCharacter = Boolean(canGenerate && activeSceneCharacter);
+  const canGenerateScene = Boolean(canGenerate && (sceneCharacters.length || sceneBackground));
   const canDownloadLlm = Boolean(ollamaStatus?.reachable && ollamaStatus.dataLinked && llmPullName.trim() && !action.busy);
   const canSendLlmPrompt = Boolean(ollamaStatus?.reachable && ollamaStatus.dataLinked && ollamaModel.trim() && llmPrompt.trim() && !action.busy);
   const llmPromptDisabledReason = useMemo(() => {
@@ -2448,7 +2451,7 @@ function App() {
     setBaseFilters((current) => (current.includes(filter) ? current.filter((item) => item !== filter) : [...current, filter]));
   }
 
-  function composeCharacterRequest(character: GenerationSceneCharacter, index: number): { prompt: string; negativePrompt: string } {
+  function composeCharacterRequest(character: GenerationSceneCharacter, index: number, includePlacement = true): { prompt: string; negativePrompt: string } {
     const settings = character.settings;
     const positiveTags = illustrationTags
       .filter((tag) => settings.positivePromptTagIds.includes(tag.id))
@@ -2466,17 +2469,38 @@ function App() {
       );
     });
     const placement = character.placement;
-    const placementPrompt = `character ${index + 1} ${character.title}, position x ${placement.x} percent, y ${placement.y} percent, scale ${placement.scale} percent, layer ${placement.zIndex}`;
+    const placementPrompt = includePlacement
+      ? `character ${index + 1} ${character.title}, position x ${placement.x} percent, y ${placement.y} percent, scale ${placement.scale} percent, layer ${placement.zIndex}`
+      : `character ${character.title}`;
     return {
       prompt: composeGenerationPrompt(settings.prompt, [...positiveTags, ...positiveOptions, ...triggerWords, placementPrompt]),
       negativePrompt: composeGenerationPrompt(settings.negativePrompt, negativeOptions)
     };
   }
 
-  function createGenerationRequest(seed: number, activePose = poseConditioning): TestGenerationRequest {
+  function createGenerationRequest(scope: GenerationScope, seed: number, activePose = poseConditioning): TestGenerationRequest {
     const poseEnabled = activePose.enabled;
     const scene = currentGenerationScene();
-    const sceneCharactersForRequest = scene.characters.map(composeCharacterRequest);
+    const targetCharacter = scene.characters.find((character) => character.id === activeSceneItemId);
+    if (scope === "character" && targetCharacter) {
+      const characterRequest = composeCharacterRequest(targetCharacter, 0, false);
+      return {
+        prompt: composeGenerationPrompt(characterRequest.prompt, poseEnabled ? [activePose.positivePrompt ?? ""] : []),
+        negativePrompt: composeGenerationPrompt(characterRequest.negativePrompt, poseEnabled ? [activePose.negativePrompt ?? ""] : []),
+        checkpoint: selectedCheckpoint,
+        loras: targetCharacter.settings.loras.filter((lora) => availableLoraNames.has(lora.name)),
+        width: generationWidth,
+        height: generationHeight,
+        steps: generationSteps,
+        cfg: generationCfg,
+        seed,
+        comfyUrl,
+        vae: selectedVae || undefined,
+        clip: selectedClip || undefined,
+        poseConditioning: poseEnabled ? activePose : undefined
+      };
+    }
+    const sceneCharactersForRequest = scene.characters.map((character, index) => composeCharacterRequest(character, index));
     const hasScene = sceneCharactersForRequest.length > 0 || Boolean(scene.background);
     const scenePrompt = composeGenerationPrompt(
       scene.background?.prompt ?? "",
@@ -2523,7 +2547,7 @@ function App() {
     return request.seed >= 0 ? request : { ...request, seed: nextGenerationSeed() };
   }
 
-  async function generateAndSave(request: TestGenerationRequest, startedAt: number): Promise<{ result: TestGenerationResult; history: PromptHistoryEntry[]; durationText: string }> {
+  async function generateAndSave(request: TestGenerationRequest, startedAt: number, scope: GenerationScope): Promise<{ result: TestGenerationResult; history: PromptHistoryEntry[]; durationText: string }> {
     const result = await window.illustMK.runtime.testGenerate(request);
     appendLog("info", `ComfyUI Prompt ID: ${result.promptId ?? "なし"}`);
     const durationText = formatGenerationDuration(performance.now() - startedAt);
@@ -2544,7 +2568,7 @@ function App() {
       negativeOptionTagIds,
       positiveLoraTriggerIds,
       memo: imageMemo,
-      generationSettings: buildGenerationHistorySettings(request),
+      generationSettings: buildGenerationHistorySettings(request, scope),
       imagePath: result.imagePath,
       imageDataUrl: result.imageDataUrl
     });
@@ -2557,8 +2581,56 @@ function App() {
     }
   }
 
-  async function runRepeatGenerate(): Promise<void> {
-    if (repeatRunning || !canGenerate) return;
+  async function runSingleGenerate(scope: GenerationScope): Promise<void> {
+    const allowed = scope === "character" ? canGenerateCharacter : canGenerateScene;
+    if (!allowed) return;
+    await runAction(
+      scope === "character" ? "キャラクタを生成中" : "シーンを総合生成中",
+      async () => {
+        const startedAt = performance.now();
+        const restoredScope = restoredGenerationSettings?.generationScope ?? "character";
+        const usesRestoredRequest = Boolean(
+          restoredRequestApplies &&
+          restoredGenerationSettings?.generationRequest &&
+          restoredScope === scope &&
+          (scope === "scene" || restoredGenerationSettings?.targetCharacterId === activeSceneCharacter?.id)
+        );
+        const sourcePose = normalizePoseConditioning(
+          usesRestoredRequest ? testRequest.poseConditioning : poseConditioning
+        );
+        const analyzedPose = await ensurePoseAnalysis(sourcePose);
+        const rawRequest = usesRestoredRequest
+          ? { ...testRequest, poseConditioning: analyzedPose.enabled ? analyzedPose : undefined }
+          : createGenerationRequest(scope, nextGenerationSeed(), analyzedPose);
+        const request = requestWithConcreteSeed(rawRequest);
+        const seedSource = usesRestoredRequest
+          ? rawRequest.seed >= 0
+            ? "history.generationSettings.generationRequest.seed"
+            : "history.generationSettings.generationRequest.seed was negative; app generated concrete seed"
+          : seedMode === "fixed" && seedValue >= 0
+            ? "ui.seedValue"
+            : "app generated random seed";
+        const historySettings = buildGenerationHistorySettings(request, scope);
+        appendLog("info", `生成種別: ${scope === "character" ? `キャラクタ (${activeSceneCharacter?.title ?? "未選択"})` : "総合"}`);
+        appendGenerationDiagnostics(usesRestoredRequest ? "history-restored" : "manual-ui", rawRequest, request, seedSource, historySettings);
+        const requestLoras = request.loras ?? [];
+        appendLog("info", `ComfyUI Positive Prompt: ${request.prompt}`);
+        appendLog("info", `ComfyUI Negative Prompt: ${request.negativePrompt}`);
+        appendLog("info", `ComfyUI LoRA: ${requestLoras.length ? requestLoras.map((lora) => `${lora.name} model=${lora.modelStrength} clip=${lora.clipStrength}`).join(", ") : "なし"}`);
+        appendLog("info", `ComfyUI Size/Steps/CFG/Seed: ${request.width}x${request.height} / ${request.steps} / ${request.cfg} / ${request.seed}`);
+        return generateAndSave(request, startedAt, scope);
+      },
+      ({ result, history }) => {
+        setGenerationResult(result);
+        setPromptHistory(history);
+        setLastHistoryId(history[0]?.id ?? null);
+        if (result.imageDataUrl || result.imagePath) setLastImage(result.imageDataUrl ?? result.imagePath ?? null);
+      }
+    );
+  }
+
+  async function runRepeatGenerate(scope: GenerationScope): Promise<void> {
+    if (repeatRunning || (scope === "character" ? !canGenerateCharacter : !canGenerateScene)) return;
     let repeatPose: PoseConditioning;
     try {
       repeatPose = await ensurePoseAnalysis(poseConditioning);
@@ -2575,7 +2647,7 @@ function App() {
     setRepeatPaused(false);
     repeatStopRequested.current = false;
     repeatPausedRef.current = false;
-    appendLog("info", "Repeat Generateを開始しました。");
+    appendLog("info", `${scope === "character" ? "キャラクタ" : "総合"}リピート生成を開始しました。`);
     const usedSeeds = new Set<number>();
     try {
       while (!repeatStopRequested.current) {
@@ -2583,19 +2655,19 @@ function App() {
         if (repeatStopRequested.current) break;
         const seed = nextRandomSeed(usedSeeds);
         usedSeeds.add(seed);
-        const request = createGenerationRequest(seed, repeatPose);
+        const request = createGenerationRequest(scope, seed, repeatPose);
         const itemId = crypto.randomUUID();
         setRepeatItems((current) => [{ id: itemId, seed, startedAt: new Date().toISOString() }, ...current]);
         try {
           const startedAt = performance.now();
-          appendLog("info", `Repeat Generate Seed: ${seed}`);
-          appendGenerationDiagnostics("manual-ui", request, request, "repeat generated random seed", buildGenerationHistorySettings(request));
+          appendLog("info", `${scope === "character" ? "Character" : "Scene"} Repeat Generate Seed: ${seed}`);
+          appendGenerationDiagnostics("manual-ui", request, request, "repeat generated random seed", buildGenerationHistorySettings(request, scope));
           const requestLoras = request.loras ?? [];
           appendLog("info", `ComfyUI Positive Prompt: ${request.prompt}`);
           appendLog("info", `ComfyUI Negative Prompt: ${request.negativePrompt}`);
           appendLog("info", `ComfyUI LoRA: ${requestLoras.length ? requestLoras.map((lora) => `${lora.name} model=${lora.modelStrength} clip=${lora.clipStrength}`).join(", ") : "なし"}`);
           appendLog("info", `ComfyUI Size/Steps/CFG/Seed: ${request.width}x${request.height} / ${request.steps} / ${request.cfg} / ${request.seed}`);
-          const { result, history, durationText } = await generateAndSave(request, startedAt);
+          const { result, history, durationText } = await generateAndSave(request, startedAt, scope);
           setGenerationResult(result);
           setPromptHistory(history);
           setLastHistoryId(history[0]?.id ?? null);
@@ -2616,7 +2688,7 @@ function App() {
       setRepeatPaused(false);
       repeatStopRequested.current = false;
       repeatPausedRef.current = false;
-      appendLog("info", "Repeat Generateを停止しました。");
+      appendLog("info", `${scope === "character" ? "キャラクタ" : "総合"}リピート生成を停止しました。`);
     }
   }
 
@@ -2753,7 +2825,7 @@ function App() {
     sha256: downloadSha.trim() || undefined
   };
 
-  const currentTestRequest = createGenerationRequest(seedMode === "fixed" ? seedValue : 0);
+  const currentTestRequest = createGenerationRequest("character", seedMode === "fixed" ? seedValue : 0);
   const restoredRequestApplies = Boolean(
     restoredGenerationSettings?.generationRequest &&
     restoredGenerationSettings.prompt === prompt &&
@@ -2780,9 +2852,12 @@ function App() {
     ? restoredGenerationSettings.generationRequest
     : currentTestRequest;
 
-  function buildGenerationHistorySettings(request: TestGenerationRequest): PromptGenerationSettings {
+  function buildGenerationHistorySettings(request: TestGenerationRequest, scope: GenerationScope): PromptGenerationSettings {
     return {
       generationRequest: request,
+      generationScope: scope,
+      targetCharacterId: scope === "character" ? activeSceneCharacter?.id : undefined,
+      targetCharacterTitle: scope === "character" ? activeSceneCharacter?.title : undefined,
       japanesePrompt,
       prompt,
       effectivePrompt: request.prompt,
@@ -3973,6 +4048,16 @@ function App() {
                 更新
               </button>
             </div>
+            <div className="preview-generation-actions">
+              <button className="generate" disabled={!canGenerateScene} onClick={() => void runSingleGenerate("scene")}>
+                <WandSparkles size={18} />
+                総合生成
+              </button>
+              <button className="generate secondary-generate" disabled={!canGenerateScene || repeatRunning} onClick={() => void runRepeatGenerate("scene")}>
+                <RefreshCw size={18} />
+                総合リピート生成
+              </button>
+            </div>
           </section>
 
           <section className="panel generate-panel">
@@ -4144,59 +4229,6 @@ function App() {
                   }}
                   onRemoveLoraTrigger={(trigger) => setPositiveLoraTriggerIds((current) => current.filter((id) => id !== trigger.triggerId))}
                 />
-                <div className="button-row">
-                  <button
-                    className="generate"
-                    disabled={!canGenerate}
-                    onClick={() =>
-                      void runAction(
-                        "ComfyUIでテスト生成中",
-                        async () => {
-                          const startedAt = performance.now();
-                          const usesRestoredRequest = Boolean(restoredRequestApplies && restoredGenerationSettings?.generationRequest);
-                          const sourcePose = normalizePoseConditioning(
-                            usesRestoredRequest ? testRequest.poseConditioning : poseConditioning
-                          );
-                          const analyzedPose = await ensurePoseAnalysis(sourcePose);
-                          const rawRequest = usesRestoredRequest
-                            ? { ...testRequest, poseConditioning: analyzedPose.enabled ? analyzedPose : undefined }
-                            : createGenerationRequest(nextGenerationSeed(), analyzedPose);
-                          const request = requestWithConcreteSeed(rawRequest);
-                          const seedSource = usesRestoredRequest
-                            ? rawRequest.seed >= 0
-                              ? "history.generationSettings.generationRequest.seed"
-                              : "history.generationSettings.generationRequest.seed was negative; app generated concrete seed"
-                            : seedMode === "fixed" && seedValue >= 0
-                              ? "ui.seedValue"
-                              : "app generated random seed";
-                          const historySettings = buildGenerationHistorySettings(request);
-                          appendGenerationDiagnostics(usesRestoredRequest ? "history-restored" : "manual-ui", rawRequest, request, seedSource, historySettings);
-                          const requestLoras = request.loras ?? [];
-                          appendLog("info", `ComfyUI Positive Prompt: ${request.prompt}`);
-                          appendLog("info", `ComfyUI Negative Prompt: ${request.negativePrompt}`);
-                          appendLog("info", `ComfyUI LoRA: ${requestLoras.length ? requestLoras.map((lora) => `${lora.name} model=${lora.modelStrength} clip=${lora.clipStrength}`).join(", ") : "なし"}`);
-                          appendLog("info", `ComfyUI Size/Steps/CFG/Seed: ${request.width}x${request.height} / ${request.steps} / ${request.cfg} / ${request.seed}`);
-                          return generateAndSave(request, startedAt);
-                        },
-                        ({ result, history }) => {
-                          setGenerationResult(result);
-                          setPromptHistory(history);
-                          setLastHistoryId(history[0]?.id ?? null);
-                          if (result.imageDataUrl || result.imagePath) {
-                            setLastImage(result.imageDataUrl ?? result.imagePath ?? null);
-                          }
-                        }
-                      )
-                    }
-                  >
-                    <WandSparkles size={18} />
-                    GENERATE TEST
-                  </button>
-                  <button className="generate secondary-generate" disabled={!canGenerate || repeatRunning} onClick={() => void runRepeatGenerate()}>
-                    <RefreshCw size={18} />
-                    Repeat Generate
-                  </button>
-                </div>
               </>
             ) : generateTab === "lora" ? (
               <GenerationLoraPanel
@@ -4280,6 +4312,16 @@ function App() {
               </p>
             ) : null}
             {generationResult?.message && <p className="result-message">{generationResult.message}</p>}
+            <div className="character-generation-actions">
+              <button className="generate" disabled={!canGenerateCharacter} onClick={() => void runSingleGenerate("character")}>
+                <WandSparkles size={18} />
+                キャラクタ生成
+              </button>
+              <button className="generate secondary-generate" disabled={!canGenerateCharacter || repeatRunning} onClick={() => void runRepeatGenerate("character")}>
+                <RefreshCw size={18} />
+                キャラクタリピート生成
+              </button>
+            </div>
               </>
             ) : null}
           </section>
@@ -4794,6 +4836,13 @@ function App() {
                         <time>{new Date(entry.createdAt).toLocaleString("ja-JP", { hour12: false })}</time>
                       </header>
                       <div className="history-tags">
+                        <span>
+                          {entry.generationSettings?.generationScope === "scene"
+                            ? "総合"
+                            : entry.generationSettings?.generationScope === "character"
+                              ? `キャラクタ: ${entry.generationSettings.targetCharacterTitle ?? "名称未記録"}`
+                              : "従来生成"}
+                        </span>
                         {entry.runtimeRootMatches === false ? <span>別DataPath: {entry.runtimeRootLabel ?? "不明"}</span> : <span>現在DataPath</span>}
                         {entry.restorable === false ? <span className="history-warning">不足あり</span> : null}
                       </div>
