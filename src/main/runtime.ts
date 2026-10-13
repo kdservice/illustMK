@@ -416,9 +416,21 @@ export type TestGenerationRequest = {
 
 export type PoseJointRotation = [number, number, number];
 
+export type PoseBodyShape = {
+  height: number;
+  headSize: number;
+  build: number;
+  shoulderWidth: number;
+  hipWidth: number;
+  torsoLength: number;
+  armLength: number;
+  legLength: number;
+};
+
 export type PoseConditioning = {
   enabled: boolean;
   preserveCharacterProportions?: boolean;
+  bodyShape?: PoseBodyShape;
   imageDataUrl: string;
   inputMode?: "skeleton" | "external-skeleton" | "reference";
   sourceName?: string;

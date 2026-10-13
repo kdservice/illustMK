@@ -1,9 +1,10 @@
 import { useEffect, useRef, useState } from "react";
 import * as THREE from "three";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
+import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
 import { TransformControls } from "three/examples/jsm/controls/TransformControls.js";
 import { Camera, Download, ExternalLink, FolderOpen, Images, RotateCcw, Save, Search, Trash2, X } from "lucide-react";
-import type { CivitaiModelCard, OpenPoseAsset, OpenPoseCatalogItem, PoseConditioning, PoseExtractionResult, PoseJointRotation, PosePreprocessorStatus, SavedPose } from "../../main/runtime";
+import type { CivitaiModelCard, OpenPoseAsset, OpenPoseCatalogItem, PoseBodyShape, PoseConditioning, PoseExtractionResult, PoseJointRotation, PosePreprocessorStatus, SavedPose } from "../../main/runtime";
 
 type PoseEditorProps = {
   value: PoseConditioning;
@@ -26,8 +27,12 @@ type PoseEditorProps = {
 
 type Rig = {
   root: THREE.Group;
-  joints: Map<string, THREE.Group>;
+  joints: Map<string, THREE.Object3D>;
   selectable: THREE.Object3D[];
+  helpers: THREE.Object3D[];
+  restQuaternions: Map<string, THREE.Quaternion>;
+  restScales: Map<string, THREE.Vector3>;
+  restPositions: Map<string, THREE.Vector3>;
 };
 
 type DerivedPosePrompts = {
@@ -59,6 +64,28 @@ const jointLabels: Record<string, string> = {
   rightKnee: "右ひざ",
   rightAnkle: "右足首"
 };
+
+const defaultBodyShape: PoseBodyShape = {
+  height: 1,
+  headSize: 1,
+  build: 1,
+  shoulderWidth: 1,
+  hipWidth: 1,
+  torsoLength: 1,
+  armLength: 1,
+  legLength: 1
+};
+
+const bodyShapeControls: Array<{ key: keyof PoseBodyShape; label: string; min: number; max: number }> = [
+  { key: "height", label: "身長", min: 0.78, max: 1.22 },
+  { key: "headSize", label: "頭サイズ", min: 0.82, max: 1.28 },
+  { key: "build", label: "体格", min: 0.72, max: 1.3 },
+  { key: "shoulderWidth", label: "肩幅", min: 0.72, max: 1.3 },
+  { key: "hipWidth", label: "腰幅", min: 0.75, max: 1.28 },
+  { key: "torsoLength", label: "胴", min: 0.78, max: 1.22 },
+  { key: "armLength", label: "腕", min: 0.78, max: 1.22 },
+  { key: "legLength", label: "脚", min: 0.75, max: 1.3 }
+];
 
 // Xinsir OpenPose SDXLの学習ラベルに合わせたBODY_18の接続順と線色。
 // 線は公式draw_bodyposeと同じく、各BODY_18色を60%輝度で描画する。
@@ -191,6 +218,7 @@ export function createDefaultPoseConditioning(): PoseConditioning {
   return {
     enabled: false,
     preserveCharacterProportions: true,
+    bodyShape: { ...defaultBodyShape },
     imageDataUrl: "",
     inputMode: "skeleton",
     sourceName: "3D人形を直接編集",
@@ -235,6 +263,7 @@ export function PoseEditor({ value, controlNetModels, depthControlNetModels, onC
   const [catalogError, setCatalogError] = useState("");
   const [sourceBusy, setSourceBusy] = useState(false);
   const [sourceError, setSourceError] = useState("");
+  const [modelError, setModelError] = useState("");
   const [preprocessorStatus, setPreprocessorStatus] = useState<PosePreprocessorStatus | null>(null);
 
   valueRef.current = value;
@@ -270,7 +299,7 @@ export function PoseEditor({ value, controlNetModels, depthControlNetModels, onC
       }
     });
     return () => cancelAnimationFrame(frame);
-  }, [value.jointRotations, value.cameraPosition, value.cameraTarget, value.cameraFov, value.preserveCharacterProportions]);
+  }, [value.jointRotations, value.cameraPosition, value.cameraTarget, value.cameraFov, value.preserveCharacterProportions, value.bodyShape]);
 
   useEffect(() => {
     const host = hostRef.current;
@@ -307,18 +336,20 @@ export function PoseEditor({ value, controlNetModels, depthControlNetModels, onC
     transform.setSize(0.72);
     const transformHelper = transform.getHelper();
     scene.add(transformHelper);
-    transform.attach(rig.joints.get("hips")!);
 
     const raycaster = new THREE.Raycaster();
     const pointer = new THREE.Vector2();
     let applying = false;
+    let rigReady = false;
+    let disposed = false;
     let animationFrame = 0;
 
     const applyValue = (next: PoseConditioning) => {
       applying = true;
+      applyBodyShape(rig, next.bodyShape ?? defaultBodyShape);
       for (const [name, joint] of rig.joints) {
         const rotation = clampJointRotation(name, next.jointRotations[name] ?? defaultRotations[name] ?? [0, 0, 0]);
-        joint.rotation.set(rotation[0], rotation[1], rotation[2]);
+        applyJointRotation(rig, name, joint, rotation);
       }
       camera.position.fromArray(next.cameraPosition);
       camera.fov = next.cameraFov ?? 38;
@@ -331,12 +362,12 @@ export function PoseEditor({ value, controlNetModels, depthControlNetModels, onC
     applyValueRef.current = applyValue;
 
     const emitPose = () => {
-      if (applying) return;
+      if (applying || !rigReady) return;
       scene.updateMatrixWorld(true);
       const rotations: Record<string, PoseJointRotation> = {};
       for (const [name, joint] of rig.joints) {
-        const rotation = clampJointRotation(name, [joint.rotation.x, joint.rotation.y, joint.rotation.z]);
-        joint.rotation.set(...rotation);
+        const rotation = clampJointRotation(name, readJointRotation(rig, name, joint));
+        applyJointRotation(rig, name, joint, rotation);
         rotations[name] = rotation;
       }
       const current = valueRef.current;
@@ -344,8 +375,8 @@ export function PoseEditor({ value, controlNetModels, depthControlNetModels, onC
         ...current,
         imageDataUrl: renderOpenPoseImage(rig, camera, current, outputWidth, outputHeight),
         depthImageDataUrl: renderDepthImage(renderer, scene, rig, floor, camera, transformHelper, outputWidth, outputHeight),
-        referenceImageDataUrl: renderMannequinImage(renderer, scene, camera, transformHelper, outputWidth, outputHeight),
-        ...derivePosePrompts(rig, camera, rotations, current.preserveCharacterProportions ?? true),
+        referenceImageDataUrl: renderMannequinImage(renderer, scene, rig, camera, transformHelper, outputWidth, outputHeight),
+        ...derivePosePrompts(rig, camera, rotations, current.preserveCharacterProportions ?? true, current.bodyShape ?? defaultBodyShape),
         analysisStale: false,
         jointRotations: rotations,
         cameraPosition: camera.position.toArray() as [number, number, number],
@@ -354,15 +385,17 @@ export function PoseEditor({ value, controlNetModels, depthControlNetModels, onC
       });
     };
     capturePoseRef.current = () => {
+      if (!rigReady) return valueRef.current.imageDataUrl;
       scene.updateMatrixWorld(true);
       return renderOpenPoseImage(rig, camera, valueRef.current, outputWidth, outputHeight);
     };
     captureDepthRef.current = () => {
+      if (!rigReady) return valueRef.current.depthImageDataUrl ?? "";
       scene.updateMatrixWorld(true);
       return renderDepthImage(renderer, scene, rig, floor, camera, transformHelper, outputWidth, outputHeight);
     };
-    captureReferenceRef.current = () => renderMannequinImage(renderer, scene, camera, transformHelper, outputWidth, outputHeight);
-    capturePromptRef.current = () => derivePosePrompts(rig, camera, valueRef.current.jointRotations, valueRef.current.preserveCharacterProportions ?? true);
+    captureReferenceRef.current = () => rigReady ? renderMannequinImage(renderer, scene, rig, camera, transformHelper, outputWidth, outputHeight) : valueRef.current.referenceImageDataUrl ?? "";
+    capturePromptRef.current = () => derivePosePrompts(rig, camera, valueRef.current.jointRotations, valueRef.current.preserveCharacterProportions ?? true, valueRef.current.bodyShape ?? defaultBodyShape);
 
     const selectAtPointer = (event: PointerEvent) => {
       if (transform.dragging) return;
@@ -395,16 +428,27 @@ export function PoseEditor({ value, controlNetModels, depthControlNetModels, onC
       if (!event.value) emitPose();
     });
     transform.addEventListener("objectChange", () => {
-      const jointName = transform.object?.name;
+      const jointName = transform.object?.userData.logicalJointName as string | undefined;
       if (jointName && transform.object) {
-        const rotation = clampJointRotation(jointName, [transform.object.rotation.x, transform.object.rotation.y, transform.object.rotation.z]);
-        transform.object.rotation.set(...rotation);
+        const rotation = clampJointRotation(jointName, readJointRotation(rig, jointName, transform.object));
+        applyJointRotation(rig, jointName, transform.object, rotation);
       }
       emitPose();
     });
     orbit.addEventListener("change", emitPose);
-    applyValue(valueRef.current);
     resize();
+    void loadMannequinRig(rig).then(() => {
+      if (disposed) return;
+      rigReady = true;
+      setModelError("");
+      applyValue(valueRef.current);
+      const hips = rig.joints.get("hips");
+      if (hips) transform.attach(hips);
+      scene.updateMatrixWorld(true);
+      emitPose();
+    }).catch((error) => {
+      if (!disposed) setModelError(`3Dデッサン人形を読み込めませんでした: ${error instanceof Error ? error.message : String(error)}`);
+    });
 
     const animate = () => {
       animationFrame = requestAnimationFrame(animate);
@@ -414,6 +458,7 @@ export function PoseEditor({ value, controlNetModels, depthControlNetModels, onC
     animate();
 
     return () => {
+      disposed = true;
       cancelAnimationFrame(animationFrame);
       observer.disconnect();
       renderer.domElement.removeEventListener("pointerdown", selectAtPointer);
@@ -607,6 +652,44 @@ export function PoseEditor({ value, controlNetModels, depthControlNetModels, onC
         ) : null}
       </div>
       {sourceError ? <p className="pose-warning">{sourceError}</p> : null}
+      {modelError ? <p className="pose-warning">{modelError}</p> : null}
+      <div className="pose-body-shape-panel">
+        <div className="pose-body-shape-heading">
+          <strong>体型</strong>
+          <button
+            type="button"
+            className="icon-button"
+            title="体型を標準へ戻す"
+            disabled={disabled}
+            onClick={() => onChange({ ...value, bodyShape: { ...defaultBodyShape }, analysisStale: true })}
+          >
+            <RotateCcw size={14} />
+          </button>
+        </div>
+        <div className="pose-body-shape-controls">
+          {bodyShapeControls.map((control) => {
+            const bodyShape = { ...defaultBodyShape, ...value.bodyShape };
+            return (
+              <label key={control.key}>
+                <span>{control.label}<b>{Math.round(bodyShape[control.key] * 100)}%</b></span>
+                <input
+                  type="range"
+                  min={control.min}
+                  max={control.max}
+                  step="0.01"
+                  value={bodyShape[control.key]}
+                  disabled={disabled}
+                  onChange={(event) => onChange({
+                    ...value,
+                    bodyShape: { ...bodyShape, [control.key]: Number(event.target.value) },
+                    analysisStale: true
+                  })}
+                />
+              </label>
+            );
+          })}
+        </div>
+      </div>
       <div className="pose-viewport-wrap">
         <div className="pose-viewport" ref={hostRef} />
         <div className="pose-selection">選択中: {jointLabels[selectedJoint] ?? selectedJoint}</div>
@@ -870,7 +953,8 @@ function derivePosePrompts(
   rig: Rig,
   camera: THREE.Camera,
   rotations: Record<string, PoseJointRotation>,
-  preserveCharacterProportions: boolean
+  preserveCharacterProportions: boolean,
+  bodyShape: PoseBodyShape
 ): DerivedPosePrompts {
   rig.root.updateWorldMatrix(true, true);
   camera.updateWorldMatrix(true, false);
@@ -930,6 +1014,15 @@ function derivePosePrompts(
   details.push(faceDirectionPrompt(rig, camera));
   if (preserveCharacterProportions) {
     details.push("preserve the character's established age, stature, head-to-body ratio, and original body proportions from the character LoRA");
+  } else {
+    if (bodyShape.height < 0.9) details.push("short stature");
+    else if (bodyShape.height > 1.1) details.push("tall stature");
+    if (bodyShape.headSize > 1.1) details.push("large head-to-body ratio");
+    else if (bodyShape.headSize < 0.9) details.push("small head-to-body ratio");
+    if (bodyShape.build < 0.88) details.push("slender build");
+    else if (bodyShape.build > 1.12) details.push("broad build");
+    if (bodyShape.legLength < 0.9) details.push("short legs");
+    else if (bodyShape.legLength > 1.1) details.push("long legs");
   }
   details.push("full body, anatomically coherent limb placement");
 
@@ -976,6 +1069,7 @@ function cameraViewPrompt(camera: THREE.Camera): string {
 function renderMannequinImage(
   renderer: THREE.WebGLRenderer,
   scene: THREE.Scene,
+  rig: Rig,
   camera: THREE.Camera,
   transformHelper: THREE.Object3D,
   outputWidth: number,
@@ -993,8 +1087,10 @@ function renderMannequinImage(
   const target = new THREE.WebGLRenderTarget(width, height, { format: THREE.RGBAFormat, type: THREE.UnsignedByteType, depthBuffer: true });
   target.texture.colorSpace = THREE.SRGBColorSpace;
   const wasVisible = transformHelper.visible;
+  const helperVisibility = rig.helpers.map((helper) => helper.visible);
   const previousTarget = renderer.getRenderTarget();
   transformHelper.visible = false;
+  rig.helpers.forEach((helper) => { helper.visible = false; });
   renderer.setRenderTarget(target);
   renderer.clear();
   renderer.render(scene, projectionCamera);
@@ -1002,6 +1098,7 @@ function renderMannequinImage(
   renderer.readRenderTargetPixels(target, 0, 0, width, height, pixels);
   renderer.setRenderTarget(previousTarget);
   transformHelper.visible = wasVisible;
+  rig.helpers.forEach((helper, index) => { helper.visible = helperVisibility[index]; });
   renderer.render(scene, camera);
   target.dispose();
   return rgbaPixelsToDataUrl(pixels, width, height);
@@ -1041,10 +1138,9 @@ function renderDepthImage(
   projectionCamera.updateMatrixWorld(true);
 
   rig.root.updateWorldMatrix(true, true);
-  const depthProxy = createDepthProxy(rig);
-  scene.add(depthProxy);
-  depthProxy.updateWorldMatrix(true, true);
-  const box = new THREE.Box3().setFromObject(depthProxy);
+  const helperVisibility = rig.helpers.map((helper) => helper.visible);
+  rig.helpers.forEach((helper) => { helper.visible = false; });
+  const box = new THREE.Box3().setFromObject(rig.root);
   const corners = [
     new THREE.Vector3(box.min.x, box.min.y, box.min.z),
     new THREE.Vector3(box.min.x, box.min.y, box.max.z),
@@ -1064,9 +1160,18 @@ function renderDepthImage(
       farDepth: { value: farDepth }
     },
     vertexShader: `
+      #include <common>
+      #include <batching_pars_vertex>
+      #include <morphtarget_pars_vertex>
+      #include <skinning_pars_vertex>
       varying float viewDepth;
       void main() {
-        vec4 viewPosition = modelViewMatrix * vec4(position, 1.0);
+        #include <batching_vertex>
+        #include <skinbase_vertex>
+        #include <begin_vertex>
+        #include <morphtarget_vertex>
+        #include <skinning_vertex>
+        vec4 viewPosition = modelViewMatrix * vec4(transformed, 1.0);
         viewDepth = -viewPosition.z;
         gl_Position = projectionMatrix * viewPosition;
       }
@@ -1091,10 +1196,8 @@ function renderDepthImage(
   const previousBackground = scene.background;
   const floorVisible = floor.visible;
   const helperVisible = transformHelper.visible;
-  const rigVisible = rig.root.visible;
   floor.visible = false;
   transformHelper.visible = false;
-  rig.root.visible = false;
   scene.overrideMaterial = depthMaterial;
   scene.background = new THREE.Color(0x000000);
   renderer.setRenderTarget(target);
@@ -1107,14 +1210,135 @@ function renderDepthImage(
   scene.background = previousBackground;
   floor.visible = floorVisible;
   transformHelper.visible = helperVisible;
-  rig.root.visible = rigVisible;
-  scene.remove(depthProxy);
+  rig.helpers.forEach((helper, index) => { helper.visible = helperVisibility[index]; });
   renderer.render(scene, camera);
 
   target.dispose();
   depthMaterial.dispose();
-  disposeDepthProxy(depthProxy);
   return rgbaPixelsToDataUrl(pixels, width, height);
+}
+
+function createRig(): Rig {
+  return {
+    root: new THREE.Group(),
+    joints: new Map(),
+    selectable: [],
+    helpers: [],
+    restQuaternions: new Map(),
+    restScales: new Map(),
+    restPositions: new Map()
+  };
+}
+
+async function loadMannequinRig(rig: Rig): Promise<void> {
+  const modelUrl = new URL("./models/human-base-rigged.glb", window.location.href).href;
+  const gltf = await new GLTFLoader().loadAsync(modelUrl);
+  const model = gltf.scene;
+  model.name = "drawing-mannequin";
+  model.traverse((object) => {
+    object.castShadow = object instanceof THREE.Mesh;
+    object.receiveShadow = object instanceof THREE.Mesh;
+    if (object instanceof THREE.Mesh) {
+      object.material = new THREE.MeshStandardMaterial({
+        color: 0xb8bdc7,
+        roughness: 0.72,
+        metalness: 0.02,
+        side: THREE.DoubleSide
+      });
+    }
+  });
+  rig.root.add(model);
+
+  const boneMap: Record<string, string> = {
+    hips: "pelvis",
+    spine: "spine_01",
+    chest: "spine_03",
+    neck: "neck_01",
+    head: "head",
+    leftShoulder: "upperarm_l",
+    leftElbow: "lowerarm_l",
+    leftWrist: "hand_l",
+    rightShoulder: "upperarm_r",
+    rightElbow: "lowerarm_r",
+    rightWrist: "hand_r",
+    leftHip: "thigh_l",
+    leftKnee: "calf_l",
+    leftAnkle: "foot_l",
+    rightHip: "thigh_r",
+    rightKnee: "calf_r",
+    rightAnkle: "foot_r"
+  };
+  const helperMaterial = new THREE.MeshBasicMaterial({
+    color: 0x64c8ff,
+    transparent: true,
+    opacity: 0.12,
+    depthWrite: false
+  });
+  for (const [logicalName, boneName] of Object.entries(boneMap)) {
+    const bone = model.getObjectByName(boneName);
+    if (!bone) throw new Error(`モデル内に必要な骨がありません: ${boneName}`);
+    bone.userData.logicalJointName = logicalName;
+    rig.joints.set(logicalName, bone);
+    rig.restQuaternions.set(logicalName, bone.quaternion.clone());
+    rig.restScales.set(logicalName, bone.scale.clone());
+    rig.restPositions.set(logicalName, bone.position.clone());
+    const helper = new THREE.Mesh(new THREE.SphereGeometry(logicalName === "hips" ? 0.075 : 0.055, 16, 12), helperMaterial);
+    helper.userData.jointName = logicalName;
+    helper.renderOrder = 20;
+    bone.add(helper);
+    rig.helpers.push(helper);
+    rig.selectable.push(helper);
+  }
+
+  for (const boneName of ["clavicle_l", "clavicle_r", "spine_01", "spine_02", "spine_03", "upperarm_l", "lowerarm_l", "upperarm_r", "lowerarm_r", "thigh_l", "calf_l", "thigh_r", "calf_r", "head"]) {
+    const bone = model.getObjectByName(boneName);
+    if (!bone) continue;
+    bone.userData.restScale = bone.scale.clone();
+    bone.userData.restPosition = bone.position.clone();
+  }
+  rig.root.updateMatrixWorld(true);
+}
+
+function applyJointRotation(rig: Rig, name: string, joint: THREE.Object3D, rotation: PoseJointRotation): void {
+  const rest = rig.restQuaternions.get(name);
+  if (!rest) return;
+  const delta = new THREE.Quaternion().setFromEuler(new THREE.Euler(rotation[0], rotation[1], rotation[2], "XYZ"));
+  joint.quaternion.copy(rest).multiply(delta);
+}
+
+function readJointRotation(rig: Rig, name: string, joint: THREE.Object3D): PoseJointRotation {
+  const rest = rig.restQuaternions.get(name);
+  if (!rest) return [0, 0, 0];
+  const delta = rest.clone().invert().multiply(joint.quaternion);
+  const euler = new THREE.Euler().setFromQuaternion(delta, "XYZ");
+  return [euler.x, euler.y, euler.z];
+}
+
+function applyBodyShape(rig: Rig, rawShape: PoseBodyShape): void {
+  const shape = { ...defaultBodyShape, ...rawShape };
+  const baseScale = 2.45;
+  rig.root.scale.set(baseScale * shape.build, baseScale * shape.height, baseScale * shape.build);
+  const model = rig.root.getObjectByName("drawing-mannequin");
+  if (!model) return;
+  const scaleBone = (name: string, x: number, y: number, z: number) => {
+    const bone = model.getObjectByName(name);
+    const rest = bone?.userData.restScale as THREE.Vector3 | undefined;
+    if (bone && rest) bone.scale.set(rest.x * x, rest.y * y, rest.z * z);
+  };
+  const moveBone = (name: string, x: number, y: number, z: number) => {
+    const bone = model.getObjectByName(name);
+    const rest = bone?.userData.restPosition as THREE.Vector3 | undefined;
+    if (bone && rest) bone.position.set(rest.x * x, rest.y * y, rest.z * z);
+  };
+
+  scaleBone("head", shape.headSize / shape.build, shape.headSize / shape.height, shape.headSize / shape.build);
+  for (const name of ["spine_01", "spine_02", "spine_03"]) scaleBone(name, 1, shape.torsoLength, 1);
+  for (const name of ["clavicle_l", "clavicle_r"]) scaleBone(name, 1, shape.shoulderWidth, 1);
+  for (const name of ["upperarm_l", "lowerarm_l", "upperarm_r", "lowerarm_r"]) scaleBone(name, 1, shape.armLength, 1);
+  for (const name of ["thigh_l", "calf_l", "thigh_r", "calf_r"]) scaleBone(name, 1, shape.legLength, 1);
+  moveBone("thigh_l", shape.hipWidth, 1, 1);
+  moveBone("thigh_r", shape.hipWidth, 1, 1);
+  rig.root.updateMatrixWorld(true);
 }
 
 function createDepthProxy(rig: Rig): THREE.Group {
@@ -1196,7 +1420,7 @@ function disposeDepthProxy(proxy: THREE.Object3D): void {
   materials.forEach((material) => material.dispose());
 }
 
-function createRig(): Rig {
+function createProceduralRig(): Rig {
   const root = new THREE.Group();
   root.position.y = 0;
   const joints = new Map<string, THREE.Group>();
@@ -1299,7 +1523,15 @@ function createRig(): Rig {
     selectable.push(foot);
   }
 
-  return { root, joints, selectable };
+  return {
+    root,
+    joints,
+    selectable,
+    helpers: [],
+    restQuaternions: new Map(Array.from(joints, ([name, object]) => [name, object.quaternion.clone()])),
+    restScales: new Map(Array.from(joints, ([name, object]) => [name, object.scale.clone()])),
+    restPositions: new Map(Array.from(joints, ([name, object]) => [name, object.position.clone()]))
+  };
 }
 
 function renderOpenPoseImage(

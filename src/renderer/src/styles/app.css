@@ -1895,7 +1895,7 @@ label {
   min-height: 0;
   height: auto;
   display: grid;
-  grid-template-rows: auto auto minmax(220px, 1fr) auto auto auto;
+  grid-template-rows: auto auto auto minmax(220px, 1fr) auto auto auto;
   gap: 10px;
   overflow: hidden;
 }
@@ -1965,6 +1965,54 @@ label {
   font-size: 12px;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.pose-body-shape-panel {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 10px;
+  align-items: center;
+  padding: 8px 10px;
+  border: 1px solid #26375f;
+  border-radius: 7px;
+  background: #081226;
+}
+
+.pose-body-shape-heading {
+  display: flex;
+  gap: 7px;
+  align-items: center;
+}
+
+.pose-body-shape-controls {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: repeat(4, minmax(100px, 1fr));
+  gap: 6px 12px;
+}
+
+.pose-body-shape-controls label {
+  min-width: 0;
+  display: grid;
+  gap: 3px;
+}
+
+.pose-body-shape-controls span {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  color: #aebfe1;
+  font-size: 10px;
+}
+
+.pose-body-shape-controls b {
+  color: #77d9ff;
+  font-weight: 800;
+}
+
+.pose-body-shape-controls input {
+  min-width: 0;
+  padding: 0;
 }
 
 .pose-viewport-wrap {
@@ -3204,7 +3252,7 @@ label {
 
 @media (max-height: 850px) {
   .pose-editor {
-    grid-template-rows: auto auto minmax(110px, 1fr) auto auto auto;
+    grid-template-rows: auto auto auto minmax(110px, 1fr) auto auto auto;
   }
 
   .pose-viewport-wrap {
