@@ -142,6 +142,10 @@ type GenerationScope = "character" | "scene";
 const savedSceneCharactersKey = "illustmk.savedSceneCharacters";
 const savedSceneBackgroundsKey = "illustmk.savedSceneBackgrounds";
 const defaultCharacterPlacement = { x: 50, y: 50, scale: 100, zIndex: 1 };
+
+function automaticCharacterX(index: number, total: number): number {
+  return total > 0 ? Math.round(((index + 1) * 100) / (total + 1)) : 50;
+}
 const recommendedLlmModels = [
   { name: "qwen2.5vl:3b", source: "Ollama", size: "軽量", note: "画像対応VLM。デッサン人形のポーズ解析向け。" },
   { name: "qwen2.5:3b-instruct", source: "Ollama", size: "軽量", note: "まず試す用。日本語もそこそこ。" },
@@ -1566,13 +1570,28 @@ function App() {
   function addSceneCharacter(): void {
     const current = persistActiveSceneCharacter();
     const nextNumber = current.length + 1;
+    const usesAutomaticPlacement = current.every((character, index) =>
+      character.placement.x === automaticCharacterX(index, current.length) &&
+      character.placement.y === defaultCharacterPlacement.y &&
+      character.placement.scale === defaultCharacterPlacement.scale
+    );
     const character: GenerationSceneCharacter = {
       id: crypto.randomUUID(),
       title: `キャラ${nextNumber}`,
       settings: blankCharacterSettings(),
-      placement: { ...defaultCharacterPlacement, zIndex: nextNumber }
+      placement: {
+        ...defaultCharacterPlacement,
+        x: automaticCharacterX(nextNumber - 1, nextNumber),
+        zIndex: nextNumber
+      }
     };
-    setSceneCharacters([...current, character]);
+    const nextCharacters = [...current, character];
+    setSceneCharacters(usesAutomaticPlacement
+      ? nextCharacters.map((item, index) => ({
+          ...item,
+          placement: { ...item.placement, x: automaticCharacterX(index, nextCharacters.length) }
+        }))
+      : nextCharacters);
     setActiveSceneItemId(character.id);
     applyCharacterSettings(character.settings);
     setSceneAddOpen(false);
@@ -2501,6 +2520,16 @@ function App() {
       };
     }
     const sceneCharactersForRequest = scene.characters.map((character, index) => composeCharacterRequest(character, index));
+    const regionalCharacters = scene.characters.map((character, index) => {
+      const characterRequest = composeCharacterRequest(character, index, false);
+      return {
+        id: character.id,
+        title: character.title,
+        prompt: characterRequest.prompt,
+        negativePrompt: characterRequest.negativePrompt,
+        placement: character.placement
+      };
+    });
     const hasScene = sceneCharactersForRequest.length > 0 || Boolean(scene.background);
     const scenePrompt = composeGenerationPrompt(
       scene.background?.prompt ?? "",
@@ -2526,7 +2555,12 @@ function App() {
       comfyUrl,
       vae: selectedVae || undefined,
       clip: selectedClip || undefined,
-      poseConditioning: poseEnabled ? activePose : undefined
+      poseConditioning: poseEnabled ? activePose : undefined,
+      sceneConditioning: hasScene ? {
+        backgroundPrompt: scene.background?.prompt ?? "",
+        backgroundNegativePrompt: scene.background?.negativePrompt ?? "",
+        characters: regionalCharacters
+      } : undefined
     };
   }
 

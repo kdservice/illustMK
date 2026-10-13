@@ -412,6 +412,21 @@ export type TestGenerationRequest = {
   vae?: string;
   clip?: string;
   poseConditioning?: PoseConditioning;
+  sceneConditioning?: SceneConditioning;
+};
+
+export type SceneConditioningCharacter = {
+  id: string;
+  title: string;
+  prompt: string;
+  negativePrompt: string;
+  placement: SceneCharacterPlacement;
+};
+
+export type SceneConditioning = {
+  backgroundPrompt: string;
+  backgroundNegativePrompt: string;
+  characters: SceneConditioningCharacter[];
 };
 
 export type PoseJointRotation = [number, number, number];
@@ -4183,6 +4198,21 @@ export async function runTestGeneration(request: TestGenerationRequest): Promise
   applyLorasToWorkflow(workflow, request.loras ?? [], clipSource);
   workflow["6"].inputs.text = request.prompt;
   workflow["7"].inputs.text = request.negativePrompt;
+  let positiveSource: [string, number] = ["6", 0];
+  let negativeSource: [string, number] = ["7", 0];
+  if (request.sceneConditioning?.characters.length) {
+    const sceneSources = applySceneConditioning(
+      workflow,
+      request.sceneConditioning,
+      workflow["6"].inputs.clip as [string, number],
+      request.width,
+      request.height
+    );
+    positiveSource = sceneSources.positive;
+    negativeSource = sceneSources.negative;
+  }
+  workflow["3"].inputs.positive = positiveSource;
+  workflow["3"].inputs.negative = negativeSource;
   if (request.poseConditioning?.enabled) {
     const pose = request.poseConditioning;
     if (!pose.imageDataUrl) {
@@ -4224,8 +4254,8 @@ export async function runTestGeneration(request: TestGenerationRequest): Promise
     workflow["14"] = {
       class_type: "ControlNetApplyAdvanced",
       inputs: {
-        positive: ["6", 0],
-        negative: ["7", 0],
+        positive: positiveSource,
+        negative: negativeSource,
         control_net: ["13", 0],
         image: poseImageSource,
         strength: pose.strength,
@@ -4334,6 +4364,109 @@ export async function runTestGeneration(request: TestGenerationRequest): Promise
     message: "生成完了を待機しましたが、新しい画像を確認できませんでした。",
     promptId
   };
+}
+
+function applySceneConditioning(
+  workflow: Record<string, { class_type: string; inputs: Record<string, unknown> }>,
+  scene: SceneConditioning,
+  clipSource: [string, number],
+  canvasWidth: number,
+  canvasHeight: number
+): { positive: [string, number]; negative: [string, number] } {
+  const characters = [...scene.characters].sort((left, right) => left.placement.zIndex - right.placement.zIndex);
+  const characterCount = characters.length;
+  workflow["6"].inputs.text = joinPromptParts(
+    scene.backgroundPrompt,
+    `masterpiece, best quality, coherent scene composition, exactly ${characterCount} distinct people, ${characterCount} characters`
+  );
+  workflow["7"].inputs.text = joinPromptParts(
+    scene.backgroundNegativePrompt,
+    "low quality, worst quality, blurry, bad anatomy, duplicate person, extra person, merged bodies"
+  );
+
+  let positiveSource: [string, number] = ["6", 0];
+  let negativeSource: [string, number] = ["7", 0];
+  characters.forEach((character, index) => {
+    const nodeBase = 1000 + index * 6;
+    const positiveEncodeId = String(nodeBase);
+    const positiveAreaId = String(nodeBase + 1);
+    const positiveCombineId = String(nodeBase + 2);
+    const negativeEncodeId = String(nodeBase + 3);
+    const negativeAreaId = String(nodeBase + 4);
+    const negativeCombineId = String(nodeBase + 5);
+    const area = sceneCharacterArea(character.placement, characterCount, canvasWidth, canvasHeight);
+
+    workflow[positiveEncodeId] = {
+      class_type: "CLIPTextEncode",
+      inputs: {
+        text: joinPromptParts(
+          character.prompt,
+          `character ${index + 1} of ${characterCount}, one distinct person, ${character.title}`
+        ),
+        clip: clipSource
+      }
+    };
+    workflow[positiveAreaId] = {
+      class_type: "ConditioningSetArea",
+      inputs: { conditioning: [positiveEncodeId, 0], ...area, strength: 1 }
+    };
+    workflow[positiveCombineId] = {
+      class_type: "ConditioningCombine",
+      inputs: { conditioning_1: positiveSource, conditioning_2: [positiveAreaId, 0] }
+    };
+    positiveSource = [positiveCombineId, 0];
+
+    workflow[negativeEncodeId] = {
+      class_type: "CLIPTextEncode",
+      inputs: {
+        text: joinPromptParts(character.negativePrompt, "duplicate person, extra limbs, merged body"),
+        clip: clipSource
+      }
+    };
+    workflow[negativeAreaId] = {
+      class_type: "ConditioningSetArea",
+      inputs: { conditioning: [negativeEncodeId, 0], ...area, strength: 1 }
+    };
+    workflow[negativeCombineId] = {
+      class_type: "ConditioningCombine",
+      inputs: { conditioning_1: negativeSource, conditioning_2: [negativeAreaId, 0] }
+    };
+    negativeSource = [negativeCombineId, 0];
+  });
+
+  return { positive: positiveSource, negative: negativeSource };
+}
+
+function sceneCharacterArea(
+  placement: SceneCharacterPlacement,
+  characterCount: number,
+  canvasWidth: number,
+  canvasHeight: number
+): { width: number; height: number; x: number; y: number } {
+  const scale = Math.max(0.1, Math.min(3, placement.scale / 100));
+  const baseWidthRatio = Math.min(0.48, 0.9 / Math.max(1, characterCount));
+  const width = alignedDimension(canvasWidth * baseWidthRatio * scale, canvasWidth);
+  const height = alignedDimension(canvasHeight * 0.9 * scale, canvasHeight);
+  const centerX = canvasWidth * Math.max(0, Math.min(1, placement.x / 100));
+  const centerY = canvasHeight * Math.max(0, Math.min(1, placement.y / 100));
+  return {
+    width,
+    height,
+    x: alignedOffset(centerX - width / 2, canvasWidth - width),
+    y: alignedOffset(centerY - height / 2, canvasHeight - height)
+  };
+}
+
+function alignedDimension(value: number, maximum: number): number {
+  return Math.max(64, Math.min(Math.floor(maximum / 8) * 8, Math.round(value / 8) * 8));
+}
+
+function alignedOffset(value: number, maximum: number): number {
+  return Math.max(0, Math.min(Math.floor(maximum / 8) * 8, Math.round(value / 8) * 8));
+}
+
+function joinPromptParts(...parts: string[]): string {
+  return parts.map((part) => part.trim()).filter(Boolean).join(", ");
 }
 
 async function uploadPoseImage(comfyUrl: string, imageDataUrl: string): Promise<string> {
