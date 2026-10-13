@@ -616,6 +616,52 @@ export type PromptHistoryEntry = {
   createdAt: string;
 };
 
+export type SceneCharacterPlacement = {
+  x: number;
+  y: number;
+  scale: number;
+  zIndex: number;
+};
+
+export type SceneCharacterSettings = {
+  japanesePrompt: string;
+  prompt: string;
+  negativePrompt: string;
+  promptEnhanceMode: PromptEnhanceMode;
+  promptNotes: string;
+  loras: GenerationLora[];
+  japanesePromptTagIds: string[];
+  positivePromptTagIds: string[];
+  positiveOptionTagIds: string[];
+  negativeOptionTagIds: string[];
+  positiveLoraTriggerIds: string[];
+  poseConditioning: PoseConditioning;
+  seedMode: "random" | "fixed";
+  seedValue: number;
+};
+
+export type GenerationSceneCharacter = {
+  id: string;
+  title: string;
+  settings: SceneCharacterSettings;
+  placement: SceneCharacterPlacement;
+};
+
+export type GenerationSceneBackground = {
+  id: string;
+  title: string;
+  prompt: string;
+  negativePrompt: string;
+  referenceImageDataUrl: string;
+  referenceStrength: number;
+};
+
+export type GenerationSceneSettings = {
+  characters: GenerationSceneCharacter[];
+  background?: GenerationSceneBackground;
+  activeItemId?: string;
+};
+
 export type SavePromptHistoryRequest = TestGenerationRequest & {
   japanesePrompt: string;
   llmModel?: string;
@@ -663,6 +709,7 @@ export type PromptGenerationSettings = {
   baseFilters?: string[];
   generationTab?: string;
   poseConditioning?: PoseConditioning;
+  scene?: GenerationSceneSettings;
 };
 
 export type UpdatePromptHistoryMemoRequest = {

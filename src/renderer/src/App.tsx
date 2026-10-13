@@ -28,6 +28,9 @@ import type {
   DataPathEntry,
   DownloadRequest,
   GenerationLora,
+  GenerationSceneBackground,
+  GenerationSceneCharacter,
+  GenerationSceneSettings,
   HuggingFaceLlmModelCard,
   IllustrationTag,
   LlmChatMessage,
@@ -45,6 +48,7 @@ import type {
   PoseConditioning,
   RuntimePaths,
   RuntimeStatus,
+  SceneCharacterSettings,
   SavedPose,
   TestGenerationRequest,
   TestGenerationResult
@@ -131,6 +135,12 @@ type UsageSample = {
   cpu: number | null;
   gpu: number | null;
 };
+type SavedSceneCharacter = GenerationSceneCharacter & { savedAt: string };
+type SavedSceneBackground = GenerationSceneBackground & { savedAt: string };
+
+const savedSceneCharactersKey = "illustmk.savedSceneCharacters";
+const savedSceneBackgroundsKey = "illustmk.savedSceneBackgrounds";
+const defaultCharacterPlacement = { x: 50, y: 50, scale: 100, zIndex: 1 };
 const recommendedLlmModels = [
   { name: "qwen2.5vl:3b", source: "Ollama", size: "軽量", note: "画像対応VLM。デッサン人形のポーズ解析向け。" },
   { name: "qwen2.5:3b-instruct", source: "Ollama", size: "軽量", note: "まず試す用。日本語もそこそこ。" },
@@ -245,6 +255,14 @@ function App() {
   const [seedMode, setSeedMode] = useState<"random" | "fixed">("random");
   const [seedValue, setSeedValue] = useState(-1);
   const [poseConditioning, setPoseConditioning] = useState<PoseConditioning>(() => createDefaultPoseConditioning());
+  const [sceneCharacters, setSceneCharacters] = useState<GenerationSceneCharacter[]>([]);
+  const [sceneBackground, setSceneBackground] = useState<GenerationSceneBackground | null>(null);
+  const [activeSceneItemId, setActiveSceneItemId] = useState<string | null>(null);
+  const [sceneAddOpen, setSceneAddOpen] = useState(false);
+  const [savedSceneCharacters, setSavedSceneCharacters] = useState<SavedSceneCharacter[]>([]);
+  const [savedSceneBackgrounds, setSavedSceneBackgrounds] = useState<SavedSceneBackground[]>([]);
+  const [characterLibraryOpen, setCharacterLibraryOpen] = useState(false);
+  const [backgroundLibraryOpen, setBackgroundLibraryOpen] = useState(false);
   const [savedPoses, setSavedPoses] = useState<SavedPose[]>([]);
   const [selectedSavedPoseId, setSelectedSavedPoseId] = useState("");
   const [poseTitle, setPoseTitle] = useState("");
@@ -317,7 +335,7 @@ function App() {
   const [modelImportType, setModelImportType] = useState<ModelAssetType>("checkpoint");
   const [runtimeTab, setRuntimeTab] = useState<"macos" | "docker">("macos");
   const [modelAddMode, setModelAddMode] = useState<"catalog" | "url">("catalog");
-  const [generateTab, setGenerateTab] = useState<"prompt" | "lora" | "options" | "pose">("prompt");
+  const [generateTab, setGenerateTab] = useState<"character" | "prompt" | "lora" | "options" | "pose">("prompt");
   const logViewRef = useRef<HTMLDivElement | null>(null);
   const currentOperationId = useRef<string | null>(null);
   const repeatStopRequested = useRef(false);
@@ -326,6 +344,10 @@ function App() {
   const selectedCheckpointInfo = useMemo(
     () => status?.checkpoints.find((checkpoint) => checkpoint.name === selectedCheckpoint) ?? null,
     [selectedCheckpoint, status?.checkpoints]
+  );
+  const activeSceneCharacter = useMemo(
+    () => sceneCharacters.find((character) => character.id === activeSceneItemId) ?? null,
+    [activeSceneItemId, sceneCharacters]
   );
   const selectedTags = useMemo(
     () => illustrationTags.filter((tag) => new Set([...selectedTagIds, ...japanesePromptTagIds, ...positivePromptTagIds]).has(tag.id)),
@@ -486,6 +508,8 @@ function App() {
     void loadLoraProjects();
     void loadModelLibrary();
     void loadSavedPoses();
+    setSavedSceneCharacters(readLocalArray<SavedSceneCharacter>(savedSceneCharactersKey));
+    setSavedSceneBackgrounds(readLocalArray<SavedSceneBackground>(savedSceneBackgroundsKey));
   }, []);
 
   useEffect(() => {
@@ -1420,6 +1444,15 @@ function App() {
       return;
     }
     const settings = entry.generationSettings;
+    let restoredActiveCharacter: GenerationSceneCharacter | undefined;
+    if (settings?.scene) {
+      const restoredScene = structuredClone(settings.scene);
+      setSceneCharacters(restoredScene.characters);
+      setSceneBackground(restoredScene.background ?? null);
+      const nextActiveId = restoredScene.activeItemId ?? restoredScene.characters[0]?.id ?? restoredScene.background?.id ?? null;
+      setActiveSceneItemId(nextActiveId);
+      restoredActiveCharacter = restoredScene.characters.find((character) => character.id === nextActiveId);
+    }
     setRestoredGenerationSettings(settings ?? null);
     setJapanesePrompt(settings?.japanesePrompt ?? entry.japanesePrompt ?? "");
     setPrompt(settings?.prompt ?? entry.prompt);
@@ -1451,6 +1484,7 @@ function App() {
     if (settings?.baseFilters) setBaseFilters(settings.baseFilters);
     if (settings?.selectedModelAddMode === "catalog" || settings?.selectedModelAddMode === "url") setModelAddMode(settings.selectedModelAddMode);
     if (
+      settings?.generationTab === "character" ||
       settings?.generationTab === "prompt" ||
       settings?.generationTab === "lora" ||
       settings?.generationTab === "options" ||
@@ -1459,7 +1493,243 @@ function App() {
     setImageMemo(entry.memo ?? "");
     setLastHistoryId(entry.id);
     if (entry.imageDataUrl || entry.imagePath) setLastImage(entry.imageDataUrl ?? entry.imagePath ?? null);
+    if (restoredActiveCharacter) applyCharacterSettings(restoredActiveCharacter.settings, true);
     setPromptHistoryOpen(false);
+  }
+
+  function captureCharacterSettings(): SceneCharacterSettings {
+    return {
+      japanesePrompt,
+      prompt,
+      negativePrompt,
+      promptEnhanceMode,
+      promptNotes,
+      loras: structuredClone(selectedLoras),
+      japanesePromptTagIds: [...japanesePromptTagIds],
+      positivePromptTagIds: [...positivePromptTagIds],
+      positiveOptionTagIds: [...positiveOptionTagIds],
+      negativeOptionTagIds: [...negativeOptionTagIds],
+      positiveLoraTriggerIds: [...positiveLoraTriggerIds],
+      poseConditioning: structuredClone(poseConditioning),
+      seedMode,
+      seedValue
+    };
+  }
+
+  function blankCharacterSettings(): SceneCharacterSettings {
+    return {
+      japanesePrompt: "",
+      prompt: "masterpiece, best quality, 1girl, anime style, soft light",
+      negativePrompt: "low quality, worst quality, blurry, bad anatomy",
+      promptEnhanceMode: "balanced-detail",
+      promptNotes: "",
+      loras: [],
+      japanesePromptTagIds: [],
+      positivePromptTagIds: [],
+      positiveOptionTagIds: [],
+      negativeOptionTagIds: [],
+      positiveLoraTriggerIds: [],
+      poseConditioning: createDefaultPoseConditioning(),
+      seedMode: "random",
+      seedValue: -1
+    };
+  }
+
+  function applyCharacterSettings(settings: SceneCharacterSettings, preserveRestoredSettings = false): void {
+    if (!preserveRestoredSettings) setRestoredGenerationSettings(null);
+    setJapanesePrompt(settings.japanesePrompt);
+    setPrompt(settings.prompt);
+    setNegativePrompt(settings.negativePrompt);
+    setPromptEnhanceMode(settings.promptEnhanceMode);
+    setPromptNotes(settings.promptNotes);
+    setSelectedLoras(structuredClone(settings.loras));
+    setJapanesePromptTagIds([...settings.japanesePromptTagIds]);
+    setPositivePromptTagIds([...settings.positivePromptTagIds]);
+    setPositiveOptionTagIds([...settings.positiveOptionTagIds]);
+    setNegativeOptionTagIds([...settings.negativeOptionTagIds]);
+    setPositiveLoraTriggerIds([...settings.positiveLoraTriggerIds]);
+    setPoseConditioning(normalizePoseConditioning(settings.poseConditioning));
+    setSeedMode(settings.seedMode);
+    setSeedValue(settings.seedValue);
+    setGenerateTab("prompt");
+  }
+
+  function persistActiveSceneCharacter(characters = sceneCharacters): GenerationSceneCharacter[] {
+    if (!activeSceneCharacter) return characters;
+    const settings = captureCharacterSettings();
+    return characters.map((character) => character.id === activeSceneCharacter.id ? { ...character, settings } : character);
+  }
+
+  function addSceneCharacter(): void {
+    const current = persistActiveSceneCharacter();
+    const nextNumber = current.length + 1;
+    const character: GenerationSceneCharacter = {
+      id: crypto.randomUUID(),
+      title: `キャラ${nextNumber}`,
+      settings: blankCharacterSettings(),
+      placement: { ...defaultCharacterPlacement, zIndex: nextNumber }
+    };
+    setSceneCharacters([...current, character]);
+    setActiveSceneItemId(character.id);
+    applyCharacterSettings(character.settings);
+    setSceneAddOpen(false);
+  }
+
+  function activateSceneCharacter(characterId: string): void {
+    const current = persistActiveSceneCharacter();
+    const target = current.find((character) => character.id === characterId);
+    if (!target) return;
+    setSceneCharacters(current);
+    setActiveSceneItemId(characterId);
+    applyCharacterSettings(target.settings);
+  }
+
+  function addSceneBackground(): void {
+    const current = persistActiveSceneCharacter();
+    setSceneCharacters(current);
+    const background = sceneBackground ?? {
+      id: crypto.randomUUID(),
+      title: "背景",
+      prompt: "",
+      negativePrompt: "",
+      referenceImageDataUrl: "",
+      referenceStrength: 0.7
+    };
+    setSceneBackground(background);
+    setActiveSceneItemId(background.id);
+    setSceneAddOpen(false);
+  }
+
+  function updateActiveCharacterPlacement(patch: Partial<GenerationSceneCharacter["placement"]>): void {
+    if (!activeSceneCharacter) return;
+    const current = persistActiveSceneCharacter();
+    setSceneCharacters(current.map((character) => character.id === activeSceneCharacter.id
+      ? { ...character, placement: { ...character.placement, ...patch } }
+      : character));
+  }
+
+  function updateActiveCharacterTitle(title: string): void {
+    if (!activeSceneCharacter) return;
+    const current = persistActiveSceneCharacter();
+    setSceneCharacters(current.map((character) => character.id === activeSceneCharacter.id ? { ...character, title } : character));
+  }
+
+  function saveActiveCharacterPreset(): void {
+    if (!activeSceneCharacter) return;
+    const saved: SavedSceneCharacter = {
+      ...activeSceneCharacter,
+      id: crypto.randomUUID(),
+      settings: captureCharacterSettings(),
+      savedAt: new Date().toISOString()
+    };
+    const next = [saved, ...savedSceneCharacters].slice(0, 100);
+    setSavedSceneCharacters(next);
+    localStorage.setItem(savedSceneCharactersKey, JSON.stringify(next));
+  }
+
+  function restoreCharacterPreset(saved: SavedSceneCharacter): void {
+    if (!activeSceneCharacter) return;
+    const restored: GenerationSceneCharacter = {
+      ...activeSceneCharacter,
+      title: saved.title,
+      settings: structuredClone(saved.settings),
+      placement: { ...defaultCharacterPlacement, zIndex: activeSceneCharacter.placement.zIndex }
+    };
+    setSceneCharacters(persistActiveSceneCharacter().map((character) => character.id === restored.id ? restored : character));
+    applyCharacterSettings(restored.settings);
+    setCharacterLibraryOpen(false);
+  }
+
+  function saveBackgroundPreset(): void {
+    if (!sceneBackground) return;
+    const saved: SavedSceneBackground = { ...structuredClone(sceneBackground), id: crypto.randomUUID(), savedAt: new Date().toISOString() };
+    const next = [saved, ...savedSceneBackgrounds].slice(0, 100);
+    setSavedSceneBackgrounds(next);
+    localStorage.setItem(savedSceneBackgroundsKey, JSON.stringify(next));
+  }
+
+  function restoreBackgroundPreset(saved: SavedSceneBackground): void {
+    const restored = { ...structuredClone(saved), id: sceneBackground?.id ?? crypto.randomUUID() };
+    setSceneBackground(restored);
+    setActiveSceneItemId(restored.id);
+    setSceneCharacters((current) => current.map((character, index) => ({
+      ...character,
+      placement: { ...defaultCharacterPlacement, zIndex: index + 1 }
+    })));
+    setBackgroundLibraryOpen(false);
+  }
+
+  function deleteCharacterPreset(id: string): void {
+    const next = savedSceneCharacters.filter((character) => character.id !== id);
+    setSavedSceneCharacters(next);
+    localStorage.setItem(savedSceneCharactersKey, JSON.stringify(next));
+  }
+
+  function deleteBackgroundPreset(id: string): void {
+    const next = savedSceneBackgrounds.filter((background) => background.id !== id);
+    setSavedSceneBackgrounds(next);
+    localStorage.setItem(savedSceneBackgroundsKey, JSON.stringify(next));
+  }
+
+  function removeActiveSceneItem(): void {
+    if (!activeSceneItemId) return;
+    if (activeSceneCharacter) {
+      const next = sceneCharacters.filter((character) => character.id !== activeSceneCharacter.id);
+      setSceneCharacters(next);
+      const nextItem = next[0] ?? sceneBackground;
+      setActiveSceneItemId(nextItem?.id ?? null);
+      if (next[0]) applyCharacterSettings(next[0].settings);
+      return;
+    }
+    if (sceneBackground?.id === activeSceneItemId) {
+      setSceneBackground(null);
+      const nextCharacter = sceneCharacters[0];
+      setActiveSceneItemId(nextCharacter?.id ?? null);
+      if (nextCharacter) applyCharacterSettings(nextCharacter.settings);
+    }
+  }
+
+  function restoreCharacterFromHistory(character: GenerationSceneCharacter): void {
+    const current = persistActiveSceneCharacter();
+    const restored: GenerationSceneCharacter = {
+      ...structuredClone(character),
+      id: crypto.randomUUID(),
+      placement: { ...defaultCharacterPlacement, zIndex: current.length + 1 }
+    };
+    setSceneCharacters([...current, restored]);
+    setActiveSceneItemId(restored.id);
+    applyCharacterSettings(restored.settings);
+    setPromptHistoryOpen(false);
+  }
+
+  function restoreBackgroundFromHistory(background: GenerationSceneBackground): void {
+    const restored = { ...structuredClone(background), id: sceneBackground?.id ?? crypto.randomUUID() };
+    setSceneBackground(restored);
+    setSceneCharacters((current) => current.map((character, index) => ({
+      ...character,
+      placement: { ...defaultCharacterPlacement, zIndex: index + 1 }
+    })));
+    setActiveSceneItemId(restored.id);
+    setPromptHistoryOpen(false);
+  }
+
+  function updateSceneBackground(patch: Partial<GenerationSceneBackground>): void {
+    setSceneBackground((current) => current ? { ...current, ...patch } : current);
+  }
+
+  function importBackgroundReference(file: File | undefined): void {
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = () => updateSceneBackground({ referenceImageDataUrl: String(reader.result ?? "") });
+    reader.readAsDataURL(file);
+  }
+
+  function currentGenerationScene(): GenerationSceneSettings {
+    return {
+      characters: persistActiveSceneCharacter().map((character) => structuredClone(character)),
+      background: sceneBackground ? structuredClone(sceneBackground) : undefined,
+      activeItemId: activeSceneItemId ?? undefined
+    };
   }
 
   function resetGenerationParameters(): void {
@@ -2178,13 +2448,52 @@ function App() {
     setBaseFilters((current) => (current.includes(filter) ? current.filter((item) => item !== filter) : [...current, filter]));
   }
 
+  function composeCharacterRequest(character: GenerationSceneCharacter, index: number): { prompt: string; negativePrompt: string } {
+    const settings = character.settings;
+    const positiveTags = illustrationTags
+      .filter((tag) => settings.positivePromptTagIds.includes(tag.id))
+      .map((tag) => tag.englishDescription);
+    const positiveOptions = optionPromptTags
+      .filter((tag) => settings.positiveOptionTagIds.includes(tag.id))
+      .map((tag) => tag.english);
+    const negativeOptions = optionPromptTags
+      .filter((tag) => settings.negativeOptionTagIds.includes(tag.id))
+      .map((tag) => tag.english);
+    const triggerWords = settings.loras.flatMap((lora) => {
+      const project = loraProjects.find((item) => item.outputName === lora.name || item.sourceLora === lora.name);
+      return getLoraTriggerWords(project).filter((word, triggerIndex) =>
+        settings.positiveLoraTriggerIds.includes(`${lora.name}::${triggerIndex}::${word}`)
+      );
+    });
+    const placement = character.placement;
+    const placementPrompt = `character ${index + 1} ${character.title}, position x ${placement.x} percent, y ${placement.y} percent, scale ${placement.scale} percent, layer ${placement.zIndex}`;
+    return {
+      prompt: composeGenerationPrompt(settings.prompt, [...positiveTags, ...positiveOptions, ...triggerWords, placementPrompt]),
+      negativePrompt: composeGenerationPrompt(settings.negativePrompt, negativeOptions)
+    };
+  }
+
   function createGenerationRequest(seed: number, activePose = poseConditioning): TestGenerationRequest {
     const poseEnabled = activePose.enabled;
+    const scene = currentGenerationScene();
+    const sceneCharactersForRequest = scene.characters.map(composeCharacterRequest);
+    const hasScene = sceneCharactersForRequest.length > 0 || Boolean(scene.background);
+    const scenePrompt = composeGenerationPrompt(
+      scene.background?.prompt ?? "",
+      sceneCharactersForRequest.map((character) => character.prompt)
+    );
+    const sceneNegativePrompt = composeGenerationPrompt(
+      scene.background?.negativePrompt ?? "",
+      sceneCharactersForRequest.map((character) => character.negativePrompt)
+    );
+    const sceneLoras = Array.from(new Map(
+      scene.characters.flatMap((character) => character.settings.loras).map((lora) => [lora.name, lora])
+    ).values()).filter((lora) => availableLoraNames.has(lora.name));
     return {
-      prompt: composeGenerationPrompt(effectivePrompt, poseEnabled ? [activePose.positivePrompt ?? ""] : []),
-      negativePrompt: composeGenerationPrompt(effectiveNegativePrompt, poseEnabled ? [activePose.negativePrompt ?? ""] : []),
+      prompt: composeGenerationPrompt(hasScene ? scenePrompt : effectivePrompt, poseEnabled ? [activePose.positivePrompt ?? ""] : []),
+      negativePrompt: composeGenerationPrompt(hasScene ? sceneNegativePrompt : effectiveNegativePrompt, poseEnabled ? [activePose.negativePrompt ?? ""] : []),
       checkpoint: selectedCheckpoint,
-      loras: activeGenerationLoras,
+      loras: hasScene ? sceneLoras : activeGenerationLoras,
       width: generationWidth,
       height: generationHeight,
       steps: generationSteps,
@@ -2503,7 +2812,8 @@ function App() {
       selectedModelAddMode: modelAddMode,
       baseFilters,
       generationTab: generateTab,
-      poseConditioning: request.poseConditioning
+      poseConditioning: request.poseConditioning,
+      scene: currentGenerationScene()
     };
   }
 
@@ -3666,7 +3976,97 @@ function App() {
           </section>
 
           <section className="panel generate-panel">
+            {sceneCharacters.length || sceneBackground ? (
+              <div className="scene-item-tabs">
+                {sceneCharacters.map((character) => (
+                  <button
+                    key={character.id}
+                    className={activeSceneItemId === character.id ? "scene-item-tab active" : "scene-item-tab"}
+                    onClick={() => activateSceneCharacter(character.id)}
+                  >
+                    {character.title}
+                  </button>
+                ))}
+                {sceneBackground ? (
+                  <button
+                    className={activeSceneItemId === sceneBackground.id ? "scene-item-tab active" : "scene-item-tab"}
+                    onClick={() => {
+                      setSceneCharacters(persistActiveSceneCharacter());
+                      setActiveSceneItemId(sceneBackground.id);
+                    }}
+                  >
+                    {sceneBackground.title}
+                  </button>
+                ) : null}
+                <button className="scene-add-tab" onClick={() => setSceneAddOpen(true)} title="シーン項目を追加">
+                  <Plus size={18} />
+                </button>
+              </div>
+            ) : null}
+            {!sceneCharacters.length && !sceneBackground ? (
+              <div className="scene-empty-state">
+                <button onClick={() => setSceneAddOpen(true)} title="キャラまたは背景を追加">
+                  <Plus size={44} />
+                </button>
+              </div>
+            ) : sceneBackground && activeSceneItemId === sceneBackground.id ? (
+              <div className="scene-background-editor">
+                <div className="scene-editor-heading">
+                  <div>
+                    <strong>背景設定</strong>
+                    <span>背景単体の復元時は、キャラの配置情報を初期位置へ戻します。</span>
+                  </div>
+                  <button className="icon-button danger" onClick={removeActiveSceneItem} title="背景をシーンから削除">
+                    <Trash2 size={16} />
+                  </button>
+                </div>
+                <div className="field">
+                  <label>タイトル</label>
+                  <input value={sceneBackground.title} onChange={(event) => updateSceneBackground({ title: event.target.value })} />
+                </div>
+                <div className="field">
+                  <label>情景・背景プロンプト</label>
+                  <textarea rows={7} value={sceneBackground.prompt} onChange={(event) => updateSceneBackground({ prompt: event.target.value })} />
+                </div>
+                <div className="field">
+                  <label>背景用 Negative Prompt</label>
+                  <textarea rows={4} value={sceneBackground.negativePrompt} onChange={(event) => updateSceneBackground({ negativePrompt: event.target.value })} />
+                </div>
+                <div className="scene-reference-grid">
+                  <div className="scene-reference-preview">
+                    {sceneBackground.referenceImageDataUrl ? (
+                      <img src={sceneBackground.referenceImageDataUrl} alt="背景参照画像" />
+                    ) : (
+                      <div className="placeholder"><ImageIcon size={34} /><span>参照画像なし</span></div>
+                    )}
+                  </div>
+                  <div className="scene-reference-controls">
+                    <label className="file-button">
+                      <ImageIcon size={16} />
+                      サンプル画像を読み込む
+                      <input type="file" accept="image/*" onChange={(event) => importBackgroundReference(event.target.files?.[0])} />
+                    </label>
+                    <button disabled={!sceneBackground.referenceImageDataUrl} onClick={() => updateSceneBackground({ referenceImageDataUrl: "" })}>
+                      <Trash2 size={15} />
+                      画像を解除
+                    </button>
+                    <div className="field">
+                      <label>参照強度 {sceneBackground.referenceStrength.toFixed(2)}</label>
+                      <input type="range" min="0" max="1" step="0.05" value={sceneBackground.referenceStrength} onChange={(event) => updateSceneBackground({ referenceStrength: Number(event.target.value) })} />
+                    </div>
+                  </div>
+                </div>
+                <div className="button-row">
+                  <button onClick={() => setBackgroundLibraryOpen(true)}><RefreshCw size={16} />保存済み背景から復元</button>
+                  <button className="primary" onClick={saveBackgroundPreset}><Save size={16} />背景を保存</button>
+                </div>
+              </div>
+            ) : activeSceneCharacter ? (
+              <>
             <div className="runtime-tabs">
+              <button className={generateTab === "character" ? "runtime-tab active" : "runtime-tab"} onClick={() => setGenerateTab("character")}>
+                キャラ設定
+              </button>
               <button className={generateTab === "prompt" ? "runtime-tab active" : "runtime-tab"} onClick={() => setGenerateTab("prompt")}>
                 プロンプト
               </button>
@@ -3682,7 +4082,33 @@ function App() {
                 生成オプション
               </button>
             </div>
-            {generateTab === "prompt" ? (
+            {generateTab === "character" ? (
+              <div className="scene-character-settings">
+                <div className="scene-editor-heading">
+                  <div>
+                    <strong>{activeSceneCharacter.title}</strong>
+                    <span>キャラ単体を復元した場合、配置は中央の初期値になります。</span>
+                  </div>
+                  <button className="icon-button danger" onClick={removeActiveSceneItem} title="キャラをシーンから削除">
+                    <Trash2 size={16} />
+                  </button>
+                </div>
+                <div className="field">
+                  <label>キャラ名</label>
+                  <input value={activeSceneCharacter.title} onChange={(event) => updateActiveCharacterTitle(event.target.value)} />
+                </div>
+                <div className="scene-placement-grid">
+                  <div className="field"><label>横位置 (%)</label><input type="number" min="0" max="100" value={activeSceneCharacter.placement.x} onChange={(event) => updateActiveCharacterPlacement({ x: Number(event.target.value) })} /></div>
+                  <div className="field"><label>縦位置 (%)</label><input type="number" min="0" max="100" value={activeSceneCharacter.placement.y} onChange={(event) => updateActiveCharacterPlacement({ y: Number(event.target.value) })} /></div>
+                  <div className="field"><label>拡大率 (%)</label><input type="number" min="10" max="300" value={activeSceneCharacter.placement.scale} onChange={(event) => updateActiveCharacterPlacement({ scale: Number(event.target.value) })} /></div>
+                  <div className="field"><label>重なり順</label><input type="number" min="1" value={activeSceneCharacter.placement.zIndex} onChange={(event) => updateActiveCharacterPlacement({ zIndex: Number(event.target.value) })} /></div>
+                </div>
+                <div className="button-row">
+                  <button onClick={() => setCharacterLibraryOpen(true)}><RefreshCw size={16} />保存済みキャラから復元</button>
+                  <button className="primary" onClick={saveActiveCharacterPreset}><Save size={16} />キャラ設定を保存</button>
+                </div>
+              </div>
+            ) : generateTab === "prompt" ? (
               <>
                 <PromptTransformPanel
                   japanesePrompt={japanesePrompt}
@@ -3854,9 +4280,68 @@ function App() {
               </p>
             ) : null}
             {generationResult?.message && <p className="result-message">{generationResult.message}</p>}
+              </>
+            ) : null}
           </section>
         </section>
       )}
+      {sceneAddOpen ? (
+        <div className="modal-backdrop" onClick={() => setSceneAddOpen(false)}>
+          <section className="modal-panel scene-add-modal" onClick={(event) => event.stopPropagation()}>
+            <div className="modal-header">
+              <PanelTitle icon={<Plus size={18} />} title="シーンへ追加" />
+              <button className="icon-button" onClick={() => setSceneAddOpen(false)} title="閉じる"><X size={17} /></button>
+            </div>
+            <div className="scene-add-options">
+              <button onClick={addSceneCharacter}><Plus size={24} /><strong>キャラを追加</strong></button>
+              <button disabled={Boolean(sceneBackground)} onClick={addSceneBackground}><ImageIcon size={24} /><strong>背景を追加</strong></button>
+            </div>
+          </section>
+        </div>
+      ) : null}
+      {characterLibraryOpen ? (
+        <div className="modal-backdrop" onClick={() => setCharacterLibraryOpen(false)}>
+          <section className="modal-panel scene-library-modal" onClick={(event) => event.stopPropagation()}>
+            <div className="modal-header">
+              <PanelTitle icon={<RefreshCw size={18} />} title="保存済みキャラ" />
+              <button className="icon-button" onClick={() => setCharacterLibraryOpen(false)} title="閉じる"><X size={17} /></button>
+            </div>
+            <div className="scene-library-list">
+              {savedSceneCharacters.length ? savedSceneCharacters.map((character) => (
+                <article key={character.id}>
+                  <div><strong>{character.title}</strong><time>{new Date(character.savedAt).toLocaleString("ja-JP", { hour12: false })}</time></div>
+                  <div className="button-row">
+                    <button className="primary" onClick={() => restoreCharacterPreset(character)}>復元</button>
+                    <button className="danger" onClick={() => deleteCharacterPreset(character.id)}><Trash2 size={15} />削除</button>
+                  </div>
+                </article>
+              )) : <p className="empty">保存済みキャラはありません。</p>}
+            </div>
+          </section>
+        </div>
+      ) : null}
+      {backgroundLibraryOpen ? (
+        <div className="modal-backdrop" onClick={() => setBackgroundLibraryOpen(false)}>
+          <section className="modal-panel scene-library-modal" onClick={(event) => event.stopPropagation()}>
+            <div className="modal-header">
+              <PanelTitle icon={<RefreshCw size={18} />} title="保存済み背景" />
+              <button className="icon-button" onClick={() => setBackgroundLibraryOpen(false)} title="閉じる"><X size={17} /></button>
+            </div>
+            <div className="scene-library-list">
+              {savedSceneBackgrounds.length ? savedSceneBackgrounds.map((background) => (
+                <article key={background.id}>
+                  {background.referenceImageDataUrl ? <img src={background.referenceImageDataUrl} alt="背景サムネイル" /> : null}
+                  <div><strong>{background.title}</strong><time>{new Date(background.savedAt).toLocaleString("ja-JP", { hour12: false })}</time></div>
+                  <div className="button-row">
+                    <button className="primary" onClick={() => restoreBackgroundPreset(background)}>復元</button>
+                    <button className="danger" onClick={() => deleteBackgroundPreset(background.id)}><Trash2 size={15} />削除</button>
+                  </div>
+                </article>
+              )) : <p className="empty">保存済み背景はありません。</p>}
+            </div>
+          </section>
+        </div>
+      ) : null}
       {repeatDialogOpen ? (
         <div className="modal-backdrop">
           <section className="modal-panel repeat-modal">
@@ -4320,8 +4805,18 @@ function App() {
                       <div className="history-card-actions">
                         <button disabled={entry.restorable === false} onClick={() => applyPromptHistory(entry)}>
                           <CheckCircle2 size={17} />
-                          流用
+                          {entry.generationSettings?.scene ? "シーンを復元" : "流用"}
                         </button>
+                        {entry.generationSettings?.scene?.characters.map((character, index) => (
+                          <button key={`${entry.id}-${character.id}`} disabled={entry.restorable === false} onClick={() => restoreCharacterFromHistory(character)}>
+                            キャラ{index + 1}を復元
+                          </button>
+                        ))}
+                        {entry.generationSettings?.scene?.background ? (
+                          <button disabled={entry.restorable === false} onClick={() => restoreBackgroundFromHistory(entry.generationSettings!.scene!.background!)}>
+                            背景を復元
+                          </button>
+                        ) : null}
                         <button className="icon-button danger" onClick={() => void deletePromptHistory(entry)} title="削除">
                           <Trash2 size={15} />
                         </button>
@@ -5500,6 +5995,15 @@ function isStepLoraName(name: string): boolean {
 function hexToTagBackground(hex: string): string {
   const safeHex = /^#[0-9a-f]{6}$/i.test(hex) ? hex : "#3388ff";
   return `${safeHex}22`;
+}
+
+function readLocalArray<T>(key: string): T[] {
+  try {
+    const value = JSON.parse(localStorage.getItem(key) ?? "[]");
+    return Array.isArray(value) ? value as T[] : [];
+  } catch {
+    return [];
+  }
 }
 
 createRoot(document.getElementById("root") as HTMLElement).render(<App />);
