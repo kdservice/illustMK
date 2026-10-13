@@ -31,6 +31,11 @@ type Rig = {
   selectable: THREE.Object3D[];
 };
 
+type DerivedPosePrompts = {
+  positivePrompt: string;
+  negativePrompt: string;
+};
+
 const jointLabels: Record<string, string> = {
   hips: "腰",
   spine: "背中",
@@ -139,6 +144,7 @@ export function PoseEditor({ value, controlNetModels, depthControlNetModels, onC
   const capturePoseRef = useRef<(() => string) | null>(null);
   const captureDepthRef = useRef<(() => string) | null>(null);
   const captureReferenceRef = useRef<(() => string) | null>(null);
+  const capturePromptRef = useRef<(() => DerivedPosePrompts) | null>(null);
   const [selectedJoint, setSelectedJoint] = useState("hips");
   const [assistantInstruction, setAssistantInstruction] = useState("");
   const [assistantMessage, setAssistantMessage] = useState("");
@@ -154,6 +160,7 @@ export function PoseEditor({ value, controlNetModels, depthControlNetModels, onC
       const imageDataUrl = capturePoseRef.current?.();
       const depthImageDataUrl = captureDepthRef.current?.();
       const referenceImageDataUrl = captureReferenceRef.current?.();
+      const prompts = capturePromptRef.current?.();
       if (
         (imageDataUrl && imageDataUrl !== valueRef.current.imageDataUrl) ||
         (depthImageDataUrl && depthImageDataUrl !== valueRef.current.depthImageDataUrl) ||
@@ -163,7 +170,10 @@ export function PoseEditor({ value, controlNetModels, depthControlNetModels, onC
           ...valueRef.current,
           imageDataUrl: imageDataUrl || valueRef.current.imageDataUrl,
           depthImageDataUrl: depthImageDataUrl || valueRef.current.depthImageDataUrl,
-          referenceImageDataUrl: referenceImageDataUrl || valueRef.current.referenceImageDataUrl
+          referenceImageDataUrl: referenceImageDataUrl || valueRef.current.referenceImageDataUrl,
+          positivePrompt: prompts?.positivePrompt || valueRef.current.positivePrompt,
+          negativePrompt: prompts?.negativePrompt || valueRef.current.negativePrompt,
+          analysisStale: false
         });
       }
     });
@@ -241,7 +251,8 @@ export function PoseEditor({ value, controlNetModels, depthControlNetModels, onC
         imageDataUrl: renderOpenPoseImage(rig, camera, current, outputWidth, outputHeight),
         depthImageDataUrl: renderDepthImage(renderer, scene, rig, floor, camera, transformHelper, outputWidth, outputHeight),
         referenceImageDataUrl: renderMannequinImage(renderer, scene, camera, transformHelper, outputWidth, outputHeight),
-        analysisStale: true,
+        ...derivePosePrompts(rig, camera, rotations),
+        analysisStale: false,
         jointRotations: rotations,
         cameraPosition: camera.position.toArray() as [number, number, number],
         cameraTarget: orbit.target.toArray() as [number, number, number],
@@ -257,6 +268,7 @@ export function PoseEditor({ value, controlNetModels, depthControlNetModels, onC
       return renderDepthImage(renderer, scene, rig, floor, camera, transformHelper, outputWidth, outputHeight);
     };
     captureReferenceRef.current = () => renderMannequinImage(renderer, scene, camera, transformHelper, outputWidth, outputHeight);
+    capturePromptRef.current = () => derivePosePrompts(rig, camera, valueRef.current.jointRotations);
 
     const selectAtPointer = (event: PointerEvent) => {
       if (transform.dragging) return;
@@ -320,6 +332,7 @@ export function PoseEditor({ value, controlNetModels, depthControlNetModels, onC
       capturePoseRef.current = null;
       captureDepthRef.current = null;
       captureReferenceRef.current = null;
+      capturePromptRef.current = null;
     };
   }, [outputHeight, outputWidth]);
 
@@ -534,6 +547,80 @@ export function PoseEditor({ value, controlNetModels, depthControlNetModels, onC
       {!depthControlNetModels.length ? <p className="pose-warning">視点・画角を固定する場合は「モデル」タブからDepth用ControlNetモデルを導入してください。</p> : null}
     </div>
   );
+}
+
+function derivePosePrompts(
+  rig: Rig,
+  camera: THREE.Camera,
+  rotations: Record<string, PoseJointRotation>
+): DerivedPosePrompts {
+  rig.root.updateWorldMatrix(true, true);
+  camera.updateWorldMatrix(true, false);
+  const position = (name: string) => rig.joints.get(name)?.getWorldPosition(new THREE.Vector3()) ?? new THREE.Vector3();
+  const leftHip = rotations.leftHip ?? [0, 0, 0];
+  const rightHip = rotations.rightHip ?? [0, 0, 0];
+  const leftKnee = rotations.leftKnee ?? [0, 0, 0];
+  const rightKnee = rotations.rightKnee ?? [0, 0, 0];
+  const leftElbow = rotations.leftElbow ?? [0, 0, 0];
+  const rightElbow = rotations.rightElbow ?? [0, 0, 0];
+  const spinePitch = (rotations.hips?.[0] ?? 0) + (rotations.spine?.[0] ?? 0) + (rotations.chest?.[0] ?? 0);
+  const hipStride = Math.abs(leftHip[0] - rightHip[0]);
+  const kneeAsymmetry = Math.abs(leftKnee[0] - rightKnee[0]);
+  const bothKneesBent = leftKnee[0] > 1.25 && rightKnee[0] > 1.25;
+  const elbowsBent = Math.abs(leftElbow[0]) > 0.55 && Math.abs(rightElbow[0]) > 0.55;
+  const leftAnkle = position("leftAnkle");
+  const rightAnkle = position("rightAnkle");
+  const ankleHeightDifference = Math.abs(leftAnkle.y - rightAnkle.y);
+
+  let pose = "standing pose";
+  let conflict = "sitting, lying down";
+  if (bothKneesBent && leftHip[0] < -0.7 && rightHip[0] < -0.7) {
+    pose = "deep crouching pose, both knees bent, hips lowered";
+    conflict = "standing upright, straight legs";
+  } else if (hipStride > 1.05 && kneeAsymmetry > 0.55) {
+    pose = "dynamic running pose, one knee raised forward, opposite leg extended backward";
+    conflict = "standing still, sitting, both legs straight together";
+  } else if (hipStride > 0.45) {
+    pose = "walking pose, legs striding in opposite directions";
+    conflict = "standing still, feet together";
+  } else if (bothKneesBent) {
+    pose = "kneeling or compact seated pose, both knees deeply bent";
+    conflict = "standing upright, straight legs";
+  } else if (ankleHeightDifference > 0.38) {
+    pose = "one-legged pose, one foot raised off the ground";
+    conflict = "both feet planted evenly";
+  }
+
+  const details = [pose];
+  if (elbowsBent) details.push("both elbows bent");
+  else if (Math.abs(leftElbow[0]) > 0.55 || Math.abs(rightElbow[0]) > 0.55) details.push("one elbow bent");
+  if (hipStride > 0.45) details.push("opposing arm and leg motion");
+  if (spinePitch < -0.22) details.push("torso leaning forward");
+  else if (spinePitch > 0.22) details.push("torso leaning backward");
+  details.push(cameraViewPrompt(camera));
+  details.push("full body, anatomically coherent limb placement");
+
+  return {
+    positivePrompt: details.join(", "),
+    negativePrompt: `${conflict}, contradictory limb positions, disconnected limbs`
+  };
+}
+
+function cameraViewPrompt(camera: THREE.Camera): string {
+  const direction = camera.position.clone();
+  const horizontal = Math.hypot(direction.x, direction.z) || 1;
+  const elevation = Math.atan2(direction.y - 3.8, horizontal);
+  const azimuth = Math.atan2(direction.x, direction.z);
+  const horizontalView = Math.abs(Math.sin(azimuth)) > 0.82
+    ? "side view"
+    : Math.cos(azimuth) < -0.35
+      ? "back view"
+      : Math.abs(Math.sin(azimuth)) > 0.35
+        ? "three-quarter view"
+        : "front view";
+  if (elevation > 0.42) return `${horizontalView}, viewed from above`;
+  if (elevation < -0.28) return `${horizontalView}, viewed from below`;
+  return horizontalView;
 }
 
 function renderMannequinImage(

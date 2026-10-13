@@ -2244,14 +2244,23 @@ export async function sendLlmChatPrompt(request: LlmChatRequest): Promise<LlmCha
 export async function generatePoseWithOllama(request: PoseAssistantRequest): Promise<PoseAssistantResult> {
   const instruction = request.instruction.trim();
   if (!instruction) throw new Error("作りたいポーズを入力してください。");
+  const jointNames = Object.keys(request.currentPose.jointRotations);
+  const knownPreset = posePresetForInstruction(instruction, request.currentPose.jointRotations);
+  if (knownPreset) {
+    return {
+      pose: { ...request.currentPose, jointRotations: knownPreset },
+      summary: posePresetSummary(instruction)
+    };
+  }
   if (!request.model.trim()) throw new Error("Ollamaモデルを選択してください。");
   await assertOllamaReady(request.ollamaUrl);
 
-  const jointNames = Object.keys(request.currentPose.jointRotations);
   const prompt = [
     "あなたは3Dデッサン人形のポーズ設定アシスタントです。",
-    "依頼を人体の自然なポーズとして解釈し、各関節のローカルXYZ回転をラジアンで指定してください。",
-    "値は-3.1416から3.1416の範囲です。左右を取り違えず、接地・重心・腕脚の連動を考慮してください。",
+    "依頼を人体の自然なポーズとして解釈してください。",
+    "この人形はY軸が上下、X回転が手足の前後運動、Z回転が左右への開閉です。",
+    "hipsは全身の親なので大きく回転させず、胴体の傾きはspineとchestへ分散してください。",
+    "肘と膝は自然な曲げ方向だけを使い、左右の腕脚を連動させてください。",
     "現在値を基準にせず、依頼されたポーズ全体を完成させる値を返してください。",
     `使用可能な関節名: ${jointNames.join(", ")}`,
     "出力は説明やMarkdownを含めず、次のJSONだけにしてください。",
@@ -2266,10 +2275,9 @@ export async function generatePoseWithOllama(request: PoseAssistantRequest): Pro
   for (const name of jointNames) {
     const candidate = parsed.jointRotations?.[name];
     const fallback = request.currentPose.jointRotations[name];
-    rotations[name] = normalizePoseRotation(candidate, fallback);
+    rotations[name] = normalizePoseRotation(name, candidate, fallback);
   }
-  const preset = posePresetForInstruction(instruction, rotations);
-  const finalRotations = preset ?? rotations;
+  const finalRotations = rotations;
   const changedJointCount = jointNames.filter((name) => {
     const before = request.currentPose.jointRotations[name];
     const after = finalRotations[name];
@@ -2282,6 +2290,14 @@ export async function generatePoseWithOllama(request: PoseAssistantRequest): Pro
     pose: { ...request.currentPose, jointRotations: finalRotations },
     summary: typeof parsed.summary === "string" && parsed.summary.trim() ? parsed.summary.trim() : `${instruction}のポーズを設定しました。`
   };
+}
+
+function posePresetSummary(instruction: string): string {
+  if (/(走|ランニング|ダッシュ|駆け)/.test(instruction)) return "安定した走行用基本ポーズを適用しました。人形を直接動かして微調整できます。";
+  if (/(歩|ウォーキング)/.test(instruction)) return "安定した歩行用基本ポーズを適用しました。人形を直接動かして微調整できます。";
+  if (/(体育座り|膝抱え|膝を抱)/.test(instruction)) return "体育座り用基本ポーズを適用しました。人形を直接動かして微調整できます。";
+  if (/(しゃが|屈む|かがむ|スクワット)/.test(instruction)) return "しゃがみ用基本ポーズを適用しました。人形を直接動かして微調整できます。";
+  return "ジャンプ用基本ポーズを適用しました。人形を直接動かして微調整できます。";
 }
 
 export async function analyzePoseImageWithOllama(request: PoseVisionRequest): Promise<PoseVisionResult> {
@@ -2328,27 +2344,63 @@ function posePresetForInstruction(
   instruction: string,
   rotations: Record<string, PoseJointRotation>
 ): Record<string, PoseJointRotation> | null {
-  if (!/(体育座り|膝抱え|膝を抱)/.test(instruction)) return null;
-  return {
-    ...rotations,
-    hips: [0.18, 0, 0],
-    spine: [-0.3, 0, 0],
-    chest: [-0.22, 0, 0],
-    neck: [0.18, 0, 0],
-    head: [0.18, 0, 0],
-    leftShoulder: [-0.42, -0.08, 0.42],
-    leftElbow: [1.12, 0.12, -0.28],
-    leftWrist: [0, 0, 0],
-    rightShoulder: [-0.42, 0.08, -0.42],
-    rightElbow: [1.12, -0.12, 0.28],
-    rightWrist: [0, 0, 0],
-    leftHip: [-1.58, 0, -0.1],
-    leftKnee: [2.48, 0, 0.06],
-    leftAnkle: [-0.72, 0, 0],
-    rightHip: [-1.58, 0, 0.1],
-    rightKnee: [2.48, 0, -0.06],
-    rightAnkle: [-0.72, 0, 0]
-  };
+  const base = neutralPoseRotations(rotations);
+  if (/(走|ランニング|ダッシュ|駆け)/.test(instruction)) {
+    return applyPoseOverrides(base, {
+      hips: [-0.08, 0.08, 0.04], spine: [-0.22, 0, 0], chest: [-0.16, 0, 0], neck: [0.18, 0, 0], head: [0.08, 0, 0],
+      leftShoulder: [-0.82, 0, -0.16], leftElbow: [-1.18, 0, -0.08], rightShoulder: [0.72, 0, 0.16], rightElbow: [-1.05, 0, 0.08],
+      leftHip: [-0.92, 0, -0.05], leftKnee: [1.72, 0, 0], leftAnkle: [-0.38, 0, 0],
+      rightHip: [0.68, 0, 0.05], rightKnee: [0.48, 0, 0], rightAnkle: [-0.18, 0, 0]
+    });
+  }
+  if (/(歩|ウォーキング)/.test(instruction)) {
+    return applyPoseOverrides(base, {
+      hips: [0, 0.05, 0.02], spine: [-0.06, 0, 0], chest: [-0.04, 0, 0],
+      leftShoulder: [-0.35, 0, -0.18], leftElbow: [-0.28, 0, -0.06], rightShoulder: [0.32, 0, 0.18], rightElbow: [-0.25, 0, 0.06],
+      leftHip: [-0.38, 0, -0.04], leftKnee: [0.5, 0, 0], rightHip: [0.34, 0, 0.04], rightKnee: [0.12, 0, 0]
+    });
+  }
+  if (/(体育座り|膝抱え|膝を抱)/.test(instruction)) {
+    return applyPoseOverrides(base, {
+      hips: [0.18, 0, 0], spine: [-0.3, 0, 0], chest: [-0.22, 0, 0], neck: [0.18, 0, 0], head: [0.18, 0, 0],
+      leftShoulder: [-0.42, -0.08, 0.42], leftElbow: [1.12, 0.12, -0.28], rightShoulder: [-0.42, 0.08, -0.42], rightElbow: [1.12, -0.12, 0.28],
+      leftHip: [-1.58, 0, -0.1], leftKnee: [2.48, 0, 0.06], leftAnkle: [-0.72, 0, 0], rightHip: [-1.58, 0, 0.1], rightKnee: [2.48, 0, -0.06], rightAnkle: [-0.72, 0, 0]
+    });
+  }
+  if (/(しゃが|屈む|かがむ|スクワット)/.test(instruction)) {
+    return applyPoseOverrides(base, {
+      hips: [0.1, 0, 0], spine: [-0.18, 0, 0], chest: [-0.12, 0, 0],
+      leftHip: [-1.05, 0, -0.12], leftKnee: [1.95, 0, 0], leftAnkle: [-0.72, 0, 0],
+      rightHip: [-1.05, 0, 0.12], rightKnee: [1.95, 0, 0], rightAnkle: [-0.72, 0, 0]
+    });
+  }
+  if (/(跳|ジャンプ)/.test(instruction)) {
+    return applyPoseOverrides(base, {
+      hips: [-0.05, 0, 0], spine: [-0.12, 0, 0], chest: [-0.08, 0, 0],
+      leftShoulder: [2.35, 0, -0.2], leftElbow: [-0.28, 0, 0], rightShoulder: [2.35, 0, 0.2], rightElbow: [-0.28, 0, 0],
+      leftHip: [-0.48, 0, -0.08], leftKnee: [1.08, 0, 0], rightHip: [-0.62, 0, 0.08], rightKnee: [1.28, 0, 0]
+    });
+  }
+  return null;
+}
+
+function neutralPoseRotations(rotations: Record<string, PoseJointRotation>): Record<string, PoseJointRotation> {
+  const neutral: Record<string, PoseJointRotation> = {};
+  for (const name of Object.keys(rotations)) neutral[name] = [0, 0, 0];
+  neutral.leftShoulder = [0, 0, -0.22];
+  neutral.leftElbow = [0, 0, -0.08];
+  neutral.rightShoulder = [0, 0, 0.22];
+  neutral.rightElbow = [0, 0, 0.08];
+  neutral.leftHip = [0, 0, -0.04];
+  neutral.rightHip = [0, 0, 0.04];
+  return neutral;
+}
+
+function applyPoseOverrides(
+  base: Record<string, PoseJointRotation>,
+  overrides: Record<string, PoseJointRotation>
+): Record<string, PoseJointRotation> {
+  return Object.fromEntries(Object.entries({ ...base, ...overrides }).map(([name, value]) => [name, clampPoseRotation(name, value)]));
 }
 
 export async function getIllustrationTags(): Promise<IllustrationTag[]> {
@@ -3837,11 +3889,36 @@ function parsePoseAssistantResponse(response: string): {
   }
 }
 
-function normalizePoseRotation(value: unknown, fallback: PoseJointRotation): PoseJointRotation {
+const poseJointLimits: Record<string, [PoseJointRotation, PoseJointRotation]> = {
+  hips: [[-0.45, -0.55, -0.35], [0.45, 0.55, 0.35]],
+  spine: [[-0.65, -0.55, -0.45], [0.55, 0.55, 0.45]],
+  chest: [[-0.65, -0.75, -0.55], [0.55, 0.75, 0.55]],
+  neck: [[-0.55, -0.8, -0.5], [0.55, 0.8, 0.5]],
+  head: [[-0.65, -1, -0.6], [0.65, 1, 0.6]],
+  leftShoulder: [[-2.7, -1.25, -1.7], [2.7, 1.25, 1.1]],
+  rightShoulder: [[-2.7, -1.25, -1.1], [2.7, 1.25, 1.7]],
+  leftElbow: [[-2.65, -0.45, -0.65], [0.35, 0.45, 0.35]],
+  rightElbow: [[-2.65, -0.45, -0.35], [0.35, 0.45, 0.65]],
+  leftWrist: [[-0.9, -0.9, -0.9], [0.9, 0.9, 0.9]],
+  rightWrist: [[-0.9, -0.9, -0.9], [0.9, 0.9, 0.9]],
+  leftHip: [[-1.85, -0.75, -0.75], [1.15, 0.75, 0.55]],
+  rightHip: [[-1.85, -0.75, -0.55], [1.15, 0.75, 0.75]],
+  leftKnee: [[-0.1, -0.2, -0.2], [2.75, 0.2, 0.2]],
+  rightKnee: [[-0.1, -0.2, -0.2], [2.75, 0.2, 0.2]],
+  leftAnkle: [[-0.9, -0.35, -0.35], [0.65, 0.35, 0.35]],
+  rightAnkle: [[-0.9, -0.35, -0.35], [0.65, 0.35, 0.35]]
+};
+
+function normalizePoseRotation(name: string, value: unknown, fallback: PoseJointRotation): PoseJointRotation {
   if (!Array.isArray(value) || value.length !== 3 || value.some((item) => !Number.isFinite(Number(item)))) {
-    return [...fallback] as PoseJointRotation;
+    return clampPoseRotation(name, fallback);
   }
-  return value.map((item) => Math.max(-Math.PI, Math.min(Math.PI, Number(item)))) as PoseJointRotation;
+  return clampPoseRotation(name, value.map(Number) as PoseJointRotation);
+}
+
+function clampPoseRotation(name: string, value: PoseJointRotation): PoseJointRotation {
+  const [minimum, maximum] = poseJointLimits[name] ?? [[-Math.PI, -Math.PI, -Math.PI], [Math.PI, Math.PI, Math.PI]];
+  return value.map((item, index) => Math.max(minimum[index], Math.min(maximum[index], item))) as PoseJointRotation;
 }
 
 function extractImageBase64(dataUrl: string): string {

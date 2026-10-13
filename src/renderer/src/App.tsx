@@ -1101,11 +1101,13 @@ function App() {
     return {
       pose: {
         ...pose,
-        positivePrompt: result.positivePrompt,
-        negativePrompt: result.negativePrompt,
+        positivePrompt: pose.positivePrompt?.trim() || result.positivePrompt,
+        negativePrompt: pose.negativePrompt?.trim() || result.negativePrompt,
         analysisStale: false
       },
-      summary: result.summary
+      summary: pose.positivePrompt?.trim()
+        ? `${result.summary} 骨格座標から生成したプロンプトを優先しています。`
+        : result.summary
     };
   }
 
