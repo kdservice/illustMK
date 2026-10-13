@@ -420,6 +420,7 @@ export type PoseBodyShape = {
   height: number;
   headSize: number;
   build: number;
+  waist: number;
   shoulderWidth: number;
   hipWidth: number;
   torsoLength: number;
@@ -429,6 +430,7 @@ export type PoseBodyShape = {
 
 export type PoseConditioning = {
   enabled: boolean;
+  bodyModel?: "male" | "female";
   preserveCharacterProportions?: boolean;
   bodyShape?: PoseBodyShape;
   imageDataUrl: string;

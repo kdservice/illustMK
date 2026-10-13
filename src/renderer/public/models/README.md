@@ -9,3 +9,10 @@ distributed under CC0 1.0.
 
 The model is bundled as a drawing mannequin and may be modified and
 redistributed, including for commercial use.
+
+`human-female-rigged.glb` is a female MakeHuman/MPFB character using the same
+UE-style body bone names. Its animation tracks were removed before bundling;
+only the static skinned model and rig are included.
+
+- Source: https://github.com/MMWilliams/char-kit (`characters/mh_3183.glb`)
+- Character assets: MakeHuman/MPFB2 output, CC0 1.0 Universal

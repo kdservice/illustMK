@@ -3,7 +3,7 @@ import * as THREE from "three";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
 import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
 import { TransformControls } from "three/examples/jsm/controls/TransformControls.js";
-import { Camera, Download, ExternalLink, FolderOpen, Images, RotateCcw, Save, Search, Trash2, X } from "lucide-react";
+import { Camera, ChevronDown, ChevronRight, Download, ExternalLink, FolderOpen, Images, Minus, Plus, RotateCcw, Save, Search, Trash2, X } from "lucide-react";
 import type { CivitaiModelCard, OpenPoseAsset, OpenPoseCatalogItem, PoseBodyShape, PoseConditioning, PoseExtractionResult, PoseJointRotation, PosePreprocessorStatus, SavedPose } from "../../main/runtime";
 
 type PoseEditorProps = {
@@ -73,13 +73,17 @@ const defaultBodyShape: PoseBodyShape = {
   hipWidth: 1,
   torsoLength: 1,
   armLength: 1,
-  legLength: 1
+  legLength: 1,
+  waist: 1
 };
 
-const bodyShapeControls: Array<{ key: keyof PoseBodyShape; label: string; min: number; max: number }> = [
+const basicBodyShapeControls: Array<{ key: keyof PoseBodyShape; label: string; min: number; max: number }> = [
   { key: "height", label: "身長", min: 0.78, max: 1.22 },
+  { key: "build", label: "体格", min: 0.72, max: 1.3 }
+];
+
+const detailBodyShapeControls: Array<{ key: keyof PoseBodyShape; label: string; min: number; max: number }> = [
   { key: "headSize", label: "頭サイズ", min: 0.82, max: 1.28 },
-  { key: "build", label: "体格", min: 0.72, max: 1.3 },
   { key: "shoulderWidth", label: "肩幅", min: 0.72, max: 1.3 },
   { key: "hipWidth", label: "腰幅", min: 0.75, max: 1.28 },
   { key: "torsoLength", label: "胴", min: 0.78, max: 1.22 },
@@ -217,6 +221,7 @@ function templateRotations(overrides: Record<string, PoseJointRotation>): Record
 export function createDefaultPoseConditioning(): PoseConditioning {
   return {
     enabled: false,
+    bodyModel: "male",
     preserveCharacterProportions: true,
     bodyShape: { ...defaultBodyShape },
     imageDataUrl: "",
@@ -252,7 +257,9 @@ export function PoseEditor({ value, controlNetModels, depthControlNetModels, onC
   const captureDepthRef = useRef<(() => string) | null>(null);
   const captureReferenceRef = useRef<(() => string) | null>(null);
   const capturePromptRef = useRef<(() => DerivedPosePrompts) | null>(null);
-  const [selectedJoint, setSelectedJoint] = useState("hips");
+  const selectJointRef = useRef<((jointName: string | null) => void) | null>(null);
+  const [selectedJoint, setSelectedJoint] = useState<string | null>(null);
+  const [bodyDetailsOpen, setBodyDetailsOpen] = useState(false);
   const [selectedTemplateId, setSelectedTemplateId] = useState("");
   const [catalogOpen, setCatalogOpen] = useState(false);
   const [catalogSource, setCatalogSource] = useState<"openposes" | "civitai">("openposes");
@@ -272,6 +279,10 @@ export function PoseEditor({ value, controlNetModels, depthControlNetModels, onC
   useEffect(() => {
     void window.illustMK.poses.preprocessorStatus(comfyUrl).then(setPreprocessorStatus).catch(() => undefined);
   }, [comfyUrl]);
+
+  useEffect(() => {
+    setSelectedJoint(null);
+  }, [value.bodyModel]);
 
   useEffect(() => {
     applyValueRef.current?.(value);
@@ -299,7 +310,7 @@ export function PoseEditor({ value, controlNetModels, depthControlNetModels, onC
       }
     });
     return () => cancelAnimationFrame(frame);
-  }, [value.jointRotations, value.cameraPosition, value.cameraTarget, value.cameraFov, value.preserveCharacterProportions, value.bodyShape]);
+  }, [value.jointRotations, value.cameraPosition, value.cameraTarget, value.cameraFov, value.preserveCharacterProportions, value.bodyShape, value.bodyModel]);
 
   useEffect(() => {
     const host = hostRef.current;
@@ -339,6 +350,7 @@ export function PoseEditor({ value, controlNetModels, depthControlNetModels, onC
 
     const raycaster = new THREE.Raycaster();
     const pointer = new THREE.Vector2();
+    let activeJointName: string | null = null;
     let applying = false;
     let rigReady = false;
     let disposed = false;
@@ -407,7 +419,20 @@ export function PoseEditor({ value, controlNetModels, depthControlNetModels, onC
       const jointName = hit?.object.userData.jointName as string | undefined;
       const joint = jointName ? rig.joints.get(jointName) : null;
       if (!joint || !jointName) return;
+      selectJointRef.current?.(jointName);
+    };
+
+    selectJointRef.current = (jointName) => {
+      if (!jointName || activeJointName === jointName) {
+        transform.detach();
+        activeJointName = null;
+        setSelectedJoint(null);
+        return;
+      }
+      const joint = rig.joints.get(jointName);
+      if (!joint) return;
       transform.attach(joint);
+      activeJointName = jointName;
       setSelectedJoint(jointName);
     };
 
@@ -437,13 +462,11 @@ export function PoseEditor({ value, controlNetModels, depthControlNetModels, onC
     });
     orbit.addEventListener("change", emitPose);
     resize();
-    void loadMannequinRig(rig).then(() => {
+    void loadMannequinRig(rig, valueRef.current.bodyModel ?? "male").then(() => {
       if (disposed) return;
       rigReady = true;
       setModelError("");
       applyValue(valueRef.current);
-      const hips = rig.joints.get("hips");
-      if (hips) transform.attach(hips);
       scene.updateMatrixWorld(true);
       emitPose();
     }).catch((error) => {
@@ -479,8 +502,21 @@ export function PoseEditor({ value, controlNetModels, depthControlNetModels, onC
       captureDepthRef.current = null;
       captureReferenceRef.current = null;
       capturePromptRef.current = null;
+      selectJointRef.current = null;
     };
-  }, [outputHeight, outputWidth]);
+  }, [outputHeight, outputWidth, value.bodyModel]);
+
+  const updateJointAngle = (axis: 0 | 1 | 2, direction: -1 | 1) => {
+    if (!selectedJoint) return;
+    const current = value.jointRotations[selectedJoint] ?? defaultRotations[selectedJoint] ?? [0, 0, 0];
+    const next = [...current] as PoseJointRotation;
+    next[axis] += THREE.MathUtils.degToRad(direction);
+    onChange({
+      ...value,
+      jointRotations: { ...value.jointRotations, [selectedJoint]: clampJointRotation(selectedJoint, next) },
+      analysisStale: true
+    });
+  };
 
   const resetPose = () => {
     const reset = {
@@ -656,6 +692,20 @@ export function PoseEditor({ value, controlNetModels, depthControlNetModels, onC
       <div className="pose-body-shape-panel">
         <div className="pose-body-shape-heading">
           <strong>体型</strong>
+          <div className="pose-model-switch" role="group" aria-label="人体モデル">
+            <button
+              type="button"
+              className={(value.bodyModel ?? "male") === "male" ? "active" : ""}
+              disabled={disabled}
+              onClick={() => onChange({ ...value, bodyModel: "male", analysisStale: true })}
+            >男性</button>
+            <button
+              type="button"
+              className={value.bodyModel === "female" ? "active" : ""}
+              disabled={disabled}
+              onClick={() => onChange({ ...value, bodyModel: "female", analysisStale: true })}
+            >女性</button>
+          </div>
           <button
             type="button"
             className="icon-button"
@@ -667,7 +717,7 @@ export function PoseEditor({ value, controlNetModels, depthControlNetModels, onC
           </button>
         </div>
         <div className="pose-body-shape-controls">
-          {bodyShapeControls.map((control) => {
+          {basicBodyShapeControls.map((control) => {
             const bodyShape = { ...defaultBodyShape, ...value.bodyShape };
             return (
               <label key={control.key}>
@@ -688,11 +738,71 @@ export function PoseEditor({ value, controlNetModels, depthControlNetModels, onC
               </label>
             );
           })}
+          <button
+            type="button"
+            className="pose-body-details-toggle"
+            aria-expanded={bodyDetailsOpen}
+            onClick={() => setBodyDetailsOpen((open) => !open)}
+          >
+            {bodyDetailsOpen ? <ChevronDown size={15} /> : <ChevronRight size={15} />}詳細
+          </button>
+        </div>
+        {bodyDetailsOpen ? (
+          <div className="pose-body-shape-controls pose-body-shape-details">
+            {[...(value.bodyModel === "female" ? [{ key: "waist" as const, label: "くびれ", min: 0.72, max: 1.18 }] : []), ...detailBodyShapeControls].map((control) => {
+              const bodyShape = { ...defaultBodyShape, ...value.bodyShape };
+              return (
+                <label key={control.key}>
+                  <span>{control.label}<b>{Math.round(bodyShape[control.key] * 100)}%</b></span>
+                  <input
+                    type="range"
+                    min={control.min}
+                    max={control.max}
+                    step="0.01"
+                    value={bodyShape[control.key]}
+                    disabled={disabled}
+                    onChange={(event) => onChange({
+                      ...value,
+                      bodyShape: { ...bodyShape, [control.key]: Number(event.target.value) },
+                      analysisStale: true
+                    })}
+                  />
+                </label>
+              );
+            })}
+          </div>
+        ) : null}
+      </div>
+      <div className="pose-joint-panel">
+        <strong>稼働リスト</strong>
+        <div className="pose-joint-list">
+          {Object.entries(jointLabels).map(([name, label]) => (
+            <button
+              type="button"
+              key={name}
+              className={selectedJoint === name ? "active" : ""}
+              aria-pressed={selectedJoint === name}
+              disabled={disabled}
+              onClick={() => selectJointRef.current?.(name)}
+            >{label}</button>
+          ))}
         </div>
       </div>
       <div className="pose-viewport-wrap">
         <div className="pose-viewport" ref={hostRef} />
-        <div className="pose-selection">選択中: {jointLabels[selectedJoint] ?? selectedJoint}</div>
+        {selectedJoint ? (
+          <div className="pose-angle-control">
+            <strong>{jointLabels[selectedJoint] ?? selectedJoint}</strong>
+            {(["X", "Y", "Z"] as const).map((axis, index) => (
+              <div className="pose-angle-row" key={axis}>
+                <span>{axis}</span>
+                <button type="button" className="icon-button" onClick={() => updateJointAngle(index as 0 | 1 | 2, -1)} title={`${axis}角度を1度下げる`}><Minus size={13} /></button>
+                <b>{THREE.MathUtils.radToDeg(value.jointRotations[selectedJoint]?.[index] ?? 0).toFixed(1)}°</b>
+                <button type="button" className="icon-button" onClick={() => updateJointAngle(index as 0 | 1 | 2, 1)} title={`${axis}角度を1度上げる`}><Plus size={13} /></button>
+              </div>
+            ))}
+          </div>
+        ) : null}
         {value.imageDataUrl ? <img className="pose-map-preview" src={value.imageDataUrl} alt="OpenPose入力プレビュー" /> : null}
         {value.depthImageDataUrl ? <img className="depth-map-preview" src={value.depthImageDataUrl} alt="Depth入力プレビュー" /> : null}
         <label className="pose-fov-control">
@@ -1230,21 +1340,27 @@ function createRig(): Rig {
   };
 }
 
-async function loadMannequinRig(rig: Rig): Promise<void> {
-  const modelUrl = new URL("./models/human-base-rigged.glb", window.location.href).href;
+async function loadMannequinRig(rig: Rig, bodyModel: "male" | "female"): Promise<void> {
+  const fileName = bodyModel === "female" ? "human-female-rigged.glb" : "human-base-rigged.glb";
+  const modelUrl = new URL(`./models/${fileName}`, window.location.href).href;
   const gltf = await new GLTFLoader().loadAsync(modelUrl);
   const model = gltf.scene;
   model.name = "drawing-mannequin";
+  const mannequinMaterial = new THREE.MeshStandardMaterial({
+    color: bodyModel === "female" ? 0xc6bdc5 : 0xb8bdc7,
+    roughness: 0.72,
+    metalness: 0.02,
+    side: THREE.DoubleSide
+  });
   model.traverse((object) => {
     object.castShadow = object instanceof THREE.Mesh;
     object.receiveShadow = object instanceof THREE.Mesh;
     if (object instanceof THREE.Mesh) {
-      object.material = new THREE.MeshStandardMaterial({
-        color: 0xb8bdc7,
-        roughness: 0.72,
-        metalness: 0.02,
-        side: THREE.DoubleSide
-      });
+      object.material = mannequinMaterial;
+    }
+    if (object instanceof THREE.Bone) {
+      object.userData.restScale = object.scale.clone();
+      object.userData.restPosition = object.position.clone();
     }
   });
   rig.root.add(model);
@@ -1290,12 +1406,6 @@ async function loadMannequinRig(rig: Rig): Promise<void> {
     rig.selectable.push(helper);
   }
 
-  for (const boneName of ["clavicle_l", "clavicle_r", "spine_01", "spine_02", "spine_03", "upperarm_l", "lowerarm_l", "upperarm_r", "lowerarm_r", "thigh_l", "calf_l", "thigh_r", "calf_r", "head"]) {
-    const bone = model.getObjectByName(boneName);
-    if (!bone) continue;
-    bone.userData.restScale = bone.scale.clone();
-    bone.userData.restPosition = bone.position.clone();
-  }
   rig.root.updateMatrixWorld(true);
 }
 
@@ -1317,9 +1427,16 @@ function readJointRotation(rig: Rig, name: string, joint: THREE.Object3D): PoseJ
 function applyBodyShape(rig: Rig, rawShape: PoseBodyShape): void {
   const shape = { ...defaultBodyShape, ...rawShape };
   const baseScale = 2.45;
-  rig.root.scale.set(baseScale * shape.build, baseScale * shape.height, baseScale * shape.build);
+  // 身長は全身を均等拡大し、手足や指だけが引き伸ばされない比率を維持する。
+  rig.root.scale.set(baseScale * shape.height * shape.build, baseScale * shape.height, baseScale * shape.height * shape.build);
   const model = rig.root.getObjectByName("drawing-mannequin");
   if (!model) return;
+  model.traverse((object) => {
+    const restScale = object.userData.restScale as THREE.Vector3 | undefined;
+    const restPosition = object.userData.restPosition as THREE.Vector3 | undefined;
+    if (restScale) object.scale.copy(restScale);
+    if (restPosition) object.position.copy(restPosition);
+  });
   const scaleBone = (name: string, x: number, y: number, z: number) => {
     const bone = model.getObjectByName(name);
     const rest = bone?.userData.restScale as THREE.Vector3 | undefined;
@@ -1331,11 +1448,24 @@ function applyBodyShape(rig: Rig, rawShape: PoseBodyShape): void {
     if (bone && rest) bone.position.set(rest.x * x, rest.y * y, rest.z * z);
   };
 
-  scaleBone("head", shape.headSize / shape.build, shape.headSize / shape.height, shape.headSize / shape.build);
-  for (const name of ["spine_01", "spine_02", "spine_03"]) scaleBone(name, 1, shape.torsoLength, 1);
-  for (const name of ["clavicle_l", "clavicle_r"]) scaleBone(name, 1, shape.shoulderWidth, 1);
-  for (const name of ["upperarm_l", "lowerarm_l", "upperarm_r", "lowerarm_r"]) scaleBone(name, 1, shape.armLength, 1);
-  for (const name of ["thigh_l", "calf_l", "thigh_r", "calf_r"]) scaleBone(name, 1, shape.legLength, 1);
+  scaleBone("head", shape.headSize / shape.build, shape.headSize, shape.headSize / shape.build);
+
+  // 各チェーンの先頭だけを伸ばし、末端で倍率を相殺する。これにより手・指・足は元サイズを保つ。
+  scaleBone("upperarm_l", 1, shape.armLength, 1);
+  scaleBone("upperarm_r", 1, shape.armLength, 1);
+  scaleBone("hand_l", 1, 1 / shape.armLength, 1);
+  scaleBone("hand_r", 1, 1 / shape.armLength, 1);
+  scaleBone("thigh_l", 1, shape.legLength, 1);
+  scaleBone("thigh_r", 1, shape.legLength, 1);
+  scaleBone("foot_l", 1, 1 / shape.legLength, 1);
+  scaleBone("foot_r", 1, 1 / shape.legLength, 1);
+
+  scaleBone("spine_01", shape.waist, shape.torsoLength, shape.waist);
+  // 上胸から先で倍率を戻し、肩・腕・頭までくびれや胴長の倍率を伝播させない。
+  scaleBone("spine_03", 1 / shape.waist, 1 / shape.torsoLength, 1 / shape.waist);
+  for (const name of ["clavicle_l", "clavicle_r"]) {
+    moveBone(name, shape.shoulderWidth, 1, 1);
+  }
   moveBone("thigh_l", shape.hipWidth, 1, 1);
   moveBone("thigh_r", shape.hipWidth, 1, 1);
   rig.root.updateMatrixWorld(true);
