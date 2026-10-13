@@ -4,7 +4,7 @@ import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
 import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
 import { TransformControls } from "three/examples/jsm/controls/TransformControls.js";
 import { Camera, ChevronDown, ChevronRight, Download, ExternalLink, FolderOpen, Images, Minus, Plus, RotateCcw, Save, Search, Trash2, X } from "lucide-react";
-import type { CivitaiModelCard, OpenPoseAsset, OpenPoseCatalogItem, PoseBodyShape, PoseConditioning, PoseExtractionResult, PoseJointRotation, PosePreprocessorStatus, SavedPose } from "../../main/runtime";
+import type { CivitaiModelCard, OpenPoseAsset, OpenPoseCatalogItem, PoseBodyShape, PoseConditioning, PoseExtractionResult, PoseHandPreset, PoseHandSettings, PoseJointRotation, PosePreprocessorStatus, SavedPose } from "../../main/runtime";
 
 type PoseEditorProps = {
   value: PoseConditioning;
@@ -33,7 +33,11 @@ type Rig = {
   restQuaternions: Map<string, THREE.Quaternion>;
   restScales: Map<string, THREE.Vector3>;
   restPositions: Map<string, THREE.Vector3>;
+  handBones: Record<"left" | "right", Partial<Record<HandFinger, THREE.Object3D[]>>>;
 };
+
+type HandSide = "left" | "right";
+type HandFinger = "thumb" | "index" | "middle" | "ring" | "little";
 
 type DerivedPosePrompts = {
   positivePrompt: string;
@@ -64,6 +68,37 @@ const jointLabels: Record<string, string> = {
   rightKnee: "右ひざ",
   rightAnkle: "右足首"
 };
+
+const handSelectionLabels: Record<string, string> = {
+  leftHand: "左手",
+  rightHand: "右手"
+};
+
+const handFingerLabels: Record<HandFinger, string> = {
+  thumb: "親指",
+  index: "人差し指",
+  middle: "中指",
+  ring: "薬指",
+  little: "小指"
+};
+
+const defaultHandSettings: PoseHandSettings = {
+  preset: "open",
+  grip: 0,
+  spread: 0,
+  thumb: 0,
+  index: 0,
+  middle: 0,
+  ring: 0,
+  little: 0
+};
+
+const handPresetLabels: Array<{ id: Exclude<PoseHandPreset, "custom">; label: string }> = [
+  { id: "fist", label: "グー" },
+  { id: "peace", label: "チョキ" },
+  { id: "open", label: "パー" },
+  { id: "thumbs-up", label: "いいね" }
+];
 
 const defaultBodyShape: PoseBodyShape = {
   height: 1,
@@ -237,6 +272,10 @@ export function createDefaultPoseConditioning(): PoseConditioning {
     depthStartPercent: 0,
     depthEndPercent: 0.8,
     jointRotations: structuredClone(defaultRotations),
+    handSettings: {
+      left: { ...defaultHandSettings },
+      right: { ...defaultHandSettings }
+    },
     cameraPosition: [0, 2.8, 8],
     cameraTarget: [0, 2.25, 0],
     cameraFov: 38,
@@ -310,7 +349,7 @@ export function PoseEditor({ value, controlNetModels, depthControlNetModels, onC
       }
     });
     return () => cancelAnimationFrame(frame);
-  }, [value.jointRotations, value.cameraPosition, value.cameraTarget, value.cameraFov, value.preserveCharacterProportions, value.bodyShape, value.bodyModel]);
+  }, [value.jointRotations, value.handSettings, value.cameraPosition, value.cameraTarget, value.cameraFov, value.preserveCharacterProportions, value.bodyShape, value.bodyModel]);
 
   useEffect(() => {
     const host = hostRef.current;
@@ -363,6 +402,8 @@ export function PoseEditor({ value, controlNetModels, depthControlNetModels, onC
         const rotation = clampJointRotation(name, next.jointRotations[name] ?? defaultRotations[name] ?? [0, 0, 0]);
         applyJointRotation(rig, name, joint, rotation);
       }
+      applyHandSettings(rig, "left", next.handSettings?.left ?? defaultHandSettings);
+      applyHandSettings(rig, "right", next.handSettings?.right ?? defaultHandSettings);
       camera.position.fromArray(next.cameraPosition);
       camera.fov = next.cameraFov ?? 38;
       camera.updateProjectionMatrix();
@@ -388,7 +429,7 @@ export function PoseEditor({ value, controlNetModels, depthControlNetModels, onC
         imageDataUrl: renderOpenPoseImage(rig, camera, current, outputWidth, outputHeight),
         depthImageDataUrl: renderDepthImage(renderer, scene, rig, floor, camera, transformHelper, outputWidth, outputHeight),
         referenceImageDataUrl: renderMannequinImage(renderer, scene, rig, camera, transformHelper, outputWidth, outputHeight),
-        ...derivePosePrompts(rig, camera, rotations, current.preserveCharacterProportions ?? true, current.bodyShape ?? defaultBodyShape),
+        ...derivePosePrompts(rig, camera, rotations, current.preserveCharacterProportions ?? true, current.bodyShape ?? defaultBodyShape, current.handSettings),
         analysisStale: false,
         jointRotations: rotations,
         cameraPosition: camera.position.toArray() as [number, number, number],
@@ -407,7 +448,7 @@ export function PoseEditor({ value, controlNetModels, depthControlNetModels, onC
       return renderDepthImage(renderer, scene, rig, floor, camera, transformHelper, outputWidth, outputHeight);
     };
     captureReferenceRef.current = () => rigReady ? renderMannequinImage(renderer, scene, rig, camera, transformHelper, outputWidth, outputHeight) : valueRef.current.referenceImageDataUrl ?? "";
-    capturePromptRef.current = () => derivePosePrompts(rig, camera, valueRef.current.jointRotations, valueRef.current.preserveCharacterProportions ?? true, valueRef.current.bodyShape ?? defaultBodyShape);
+    capturePromptRef.current = () => derivePosePrompts(rig, camera, valueRef.current.jointRotations, valueRef.current.preserveCharacterProportions ?? true, valueRef.current.bodyShape ?? defaultBodyShape, valueRef.current.handSettings);
 
     const selectAtPointer = (event: PointerEvent) => {
       if (transform.dragging) return;
@@ -427,6 +468,12 @@ export function PoseEditor({ value, controlNetModels, depthControlNetModels, onC
         transform.detach();
         activeJointName = null;
         setSelectedJoint(null);
+        return;
+      }
+      if (jointName === "leftHand" || jointName === "rightHand") {
+        transform.detach();
+        activeJointName = jointName;
+        setSelectedJoint(jointName);
         return;
       }
       const joint = rig.joints.get(jointName);
@@ -516,6 +563,48 @@ export function PoseEditor({ value, controlNetModels, depthControlNetModels, onC
       jointRotations: { ...value.jointRotations, [selectedJoint]: clampJointRotation(selectedJoint, next) },
       analysisStale: true
     });
+  };
+
+  const selectedHandSide: HandSide | null = selectedJoint === "leftHand" ? "left" : selectedJoint === "rightHand" ? "right" : null;
+  const selectedHandSettings = selectedHandSide
+    ? value.handSettings?.[selectedHandSide] ?? defaultHandSettings
+    : null;
+
+  const updateHandSettings = (side: HandSide, next: PoseHandSettings) => {
+    onChange({
+      ...value,
+      handSettings: {
+        left: { ...(value.handSettings?.left ?? defaultHandSettings) },
+        right: { ...(value.handSettings?.right ?? defaultHandSettings) },
+        [side]: next
+      },
+      analysisStale: true
+    });
+  };
+
+  const applyHandPreset = (side: HandSide, preset: Exclude<PoseHandPreset, "custom">) => {
+    const presets: Record<Exclude<PoseHandPreset, "custom">, PoseHandSettings> = {
+      fist: { preset, grip: 1, spread: 0, thumb: 1, index: 1, middle: 1, ring: 1, little: 1 },
+      peace: { preset, grip: 0.55, spread: 0.55, thumb: 0.9, index: 0, middle: 0, ring: 1, little: 1 },
+      open: { preset, grip: 0, spread: 0.3, thumb: 0, index: 0, middle: 0, ring: 0, little: 0 },
+      "thumbs-up": { preset, grip: 0.8, spread: 0, thumb: 0, index: 1, middle: 1, ring: 1, little: 1 }
+    };
+    updateHandSettings(side, presets[preset]);
+  };
+
+  const stepHandSetting = (side: HandSide, key: keyof Omit<PoseHandSettings, "preset">, amount: number) => {
+    const current = value.handSettings?.[side] ?? defaultHandSettings;
+    const min = key === "spread" ? -1 : 0;
+    const nextValue = Math.max(min, Math.min(1, current[key] + amount));
+    const next = { ...current, preset: "custom" as const, [key]: Number(nextValue.toFixed(2)) };
+    if (key === "grip") {
+      next.thumb = nextValue;
+      next.index = nextValue;
+      next.middle = nextValue;
+      next.ring = nextValue;
+      next.little = nextValue;
+    }
+    updateHandSettings(side, next);
   };
 
   const resetPose = () => {
@@ -786,11 +875,56 @@ export function PoseEditor({ value, controlNetModels, depthControlNetModels, onC
               onClick={() => selectJointRef.current?.(name)}
             >{label}</button>
           ))}
+          {Object.entries(handSelectionLabels).map(([name, label]) => (
+            <button
+              type="button"
+              key={name}
+              className={selectedJoint === name ? "active" : ""}
+              aria-pressed={selectedJoint === name}
+              disabled={disabled}
+              onClick={() => selectJointRef.current?.(name)}
+            >{label}</button>
+          ))}
         </div>
       </div>
       <div className="pose-viewport-wrap">
         <div className="pose-viewport" ref={hostRef} />
-        {selectedJoint ? (
+        {selectedHandSide && selectedHandSettings ? (
+          <div className="pose-angle-control pose-hand-control">
+            <strong>{handSelectionLabels[selectedJoint ?? ""]}</strong>
+            <div className="pose-hand-presets">
+              {handPresetLabels.map((preset) => (
+                <button
+                  type="button"
+                  key={preset.id}
+                  className={selectedHandSettings.preset === preset.id ? "active" : ""}
+                  disabled={disabled}
+                  onClick={() => applyHandPreset(selectedHandSide, preset.id)}
+                >{preset.label}</button>
+              ))}
+            </div>
+            <div className="pose-hand-step-row">
+              <span>手全体</span>
+              <button type="button" disabled={disabled} onClick={() => stepHandSetting(selectedHandSide, "grip", 0.1)}>握る</button>
+              <b>{Math.round(selectedHandSettings.grip * 100)}%</b>
+              <button type="button" disabled={disabled} onClick={() => stepHandSetting(selectedHandSide, "grip", -0.1)}>開く</button>
+            </div>
+            <div className="pose-hand-step-row">
+              <span>指の間隔</span>
+              <button type="button" disabled={disabled} onClick={() => stepHandSetting(selectedHandSide, "spread", 0.1)}>広げる</button>
+              <b>{Math.round(selectedHandSettings.spread * 100)}%</b>
+              <button type="button" disabled={disabled} onClick={() => stepHandSetting(selectedHandSide, "spread", -0.1)}>くっつける</button>
+            </div>
+            {(Object.entries(handFingerLabels) as Array<[HandFinger, string]>).map(([finger, label]) => (
+              <div className="pose-hand-step-row" key={finger}>
+                <span>{label}</span>
+                <button type="button" disabled={disabled} onClick={() => stepHandSetting(selectedHandSide, finger, 0.1)}>内側</button>
+                <b>{Math.round(selectedHandSettings[finger] * 100)}%</b>
+                <button type="button" disabled={disabled} onClick={() => stepHandSetting(selectedHandSide, finger, -0.1)}>外側</button>
+              </div>
+            ))}
+          </div>
+        ) : selectedJoint ? (
           <div className="pose-angle-control">
             <strong>{jointLabels[selectedJoint] ?? selectedJoint}</strong>
             {(["X", "Y", "Z"] as const).map((axis, index) => (
@@ -1064,7 +1198,8 @@ function derivePosePrompts(
   camera: THREE.Camera,
   rotations: Record<string, PoseJointRotation>,
   preserveCharacterProportions: boolean,
-  bodyShape: PoseBodyShape
+  bodyShape: PoseBodyShape,
+  handSettings?: PoseConditioning["handSettings"]
 ): DerivedPosePrompts {
   rig.root.updateWorldMatrix(true, true);
   camera.updateWorldMatrix(true, false);
@@ -1122,6 +1257,17 @@ function derivePosePrompts(
   else if (spinePitch > 0.22) details.push("torso leaning backward");
   details.push(cameraViewPrompt(camera));
   details.push(faceDirectionPrompt(rig, camera));
+  for (const side of ["left", "right"] as const) {
+    const hand = handSettings?.[side] ?? defaultHandSettings;
+    const label = side === "left" ? "left hand" : "right hand";
+    if (hand.preset === "fist") details.push(`${label} clenched into a fist`);
+    else if (hand.preset === "peace") details.push(`${label} making a V sign, index and middle fingers extended`);
+    else if (hand.preset === "thumbs-up") details.push(`${label} making a thumbs-up gesture`);
+    else if (hand.preset === "open" && hand.spread > 0.15) details.push(`${label} open with fingers spread`);
+    else if (hand.preset === "custom" && Math.max(hand.thumb, hand.index, hand.middle, hand.ring, hand.little) > 0.15) {
+      details.push(`${label} with individually posed fingers`);
+    }
+  }
   if (preserveCharacterProportions) {
     details.push("preserve the character's established age, stature, head-to-body ratio, and original body proportions from the character LoRA");
   } else {
@@ -1336,7 +1482,8 @@ function createRig(): Rig {
     helpers: [],
     restQuaternions: new Map(),
     restScales: new Map(),
-    restPositions: new Map()
+    restPositions: new Map(),
+    handBones: { left: {}, right: {} }
   };
 }
 
@@ -1406,6 +1553,58 @@ async function loadMannequinRig(rig: Rig, bodyModel: "male" | "female"): Promise
     rig.selectable.push(helper);
   }
 
+  const fingerBoneNames: Record<HandFinger, string> = {
+    thumb: "thumb",
+    index: "index",
+    middle: "middle",
+    ring: "ring",
+    little: "pinky"
+  };
+  for (const side of ["left", "right"] as const) {
+    const suffix = side === "left" ? "l" : "r";
+    for (const [finger, bonePrefix] of Object.entries(fingerBoneNames) as Array<[HandFinger, string]>) {
+      const bones = [1, 2, 3]
+        .map((segment) => model.getObjectByName(`${bonePrefix}_0${segment}_${suffix}`))
+        .filter((bone): bone is THREE.Object3D => Boolean(bone));
+      rig.handBones[side][finger] = bones;
+      bones.forEach((bone, segment) => {
+        const key = `hand:${side}:${finger}:${segment}`;
+        rig.restQuaternions.set(key, bone.quaternion.clone());
+      });
+    }
+  }
+
+  rig.root.updateMatrixWorld(true);
+}
+
+function applyHandSettings(rig: Rig, side: HandSide, rawSettings: PoseHandSettings): void {
+  const settings = { ...defaultHandSettings, ...rawSettings };
+  const sideSign = side === "left" ? 1 : -1;
+  const fingerSpread: Record<Exclude<HandFinger, "thumb">, number> = {
+    index: 0.7,
+    middle: 0.22,
+    ring: -0.25,
+    little: -0.72
+  };
+  for (const [finger, bones] of Object.entries(rig.handBones[side]) as Array<[HandFinger, THREE.Object3D[]]>) {
+    const curl = Math.max(0, Math.min(1, settings[finger]));
+    bones.forEach((bone, segment) => {
+      const key = `hand:${side}:${finger}:${segment}`;
+      const rest = rig.restQuaternions.get(key);
+      if (!rest) return;
+      const curlAmount = finger === "thumb"
+        ? [0.68, 0.72, 0.55][segment] * curl
+        : [0.82, 1.02, 0.78][segment] * curl;
+      const spreadAmount = segment === 0 && finger !== "thumb"
+        ? fingerSpread[finger] * settings.spread * 0.18 * sideSign
+        : 0;
+      const thumbSpread = finger === "thumb" && segment === 0 ? settings.spread * 0.24 * sideSign : 0;
+      const delta = finger === "thumb"
+        ? new THREE.Quaternion().setFromEuler(new THREE.Euler(curlAmount, thumbSpread, curlAmount * 0.28 * sideSign, "XYZ"))
+        : new THREE.Quaternion().setFromEuler(new THREE.Euler(curlAmount, spreadAmount, 0, "XYZ"));
+      bone.quaternion.copy(rest).multiply(delta);
+    });
+  }
   rig.root.updateMatrixWorld(true);
 }
 
@@ -1660,7 +1859,8 @@ function createProceduralRig(): Rig {
     helpers: [],
     restQuaternions: new Map(Array.from(joints, ([name, object]) => [name, object.quaternion.clone()])),
     restScales: new Map(Array.from(joints, ([name, object]) => [name, object.scale.clone()])),
-    restPositions: new Map(Array.from(joints, ([name, object]) => [name, object.position.clone()]))
+    restPositions: new Map(Array.from(joints, ([name, object]) => [name, object.position.clone()])),
+    handBones: { left: {}, right: {} }
   };
 }
 

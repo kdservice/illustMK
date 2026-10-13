@@ -2246,6 +2246,46 @@ label {
   padding: 0;
 }
 
+.pose-hand-control {
+  width: min(520px, calc(100% - 24px));
+}
+
+.pose-hand-presets {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 4px;
+}
+
+.pose-hand-presets button,
+.pose-hand-step-row button {
+  min-height: 28px;
+  padding: 4px 7px;
+  font-size: 11px;
+}
+
+.pose-hand-presets button.active {
+  border-color: #ed6677;
+  color: #ffe0e4;
+  background: #4d1721;
+}
+
+.pose-hand-step-row {
+  display: grid;
+  grid-template-columns: 70px minmax(72px, 1fr) 48px minmax(72px, 1fr);
+  gap: 4px;
+  align-items: center;
+}
+
+.pose-hand-step-row span,
+.pose-hand-step-row b {
+  text-align: center;
+}
+
+.pose-hand-step-row b {
+  color: #7bddff;
+  font-variant-numeric: tabular-nums;
+}
+
 .pose-reset {
   position: absolute;
   top: 10px;

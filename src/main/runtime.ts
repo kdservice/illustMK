@@ -416,6 +416,19 @@ export type TestGenerationRequest = {
 
 export type PoseJointRotation = [number, number, number];
 
+export type PoseHandPreset = "fist" | "peace" | "open" | "thumbs-up" | "custom";
+
+export type PoseHandSettings = {
+  preset: PoseHandPreset;
+  grip: number;
+  spread: number;
+  thumb: number;
+  index: number;
+  middle: number;
+  ring: number;
+  little: number;
+};
+
 export type PoseBodyShape = {
   height: number;
   headSize: number;
@@ -447,6 +460,10 @@ export type PoseConditioning = {
   depthStartPercent?: number;
   depthEndPercent?: number;
   jointRotations: Record<string, PoseJointRotation>;
+  handSettings?: {
+    left: PoseHandSettings;
+    right: PoseHandSettings;
+  };
   cameraPosition: [number, number, number];
   cameraTarget: [number, number, number];
   cameraFov?: number;

@@ -5364,6 +5364,7 @@ function samePoseConditioning(left: PoseConditioning | undefined, right: PoseCon
     left.preserveCharacterProportions === right.preserveCharacterProportions &&
     (left.bodyModel ?? "male") === (right.bodyModel ?? "male") &&
     JSON.stringify(left.bodyShape ?? {}) === JSON.stringify(right.bodyShape ?? {}) &&
+    JSON.stringify(left.handSettings ?? {}) === JSON.stringify(right.handSettings ?? {}) &&
     left.analysisStale === right.analysisStale
   );
 }
@@ -5377,6 +5378,10 @@ function normalizePoseConditioning(value?: PoseConditioning): PoseConditioning {
     bodyModel: value.bodyModel ?? "male",
     preserveCharacterProportions: value.preserveCharacterProportions ?? true,
     bodyShape: defaults.bodyShape ? { ...defaults.bodyShape, ...value.bodyShape } : value.bodyShape,
+    handSettings: {
+      left: { ...defaults.handSettings!.left, ...value.handSettings?.left },
+      right: { ...defaults.handSettings!.right, ...value.handSettings?.right }
+    },
     jointRotations: value.jointRotations ?? defaults.jointRotations,
     cameraPosition: value.cameraPosition ?? defaults.cameraPosition,
     cameraTarget: value.cameraTarget ?? defaults.cameraTarget,
