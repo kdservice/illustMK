@@ -603,7 +603,11 @@ function renderDepthImage(
   projectionCamera.updateProjectionMatrix();
   projectionCamera.updateMatrixWorld(true);
 
-  const box = new THREE.Box3().setFromObject(rig.root);
+  rig.root.updateWorldMatrix(true, true);
+  const depthProxy = createDepthProxy(rig);
+  scene.add(depthProxy);
+  depthProxy.updateWorldMatrix(true, true);
+  const box = new THREE.Box3().setFromObject(depthProxy);
   const corners = [
     new THREE.Vector3(box.min.x, box.min.y, box.min.z),
     new THREE.Vector3(box.min.x, box.min.y, box.max.z),
@@ -650,8 +654,10 @@ function renderDepthImage(
   const previousBackground = scene.background;
   const floorVisible = floor.visible;
   const helperVisible = transformHelper.visible;
+  const rigVisible = rig.root.visible;
   floor.visible = false;
   transformHelper.visible = false;
+  rig.root.visible = false;
   scene.overrideMaterial = depthMaterial;
   scene.background = new THREE.Color(0x000000);
   renderer.setRenderTarget(target);
@@ -664,11 +670,85 @@ function renderDepthImage(
   scene.background = previousBackground;
   floor.visible = floorVisible;
   transformHelper.visible = helperVisible;
+  rig.root.visible = rigVisible;
+  scene.remove(depthProxy);
   renderer.render(scene, camera);
 
   target.dispose();
   depthMaterial.dispose();
+  disposeDepthProxy(depthProxy);
   return rgbaPixelsToDataUrl(pixels, width, height);
+}
+
+function createDepthProxy(rig: Rig): THREE.Group {
+  const proxy = new THREE.Group();
+  proxy.name = "depth-proxy";
+  const material = new THREE.MeshBasicMaterial({ color: 0xffffff });
+  const position = (name: string) => rig.joints.get(name)?.getWorldPosition(new THREE.Vector3()) ?? new THREE.Vector3();
+  const orientation = (name: string) => rig.joints.get(name)?.getWorldQuaternion(new THREE.Quaternion()) ?? new THREE.Quaternion();
+
+  const addCapsule = (from: THREE.Vector3, to: THREE.Vector3, radius: number, overlap = radius * 0.7) => {
+    const direction = new THREE.Vector3().subVectors(to, from);
+    const distance = direction.length();
+    if (distance < 0.001) return;
+    const totalLength = distance + overlap * 2;
+    const mesh = new THREE.Mesh(
+      new THREE.CapsuleGeometry(radius, Math.max(0.01, totalLength - radius * 2), 10, 20),
+      material
+    );
+    mesh.position.copy(from).add(to).multiplyScalar(0.5);
+    mesh.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), direction.normalize());
+    proxy.add(mesh);
+  };
+  const addEllipsoid = (center: THREE.Vector3, scale: [number, number, number], quaternion?: THREE.Quaternion) => {
+    const mesh = new THREE.Mesh(new THREE.SphereGeometry(1, 28, 20), material);
+    mesh.position.copy(center);
+    mesh.scale.set(...scale);
+    if (quaternion) mesh.quaternion.copy(quaternion);
+    proxy.add(mesh);
+  };
+
+  const hips = position("hips");
+  const chest = position("chest");
+  const neck = position("neck");
+  const head = position("head");
+  addCapsule(hips, chest, 0.39, 0.16);
+  addEllipsoid(hips, [0.48, 0.34, 0.34], orientation("hips"));
+  addCapsule(chest, neck, 0.2, 0.11);
+  addCapsule(neck, head, 0.15, 0.1);
+  addEllipsoid(head, [0.3, 0.39, 0.32], orientation("head"));
+
+  for (const side of ["left", "right"] as const) {
+    const shoulder = position(`${side}Shoulder`);
+    const elbow = position(`${side}Elbow`);
+    const wrist = position(`${side}Wrist`);
+    const hip = position(`${side}Hip`);
+    const knee = position(`${side}Knee`);
+    const ankle = position(`${side}Ankle`);
+    addCapsule(chest, shoulder, 0.18, 0.14);
+    addCapsule(shoulder, elbow, 0.15, 0.1);
+    addCapsule(elbow, wrist, 0.125, 0.09);
+    addEllipsoid(wrist, [0.13, 0.18, 0.12], orientation(`${side}Wrist`));
+    addCapsule(hip, knee, 0.2, 0.12);
+    addCapsule(knee, ankle, 0.17, 0.11);
+    const footEnd = new THREE.Vector3(0, -0.08, 0.34)
+      .applyQuaternion(orientation(`${side}Ankle`))
+      .add(ankle);
+    addCapsule(ankle, footEnd, 0.14, 0.08);
+  }
+
+  return proxy;
+}
+
+function disposeDepthProxy(proxy: THREE.Object3D): void {
+  const materials = new Set<THREE.Material>();
+  proxy.traverse((object) => {
+    if (!(object instanceof THREE.Mesh)) return;
+    object.geometry.dispose();
+    const objectMaterials = Array.isArray(object.material) ? object.material : [object.material];
+    objectMaterials.forEach((material) => materials.add(material));
+  });
+  materials.forEach((material) => material.dispose());
 }
 
 function createRig(): Rig {
