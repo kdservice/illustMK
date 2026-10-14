@@ -707,14 +707,28 @@ label {
   place-items: center;
 }
 
-.scene-empty-state > button {
-  width: 112px;
+.scene-empty-actions {
+  display: grid;
+  grid-template-columns: repeat(2, 132px);
+  gap: 12px;
+}
+
+.scene-empty-actions > button {
+  width: 132px;
   height: 112px;
+  display: grid;
+  align-content: center;
+  gap: 8px;
   padding: 0;
   border-style: dashed;
   border-color: #44bcff;
   background: #0d1830;
   color: #78e5ff;
+}
+
+.scene-empty-actions span {
+  font-size: 12px;
+  font-weight: 800;
 }
 
 .scene-character-settings,

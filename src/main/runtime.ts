@@ -488,6 +488,7 @@ export type SceneConditioning = {
   backgroundImagePath?: string;
   backgroundImageDataUrl?: string;
   characters: SceneConditioningCharacter[];
+  refinementDenoise?: number;
 };
 
 export type PoseJointRotation = [number, number, number];
@@ -3881,6 +3882,20 @@ async function promptHistoryMissingAssets(entry: PromptHistoryEntry, paths: Runt
     seen.add(key);
     if (!(await exists(join(dir, fileName)))) missing.push(`${kind}: ${fileName}`);
   }
+  const scene = settings?.scene;
+  const requestScene = settings?.generationRequest?.sceneConditioning;
+  const sourceFiles: Array<[string, string | undefined]> = [
+    ["背景参照画像", scene?.background?.generatedImagePath ?? requestScene?.backgroundImagePath]
+  ];
+  for (const character of scene?.characters ?? []) {
+    const requestCharacter = requestScene?.characters.find((item) => item.id === character.id);
+    sourceFiles.push([`${character.title}参照画像`, character.generatedImagePath ?? requestCharacter?.imagePath]);
+  }
+  for (const [kind, sourcePath] of sourceFiles) {
+    if (!sourcePath || seen.has(`${kind}:${sourcePath}`)) continue;
+    seen.add(`${kind}:${sourcePath}`);
+    if (!(await exists(sourcePath))) missing.push(`${kind}: ${sourcePath}`);
+  }
   return missing;
 }
 
@@ -4605,15 +4620,18 @@ async function getComfyLoraNames(comfyUrl: string): Promise<Set<string> | null> 
 
 export async function runTestGeneration(request: TestGenerationRequest): Promise<TestGenerationResult> {
   const paths = getRuntimePaths();
-  if (request.sceneConditioning) {
-    return runSceneCompositeGeneration(request, paths);
-  }
   const engines = await getImageGenerationEngines();
   const activeEngine = request.imageEngineId
     ? engines.find((engine) => engine.id === request.imageEngineId)
     : engines.find((engine) => engine.active);
   if (request.imageEngineId && !activeEngine) {
     return { ok: false, message: `履歴で使用した画像生成エンジンが現在のDataPathにありません: ${request.imageEngineId}` };
+  }
+  if (request.sceneConditioning) {
+    if (activeEngine?.kind === "qwen-image") {
+      return { ok: false, message: "Qwen Image画像生成エンジンでの総合img2img生成は現在未対応です。Checkpoint画像生成エンジンへ切り替えてください。" };
+    }
+    return runSceneCompositeGeneration(request, paths);
   }
   if (activeEngine?.kind === "qwen-image") {
     return runQwenImageGeneration(request, paths, activeEngine);
@@ -4945,11 +4963,98 @@ async function runSceneCompositeGeneration(request: TestGenerationRequest, paths
     if (!source) return;
     workflow[String(100 + index * 5)].inputs.image = await uploadGenerationSource(request.comfyUrl, source, `character-${index + 1}`);
   }));
+
+  const modelInfo = await inspectModelFile(join(paths.checkpoints, request.checkpoint));
+  const externalVae = request.vae?.trim();
+  const externalClip = request.clip?.trim();
+  const externalVaeReady = Boolean(externalVae && (await exists(join(paths.vae, externalVae))));
+  const externalClipReady = Boolean(externalClip && (await exists(join(paths.clip, externalClip))));
+  if ((!modelInfo.hasClip && !externalClipReady) || (!modelInfo.hasVae && !externalVaeReady)) {
+    return {
+      ok: false,
+      message: !modelInfo.hasClip && !externalClipReady
+        ? "総合img2img生成に必要なCLIP/Text Encoderがありません。"
+        : "総合img2img生成に必要なVAEがありません。"
+    };
+  }
+
+  const requestedLoras = request.loras ?? [];
+  const recognizedLoras = requestedLoras.length ? await getComfyLoraNames(request.comfyUrl) : null;
+  const missingLoras = recognizedLoras
+    ? requestedLoras.filter((lora) => !recognizedLoras.has(lora.name)).map((lora) => lora.name)
+    : [];
+  if (missingLoras.length) {
+    return { ok: false, message: `総合生成で使用するLoRAをComfyUIが認識していません: ${missingLoras.join(", ")}` };
+  }
+
+  workflow["9100"] = { class_type: "CheckpointLoaderSimple", inputs: { ckpt_name: request.checkpoint } };
+  let modelSource: [string, number] = ["9100", 0];
+  let clipSource: [string, number] = ["9100", 1];
+  let vaeSource: [string, number] = ["9100", 2];
+  if (!modelInfo.hasClip && externalClipReady && externalClip) {
+    workflow["9101"] = { class_type: "CLIPLoader", inputs: { clip_name: externalClip, type: "stable_diffusion" } };
+    clipSource = ["9101", 0];
+  }
+  if (!modelInfo.hasVae && externalVaeReady && externalVae) {
+    workflow["9102"] = { class_type: "VAELoader", inputs: { vae_name: externalVae } };
+    vaeSource = ["9102", 0];
+  }
+  requestedLoras
+    .filter((lora) => lora.name.trim() && (lora.modelStrength !== 0 || lora.clipStrength !== 0))
+    .forEach((lora, index) => {
+      const nodeId = String(9200 + index);
+      workflow[nodeId] = {
+        class_type: "LoraLoader",
+        inputs: {
+          lora_name: lora.name,
+          strength_model: lora.modelStrength,
+          strength_clip: lora.clipStrength,
+          model: modelSource,
+          clip: clipSource
+        }
+      };
+      modelSource = [nodeId, 0];
+      clipSource = [nodeId, 1];
+    });
+
+  const refinementDenoise = Math.max(0.05, Math.min(0.75, scene.refinementDenoise ?? 0.35));
+  const unifiedPrompt = [
+    request.prompt,
+    "single coherent illustration, naturally integrated characters and background, consistent light direction, unified color temperature, realistic contact shadows, ambient light reflected across characters and environment"
+  ].filter(Boolean).join(", ");
+  const unifiedNegativePrompt = [
+    request.negativePrompt,
+    "collage, pasted cutout, mismatched lighting, inconsistent shadows, hard cutout edges, floating character, disconnected foreground and background"
+  ].filter(Boolean).join(", ");
+  workflow["9300"] = { class_type: "CLIPTextEncode", inputs: { text: unifiedPrompt, clip: clipSource } };
+  workflow["9301"] = { class_type: "CLIPTextEncode", inputs: { text: unifiedNegativePrompt, clip: clipSource } };
+  workflow["9302"] = { class_type: "VAEEncode", inputs: { pixels: compositeSource, vae: vaeSource } };
+  workflow["9303"] = {
+    class_type: "KSampler",
+    inputs: {
+      seed: normalizeSeed(request.seed),
+      steps: request.steps,
+      cfg: request.cfg,
+      sampler_name: "euler",
+      scheduler: "normal",
+      denoise: refinementDenoise,
+      model: modelSource,
+      positive: ["9300", 0],
+      negative: ["9301", 0],
+      latent_image: ["9302", 0]
+    }
+  };
+  workflow["9304"] = { class_type: "VAEDecode", inputs: { samples: ["9303", 0], vae: vaeSource } };
   workflow["9000"] = {
     class_type: "SaveImage",
-    inputs: { filename_prefix: "illustmk_scene", images: compositeSource }
+    inputs: { filename_prefix: "illustmk_scene_refined", images: ["9304", 0] }
   };
-  return submitComfyWorkflow(request.comfyUrl, workflow, paths, "総合生成が完了しました。");
+  return submitComfyWorkflow(
+    request.comfyUrl,
+    workflow,
+    paths,
+    `総合img2img生成が完了しました。仮合成をDenoise ${refinementDenoise.toFixed(2)}で馴染ませました。`
+  );
 }
 
 async function ensureBackgroundRemovalModel(paths: RuntimePaths, comfyUrl: string): Promise<void> {

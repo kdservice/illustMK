@@ -1615,11 +1615,52 @@ function App() {
     let restoredActiveCharacter: GenerationSceneCharacter | undefined;
     if (settings?.scene) {
       const restoredScene = structuredClone(settings.scene);
+      const requestScene = settings.generationRequest?.sceneConditioning;
+      if (restoredScene.background && requestScene) {
+        restoredScene.background.generatedImagePath ??= requestScene.backgroundImagePath;
+        restoredScene.background.generatedImageDataUrl ??= requestScene.backgroundImageDataUrl;
+      }
+      if (requestScene) {
+        restoredScene.characters = restoredScene.characters.map((character) => {
+          const requestCharacter = requestScene.characters.find((item) => item.id === character.id);
+          return requestCharacter ? {
+            ...character,
+            generatedImagePath: character.generatedImagePath ?? requestCharacter.imagePath,
+            generatedImageDataUrl: character.generatedImageDataUrl ?? requestCharacter.imageDataUrl
+          } : character;
+        });
+      }
       setSceneCharacters(restoredScene.characters);
       setSceneBackground(restoredScene.background ? normalizeSceneBackground(restoredScene.background) : null);
       const nextActiveId = restoredScene.activeItemId ?? restoredScene.characters[0]?.id ?? restoredScene.background?.id ?? null;
       setActiveSceneItemId(nextActiveId);
       restoredActiveCharacter = restoredScene.characters.find((character) => character.id === nextActiveId);
+    } else if (!sceneCharacters.length && !sceneBackground) {
+      const restoredCharacter: GenerationSceneCharacter = {
+        id: crypto.randomUUID(),
+        title: settings?.targetCharacterTitle ?? "キャラ1",
+        settings: {
+          ...blankCharacterSettings(),
+          japanesePrompt: settings?.japanesePrompt ?? entry.japanesePrompt ?? "",
+          prompt: settings?.prompt ?? entry.prompt,
+          negativePrompt: settings?.negativePrompt ?? entry.negativePrompt,
+          promptEnhanceMode: settings?.promptEnhanceMode ?? "balanced-detail",
+          loras: structuredClone(settings?.loras ?? entry.loras ?? []),
+          japanesePromptTagIds: [...(settings?.japanesePromptTagIds ?? entry.japanesePromptTagIds ?? [])],
+          positivePromptTagIds: [...(settings?.positivePromptTagIds ?? entry.positivePromptTagIds ?? [])],
+          positiveOptionTagIds: [...(settings?.positiveOptionTagIds ?? entry.positiveOptionTagIds ?? [])],
+          negativeOptionTagIds: [...(settings?.negativeOptionTagIds ?? entry.negativeOptionTagIds ?? [])],
+          positiveLoraTriggerIds: [...(settings?.positiveLoraTriggerIds ?? entry.positiveLoraTriggerIds ?? [])],
+          poseConditioning: normalizePoseConditioning(settings?.poseConditioning ?? settings?.generationRequest?.poseConditioning),
+          seedMode: settings?.seedMode ?? (entry.seed >= 0 ? "fixed" : "random"),
+          seedValue: settings?.seedValue ?? entry.seed,
+          seedRange: settings?.seedRange ?? defaultSeedRange
+        },
+        placement: { ...defaultCharacterPlacement }
+      };
+      setSceneCharacters([restoredCharacter]);
+      setActiveSceneItemId(restoredCharacter.id);
+      restoredActiveCharacter = restoredCharacter;
     }
     setRestoredGenerationSettings(settings ?? null);
     const restoresBackground = settings?.generationScope === "background";
@@ -2846,7 +2887,8 @@ function App() {
         backgroundNegativePrompt: backgroundRequest.negativePrompt,
         backgroundImagePath: scene.background?.generatedImagePath,
         backgroundImageDataUrl: scene.background?.generatedImageDataUrl,
-        characters: regionalCharacters
+        characters: regionalCharacters,
+        refinementDenoise: 0.35
       } : undefined
     };
   }
@@ -3256,13 +3298,25 @@ function App() {
       historyScene.background.generatedImageDataUrl = generatedResult.imagePath ? undefined : generatedResult.imageDataUrl;
     }
     if (scope === "scene") {
+      const requestScene = request.sceneConditioning;
       if (historyScene.background) {
         historyScene.background.seedMode = "fixed";
         historyScene.background.seedValue = request.seed;
+        historyScene.background.generatedImagePath = requestScene?.backgroundImagePath ?? historyScene.background.generatedImagePath;
+        historyScene.background.generatedImageDataUrl = requestScene?.backgroundImagePath
+          ? undefined
+          : requestScene?.backgroundImageDataUrl ?? historyScene.background.generatedImageDataUrl;
       }
       historyScene.characters.forEach((character) => {
         character.settings.seedMode = "fixed";
         character.settings.seedValue = request.seed;
+        const requestCharacter = requestScene?.characters.find((item) => item.id === character.id);
+        if (requestCharacter) {
+          character.generatedImagePath = requestCharacter.imagePath ?? character.generatedImagePath;
+          character.generatedImageDataUrl = requestCharacter.imagePath
+            ? undefined
+            : requestCharacter.imageDataUrl ?? character.generatedImageDataUrl;
+        }
       });
     }
     return {
@@ -4550,9 +4604,16 @@ function App() {
             ) : null}
             {!sceneCharacters.length && !sceneBackground ? (
               <div className="scene-empty-state">
-                <button onClick={() => setSceneAddOpen(true)} title="キャラまたは背景を追加">
-                  <Plus size={44} />
-                </button>
+                <div className="scene-empty-actions">
+                  <button onClick={() => setSceneAddOpen(true)} title="キャラまたは背景を追加">
+                    <Plus size={38} />
+                    <span>追加</span>
+                  </button>
+                  <button onClick={() => setPromptHistoryOpen(true)} title="生成履歴から復元">
+                    <RefreshCw size={34} />
+                    <span>履歴から復元</span>
+                  </button>
+                </div>
               </div>
             ) : sceneBackground && activeSceneItemId === sceneBackground.id ? (
               <div className="scene-background-editor">
