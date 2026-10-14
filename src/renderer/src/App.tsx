@@ -33,6 +33,8 @@ import type {
   GenerationSceneCharacter,
   GenerationSceneSettings,
   HuggingFaceLlmModelCard,
+  ImageEngineCatalogCard,
+  ImageGenerationEngine,
   IllustrationTag,
   LlmChatMessage,
   LoraCaptionCustomTag,
@@ -372,6 +374,10 @@ function App() {
   const [settingsLoaded, setSettingsLoaded] = useState(false);
   const [mainTab, setMainTab] = useState<"environment" | "models" | "llm" | "lora" | "generate">("environment");
   const [modelLibrary, setModelLibrary] = useState<ModelLibraryEntry[]>([]);
+  const [imageEngines, setImageEngines] = useState<ImageGenerationEngine[]>([]);
+  const [imageEngineQuery, setImageEngineQuery] = useState("abenzerps/Qwen-Image-2.1-Turbo-Quantized");
+  const [imageEngineResults, setImageEngineResults] = useState<ImageEngineCatalogCard[]>([]);
+  const [imageEngineVariants, setImageEngineVariants] = useState<Record<string, string>>({});
   const [selectedModelId, setSelectedModelId] = useState<string | null>(null);
   const [modelTypeFilters, setModelTypeFilters] = useState<ModelAssetType[]>([]);
   const [modelCatalogOpen, setModelCatalogOpen] = useState(false);
@@ -399,6 +405,10 @@ function App() {
   const selectedCheckpointInfo = useMemo(
     () => status?.checkpoints.find((checkpoint) => checkpoint.name === selectedCheckpoint) ?? null,
     [selectedCheckpoint, status?.checkpoints]
+  );
+  const activeImageEngine = useMemo(
+    () => imageEngines.find((engine) => engine.active) ?? imageEngines[0] ?? null,
+    [imageEngines]
   );
   const activeSceneCharacter = useMemo(
     () => sceneCharacters.find((character) => character.id === activeSceneItemId) ?? null,
@@ -519,9 +529,9 @@ function App() {
     ...positiveLoraTriggers.map((item) => item.triggerWord)
   ]);
   const effectiveNegativePrompt = composeGenerationPrompt(negativePrompt, negativeOptionTags.map((tag) => tag.english));
-  const selectedCheckpointGenerationReady = Boolean(
-    selectedCheckpointInfo && (selectedCheckpointInfo.hasClip || selectedClip) && (selectedCheckpointInfo.hasVae || selectedVae)
-  );
+  const selectedCheckpointGenerationReady = activeImageEngine?.kind === "qwen-image"
+    ? activeImageEngine.installed
+    : Boolean(selectedCheckpointInfo && (selectedCheckpointInfo.hasClip || selectedClip) && (selectedCheckpointInfo.hasVae || selectedVae));
   const selectedCheckpointCompatibilityLabel = selectedCheckpointInfo
     ? [
         selectedCheckpointInfo.hasClip ? "CLIP内蔵" : selectedClip ? `外部CLIP: ${selectedClip}` : "外部CLIPが必要",
@@ -592,6 +602,7 @@ function App() {
     void loadPromptHistory();
     void loadLoraProjects();
     void loadModelLibrary();
+    void loadImageEngines();
     void loadSavedPoses();
     setSavedSceneCharacters(readLocalArray<SavedSceneCharacter>(savedSceneCharactersKey));
     setSavedSceneBackgrounds(readLocalArray<SavedSceneBackground>(savedSceneBackgroundsKey).map((item) => ({
@@ -1131,6 +1142,72 @@ function App() {
     }
   }
 
+  async function loadImageEngines(): Promise<void> {
+    setImageEngines(await window.illustMK.imageEngines.list());
+  }
+
+  async function searchImageEngines(): Promise<void> {
+    await runAction(
+      "Hugging Face画像生成エンジンを検索中",
+      () => window.illustMK.imageEngines.search({ query: imageEngineQuery, limit: 20 }),
+      (models) => {
+        setImageEngineResults(models);
+        setImageEngineVariants((current) => {
+          const next = { ...current };
+          for (const model of models) {
+            if (!next[model.id]) {
+              next[model.id] = model.diffusionFiles.find((file) => /Q4_K_M/i.test(file.name))?.path ?? model.diffusionFiles[0]?.path ?? "";
+            }
+          }
+          return next;
+        });
+      }
+    );
+  }
+
+  async function installImageEngine(model: ImageEngineCatalogCard): Promise<void> {
+    const operationId = crypto.randomUUID();
+    currentOperationId.current = operationId;
+    setAction({ busy: true, message: `${model.name}をインストール中`, error: null });
+    setDownloadProgress(0);
+    try {
+      const engines = await window.illustMK.imageEngines.install({
+        model,
+        diffusionFile: imageEngineVariants[model.id] || model.diffusionFiles[0]?.path || "",
+        textEncoderFile: model.textEncoderFiles.find((file) => /int8/i.test(file.name))?.path ?? model.textEncoderFiles[0]?.path,
+        vaeFile: model.vaeFiles[0]?.path,
+        operationId
+      });
+      setImageEngines(engines);
+      setGenerationSteps(25);
+      setGenerationCfg(1);
+      setDownloadProgress(100);
+      setAction({ busy: false, message: "完了しました", error: null });
+      await refreshStatus();
+    } catch (error) {
+      const errorText = error instanceof Error ? error.message : String(error);
+      appendLog("stderr", errorText, operationId);
+      setAction({ busy: false, message: "失敗しました", error: errorText });
+    } finally {
+      currentOperationId.current = null;
+    }
+  }
+
+  async function activateImageEngine(engine: ImageGenerationEngine): Promise<void> {
+    await runAction("画像生成エンジンを切替中", () => window.illustMK.imageEngines.setActive(engine.id), (engines) => {
+      setImageEngines(engines);
+      if (engine.kind === "qwen-image") {
+        setGenerationSteps(25);
+        setGenerationCfg(1);
+      }
+    });
+  }
+
+  async function deleteImageEngine(engine: ImageGenerationEngine): Promise<void> {
+    if (!window.confirm(`${engine.name}を削除します。Diffusion Model本体も削除されます。`)) return;
+    await runAction("画像生成エンジンを削除中", () => window.illustMK.imageEngines.delete(engine.id), setImageEngines);
+  }
+
   async function loadSavedPoses(): Promise<void> {
     const poses = await window.illustMK.poses.list();
     setSavedPoses(poses);
@@ -1212,6 +1289,7 @@ function App() {
       setSelectedCheckpoint(active?.fileName ?? "");
       setSelectedVae(active?.selectedVae ?? "");
       setSelectedClip(active?.selectedClip ?? "");
+      void loadImageEngines();
     });
   }
 
@@ -1426,7 +1504,7 @@ function App() {
   }
 
   async function refreshAfterDataPathChange(): Promise<void> {
-    await Promise.all([refreshStatus(), refreshOllamaStatus(), loadLoraProjects(), loadPromptHistory(), loadModelLibrary(), loadSavedPoses()]);
+    await Promise.all([refreshStatus(), refreshOllamaStatus(), loadLoraProjects(), loadPromptHistory(), loadModelLibrary(), loadImageEngines(), loadSavedPoses()]);
   }
 
   function resetDataPathDependentState(): void {
@@ -1441,6 +1519,8 @@ function App() {
     setSelectedSavedPoseId("");
     setPoseTitle("");
     setModelLibrary([]);
+    setImageEngines([]);
+    setImageEngineResults([]);
     setSelectedModelId(null);
     setPositiveLoraTriggerIds([]);
     setSelectedLoraProjectId(null);
@@ -2689,6 +2769,7 @@ function App() {
         prompt: composeGenerationPrompt(characterRequest.prompt, poseEnabled ? [activePose.positivePrompt ?? ""] : []),
         negativePrompt: composeGenerationPrompt(characterRequest.negativePrompt, poseEnabled ? [activePose.negativePrompt ?? ""] : []),
         checkpoint: selectedCheckpoint,
+        imageEngineId: activeImageEngine?.id,
         loras: targetCharacter.settings.loras.filter((lora) => availableLoraNames.has(lora.name)),
         width: generationWidth,
         height: generationHeight,
@@ -2707,6 +2788,7 @@ function App() {
         prompt: composeGenerationPrompt(backgroundRequest.prompt, [backgroundOnlyPositivePrompt]),
         negativePrompt: composeGenerationPrompt(backgroundRequest.negativePrompt, [backgroundOnlyNegativePrompt]),
         checkpoint: selectedCheckpoint,
+        imageEngineId: activeImageEngine?.id,
         loras: [],
         width: scene.background.width,
         height: scene.background.height,
@@ -2748,6 +2830,7 @@ function App() {
       prompt: composeGenerationPrompt(hasScene ? scenePrompt : effectivePrompt, poseEnabled ? [activePose.positivePrompt ?? ""] : []),
       negativePrompt: composeGenerationPrompt(hasScene ? sceneNegativePrompt : effectiveNegativePrompt, poseEnabled ? [activePose.negativePrompt ?? ""] : []),
       checkpoint: selectedCheckpoint,
+      imageEngineId: activeImageEngine?.id,
       loras: hasScene ? sceneLoras : activeGenerationLoras,
       width: generationWidth,
       height: generationHeight,
@@ -3263,6 +3346,7 @@ function App() {
           ollamaModel={ollamaModel}
           selectedCheckpoint={selectedCheckpointInfo}
           checkpointBaseModel={modelLibrary.find((entry) => entry.type === "checkpoint" && entry.active)?.baseModel || (selectedCheckpoint ? checkpointBaseModels[selectedCheckpoint] : "")}
+          activeImageEngine={activeImageEngine}
           usageHistory={usageHistory}
         />
       </header>
@@ -3412,6 +3496,52 @@ function App() {
                 <p>アプリ: /Users/kds/Projects/illustMK</p>
                 <p>ランタイム: {paths?.root ?? "/Volumes/ARC-8050T2/illustMK"}</p>
                 <p>macOS ComfyUI: {paths?.nativeComfy ?? "未初期化"}</p>
+              </div>
+              <div className="image-engine-manager">
+                <div className="subsection-heading">
+                  <strong>画像生成エンジン</strong>
+                  <button className="icon-button" onClick={() => void loadImageEngines()} title="再読込"><RefreshCw size={16} /></button>
+                </div>
+                <div className="image-engine-list">
+                  {imageEngines.map((engine) => (
+                    <article className={`image-engine-card ${engine.active ? "active" : ""}`} key={engine.id}>
+                      <div>
+                        <strong>{engine.name}</strong>
+                        <span>{engine.kind === "checkpoint" ? "SDXL / Illustrious / Pony等" : `${engine.format?.toUpperCase()} / Qwen Image`}</span>
+                        {engine.missingComponents.length ? <small>不足: {engine.missingComponents.join("、")}</small> : <small>構成OK</small>}
+                      </div>
+                      <div className="image-engine-actions">
+                        {engine.sourcePageUrl ? <button className="icon-button" onClick={() => void window.illustMK.app.openExternal(engine.sourcePageUrl!)} title="Webページ"><ExternalLink size={15} /></button> : null}
+                        <button disabled={engine.active || !engine.installed || action.busy} onClick={() => void activateImageEngine(engine)}>{engine.active ? "使用中" : "切替"}</button>
+                        {engine.kind !== "checkpoint" ? <button className="icon-button danger" disabled={engine.active || action.busy} onClick={() => void deleteImageEngine(engine)} title="削除"><Trash2 size={15} /></button> : null}
+                      </div>
+                    </article>
+                  ))}
+                </div>
+                <div className="field">
+                  <label>Hugging Face画像モデル検索</label>
+                  <div className="inline">
+                    <input value={imageEngineQuery} onChange={(event) => setImageEngineQuery(event.target.value)} placeholder="Qwen Image 2.1 Turbo" />
+                    <button className="icon-button" disabled={action.busy || !imageEngineQuery.trim()} onClick={() => void searchImageEngines()} title="検索"><RefreshCw size={16} /></button>
+                  </div>
+                </div>
+                {imageEngineResults.length ? (
+                  <div className="image-engine-results">
+                    {imageEngineResults.map((model) => (
+                      <article className="image-engine-result" key={model.id}>
+                        <div>
+                          <strong>{model.id}</strong>
+                          <span>DL {model.downloads.toLocaleString()} / {model.diffusionFiles.length} variants</span>
+                        </div>
+                        <select value={imageEngineVariants[model.id] ?? ""} onChange={(event) => setImageEngineVariants((current) => ({ ...current, [model.id]: event.target.value }))}>
+                          {model.diffusionFiles.map((file) => <option value={file.path} key={file.path}>{file.name} / {file.sizeLabel}</option>)}
+                        </select>
+                        <button className="icon-button" onClick={() => void window.illustMK.app.openExternal(model.pageUrl)} title="Hugging Faceページ"><ExternalLink size={15} /></button>
+                        <button disabled={action.busy} onClick={() => void installImageEngine(model)}><Download size={15} />インストール</button>
+                      </article>
+                    ))}
+                  </div>
+                ) : null}
               </div>
             </section>
 
@@ -6175,6 +6305,7 @@ function StatusGrid({
   ollamaModel,
   selectedCheckpoint,
   checkpointBaseModel,
+  activeImageEngine,
   usageHistory
 }: {
   status: RuntimeStatus | null;
@@ -6183,6 +6314,7 @@ function StatusGrid({
   ollamaModel: string;
   selectedCheckpoint: RuntimeStatus["checkpoints"][number] | null;
   checkpointBaseModel: string;
+  activeImageEngine: ImageGenerationEngine | null;
   usageHistory: UsageSample[];
 }) {
   const runtimeItems: Array<{ label: string; value: string; tone: StatusTone }> =
@@ -6196,12 +6328,16 @@ function StatusGrid({
 
   const ollamaValue = ollamaStatus?.reachable && ollamaStatus.dataLinked ? "接続OK" : ollamaStatus?.reachable ? "保存先NG" : ollamaStatus?.installed ? "未起動" : "未検出";
   const ollamaTone: StatusTone = ollamaStatus?.reachable && ollamaStatus.dataLinked ? "ok" : ollamaStatus?.installed ? "warn" : "error";
-  const checkpointTone: StatusTone = selectedCheckpoint?.simpleWorkflowReady ? "ok" : selectedCheckpoint ? "warn" : "error";
-  const baseModelLabel = checkpointBaseModel || inferCheckpointBaseModel(selectedCheckpoint?.name ?? "");
+  const qwenActive = activeImageEngine?.kind === "qwen-image";
+  const checkpointTone: StatusTone = qwenActive
+    ? activeImageEngine.installed ? "ok" : "error"
+    : selectedCheckpoint?.simpleWorkflowReady ? "ok" : selectedCheckpoint ? "warn" : "error";
+  const selectedModelValue = qwenActive ? activeImageEngine.name : selectedCheckpoint?.name ?? "未選択";
+  const baseModelLabel = qwenActive ? "Qwen Image" : checkpointBaseModel || inferCheckpointBaseModel(selectedCheckpoint?.name ?? "");
   const items = [
     ...runtimeItems,
     { label: "Ollama", value: ollamaValue, tone: ollamaTone },
-    { label: "選択モデル", value: selectedCheckpoint?.name ?? "未選択", tone: checkpointTone, tag: baseModelLabel },
+    { label: "選択モデル", value: selectedModelValue, tone: checkpointTone, tag: baseModelLabel },
     { label: "LLM", value: ollamaModel || "未選択", tone: ollamaModel ? "ok" : "warn" }
   ];
 

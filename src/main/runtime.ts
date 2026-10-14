@@ -31,9 +31,11 @@ export type RuntimePaths = {
   ollamaPid: string;
   models: string;
   checkpoints: string;
+  diffusionModels: string;
   loras: string;
   vae: string;
   clip: string;
+  textEncoders: string;
   controlnet: string;
   backgroundRemoval: string;
   otherModels: string;
@@ -105,9 +107,11 @@ export type RuntimeStatus = {
   comfyUrl: string;
   containerState: string;
   checkpoints: ModelFileInfo[];
+  diffusionModels: ModelFileInfo[];
   loras: ModelFileInfo[];
   vae: ModelFileInfo[];
   clip: ModelFileInfo[];
+  textEncoders: ModelFileInfo[];
   controlnet: ModelFileInfo[];
   outputs: string[];
   systemUsage: SystemUsage;
@@ -131,15 +135,15 @@ export type ModelFileInfo = {
 
 export type DownloadRequest = {
   url: string;
-  targetType: "checkpoints" | "loras" | "vae" | "clip" | "controlnet" | "otherModels";
+  targetType: "checkpoints" | "diffusionModels" | "loras" | "vae" | "clip" | "textEncoders" | "controlnet" | "backgroundRemoval" | "otherModels";
   fileName?: string;
   sha256?: string;
-  source?: "civitai" | "direct";
+  source?: "civitai" | "huggingface" | "direct";
   operationId?: string;
 };
 
 export type DeleteModelRequest = {
-  targetType: "checkpoints" | "loras" | "vae" | "clip" | "controlnet" | "otherModels";
+  targetType: "checkpoints" | "diffusionModels" | "loras" | "vae" | "clip" | "textEncoders" | "controlnet" | "backgroundRemoval" | "otherModels";
   fileName: string;
 };
 
@@ -307,6 +311,55 @@ export type HuggingFaceLlmModelCard = {
   totalSizeLabel: string;
 };
 
+export type ImageEngineKind = "checkpoint" | "qwen-image";
+
+export type ImageEngineFile = {
+  path: string;
+  name: string;
+  sizeBytes: number | null;
+  sizeLabel: string;
+  format: "safetensors" | "gguf";
+};
+
+export type ImageEngineCatalogCard = {
+  id: string;
+  name: string;
+  author: string;
+  downloads: number;
+  likes: number;
+  updatedAt: string | null;
+  tags: string[];
+  pageUrl: string;
+  diffusionFiles: ImageEngineFile[];
+  textEncoderFiles: ImageEngineFile[];
+  vaeFiles: ImageEngineFile[];
+};
+
+export type ImageGenerationEngine = {
+  id: string;
+  name: string;
+  kind: ImageEngineKind;
+  repositoryId?: string;
+  sourcePageUrl?: string;
+  diffusionModel?: string;
+  textEncoder?: string;
+  vae?: string;
+  format?: "safetensors" | "gguf";
+  installed: boolean;
+  missingComponents: string[];
+  active: boolean;
+  installedAt: string;
+  updatedAt: string;
+};
+
+export type InstallImageEngineRequest = {
+  model: ImageEngineCatalogCard;
+  diffusionFile: string;
+  textEncoderFile?: string;
+  vaeFile?: string;
+  operationId?: string;
+};
+
 export type AppSettings = {
   civitaiApiKey: string;
   huggingFaceApiKey: string;
@@ -405,6 +458,7 @@ export type TestGenerationRequest = {
   prompt: string;
   negativePrompt: string;
   checkpoint: string;
+  imageEngineId?: string;
   loras?: GenerationLora[];
   width: number;
   height: number;
@@ -769,7 +823,7 @@ export type DeletePromptHistoryEntryRequest = {
   id: string;
 };
 
-type FetchContext = "Civitai検索" | "Civitaiダウンロード" | "Civitaiサムネイル" | "モデルサムネイル" | "OpenPoses取得" | "ポーズ画像取得";
+type FetchContext = "Civitai検索" | "Civitaiダウンロード" | "Civitaiサムネイル" | "Hugging Face画像モデル検索" | "Hugging Faceダウンロード" | "モデルサムネイル" | "OpenPoses取得" | "ポーズ画像取得";
 
 export type TestGenerationResult = {
   ok: boolean;
@@ -884,9 +938,11 @@ function getRuntimePathsForRoot(runtimeRootPath: string): RuntimePaths {
     ollamaPid: join(ollama, "ollama.pid"),
     models: join(root, "models"),
     checkpoints: join(root, "models", "checkpoints"),
+    diffusionModels: join(root, "models", "diffusion_models"),
     loras: join(root, "models", "loras"),
     vae: join(root, "models", "vae"),
     clip: join(root, "models", "clip"),
+    textEncoders: join(root, "models", "text_encoders"),
     controlnet: join(root, "models", "controlnet"),
     backgroundRemoval: join(root, "models", "background_removal"),
     otherModels: join(root, "models", "other"),
@@ -1069,9 +1125,11 @@ export async function ensureRuntimeFiles(): Promise<RuntimePaths> {
   const paths = getRuntimePaths();
   await Promise.all([
     mkdir(paths.checkpoints, { recursive: true }),
+    mkdir(paths.diffusionModels, { recursive: true }),
     mkdir(paths.loras, { recursive: true }),
     mkdir(paths.vae, { recursive: true }),
     mkdir(paths.clip, { recursive: true }),
+    mkdir(paths.textEncoders, { recursive: true }),
     mkdir(paths.controlnet, { recursive: true }),
     mkdir(paths.backgroundRemoval, { recursive: true }),
     mkdir(paths.otherModels, { recursive: true }),
@@ -1136,9 +1194,11 @@ export async function getStatus(comfyUrl = `http://127.0.0.1:${comfyPort}`): Pro
     composeReady,
     comfyReachable,
     checkpoints,
+    diffusionModels,
     loras,
     vae,
     clip,
+    textEncoders,
     controlnet,
     outputs,
     containerState,
@@ -1155,9 +1215,11 @@ export async function getStatus(comfyUrl = `http://127.0.0.1:${comfyPort}`): Pro
       exists(paths.composeFile),
       checkComfy(comfyUrl),
       listModelFiles(paths.checkpoints),
+      listModelFiles(paths.diffusionModels),
       listModelFiles(paths.loras),
       listModelFiles(paths.vae),
       listModelFiles(paths.clip),
+      listModelFiles(paths.textEncoders),
       listModelFiles(paths.controlnet),
       listFiles(paths.outputs),
       getContainerState(),
@@ -1185,9 +1247,11 @@ export async function getStatus(comfyUrl = `http://127.0.0.1:${comfyPort}`): Pro
     comfyUrl,
     containerState,
     checkpoints,
+    diffusionModels,
     loras,
     vae,
     clip,
+    textEncoders,
     controlnet,
     outputs,
     systemUsage
@@ -1249,6 +1313,11 @@ export async function installNativeRuntime(onLog: RuntimeLogSink): Promise<strin
     await spawnNativeCommand("git", ["clone", "--depth", "1", "https://github.com/comfyanonymous/ComfyUI.git", paths.nativeComfy], onLog);
   } else {
     onLog({ level: "info", line: "ComfyUI は既に存在します。" });
+    try {
+      await spawnNativeCommand("git", ["-C", paths.nativeComfy, "pull", "--ff-only"], onLog);
+    } catch (error) {
+      onLog({ level: "stderr", line: `ComfyUI更新はスキップしました: ${normalizeCommandError(error)}` });
+    }
   }
 
   if (!(await exists(paths.nativePython))) {
@@ -1260,7 +1329,48 @@ export async function installNativeRuntime(onLog: RuntimeLogSink): Promise<strin
   await writeNativeExtraModelPaths(paths);
   await spawnNativeCommand(paths.nativePython, ["-m", "pip", "install", "--upgrade", "pip"], onLog);
   await spawnNativeCommand(paths.nativePython, ["-m", "pip", "install", "-r", join(paths.nativeComfy, "requirements.txt")], onLog);
-  return "macOS ComfyUI環境のインストールが完了しました。";
+  await installManagedComfyCustomNode(paths, "comfyui_controlnet_aux", "https://github.com/Fannovel16/comfyui_controlnet_aux.git", onLog);
+  await installManagedComfyCustomNode(paths, "ComfyUI-GGUF", "https://github.com/leejet/ComfyUI-GGUF.git", onLog);
+  await ensureBackgroundRemovalModelFile(paths, onLog);
+  return "macOS ComfyUI環境、ControlNet補助ノード、ComfyUI-GGUF、BiRefNetのインストールが完了しました。";
+}
+
+async function installManagedComfyCustomNode(
+  paths: RuntimePaths,
+  directoryName: string,
+  repositoryUrl: string,
+  onLog: RuntimeLogSink
+): Promise<void> {
+  const target = join(paths.nativeComfy, "custom_nodes", directoryName);
+  if (!(await exists(target))) {
+    await mkdir(dirname(target), { recursive: true });
+    await spawnNativeCommand("git", ["clone", "--depth", "1", repositoryUrl, target], onLog);
+  } else {
+    onLog({ level: "info", line: `${directoryName} は導入済みです。` });
+    try {
+      await spawnNativeCommand("git", ["-C", target, "pull", "--ff-only"], onLog);
+    } catch (error) {
+      onLog({ level: "stderr", line: `${directoryName}更新はスキップしました: ${normalizeCommandError(error)}` });
+    }
+  }
+  const requirements = join(target, "requirements.txt");
+  if (await exists(requirements)) {
+    await spawnNativeCommand(paths.nativePython, ["-m", "pip", "install", "-r", requirements], onLog, { cwd: target });
+  }
+}
+
+async function ensureBackgroundRemovalModelFile(paths: RuntimePaths, onLog: RuntimeLogSink): Promise<void> {
+  const targetPath = join(paths.backgroundRemoval, backgroundRemovalModelName);
+  if (await exists(targetPath)) {
+    onLog({ level: "info", line: `BiRefNet は導入済みです: ${targetPath}` });
+    return;
+  }
+  await mkdir(paths.backgroundRemoval, { recursive: true });
+  const temporaryPath = `${targetPath}.partial`;
+  await rm(temporaryPath, { force: true });
+  onLog({ level: "info", line: "BiRefNet背景除去モデルをダウンロードします。" });
+  await downloadFileWithProgress(backgroundRemovalModelUrl, temporaryPath, onLog);
+  await rename(temporaryPath, targetPath);
 }
 
 export async function installLoraRuntime(onLog: RuntimeLogSink): Promise<string> {
@@ -1555,16 +1665,23 @@ export async function downloadModel(request: DownloadRequest, onLog?: RuntimeLog
   }
 
   const targetPath = join(targetDir, fileName);
+  const temporaryPath = `${targetPath}.partial`;
+  await rm(temporaryPath, { force: true });
   const headers: Record<string, string> = {
     "User-Agent": "illustMK/0.1",
-    ...(request.source === "civitai" || url.hostname.includes("civitai.com") ? await civitaiAuthHeader() : {})
+    ...(request.source === "civitai" || url.hostname.includes("civitai.com") ? await civitaiAuthHeader() : {}),
+    ...(request.source === "huggingface" || url.hostname.includes("huggingface.co") ? await huggingFaceAuthHeader() : {})
   };
   const requestUrl = await withCivitaiToken(url);
   let response: Response;
   try {
     response = await fetch(requestUrl, { headers });
   } catch (error) {
-    throw new Error(formatFetchFailure("Civitaiダウンロード", requestUrl.toString(), error));
+    throw new Error(formatFetchFailure(
+      request.source === "huggingface" || url.hostname.includes("huggingface.co") ? "Hugging Faceダウンロード" : "Civitaiダウンロード",
+      requestUrl.toString(),
+      error
+    ));
   }
   if (!response.ok || !response.body) {
     throw new Error(downloadErrorMessage(response.status, url));
@@ -1591,11 +1708,18 @@ export async function downloadModel(request: DownloadRequest, onLog?: RuntimeLog
     }
   });
 
-  await pipeline(response.body as unknown as NodeJS.ReadableStream, progressStream, createWriteStream(targetPath));
-  onLog?.({ level: "info", line: downloadProgressLine(receivedBytes, totalBytes) });
-  const digest = await sha256File(targetPath);
-  if (request.sha256 && digest.toLowerCase() !== request.sha256.toLowerCase()) {
-    throw new Error(`SHA256が一致しません: ${digest}`);
+  let digest = "";
+  try {
+    await pipeline(response.body as unknown as NodeJS.ReadableStream, progressStream, createWriteStream(temporaryPath));
+    onLog?.({ level: "info", line: downloadProgressLine(receivedBytes, totalBytes) });
+    digest = await sha256File(temporaryPath);
+    if (request.sha256 && digest.toLowerCase() !== request.sha256.toLowerCase()) {
+      throw new Error(`SHA256が一致しません: ${digest}`);
+    }
+    await rename(temporaryPath, targetPath);
+  } catch (error) {
+    await rm(temporaryPath, { force: true });
+    throw error;
   }
   onLog?.({ level: "info", line: `SHA256: ${digest}` });
 
@@ -1787,6 +1911,9 @@ export async function setActiveModelLibraryEntry(id: string): Promise<ModelLibra
   const stored = await readStoredModelLibrary(paths);
   stored.activeCheckpointId = id;
   await writeStoredModelLibrary(paths, stored);
+  const engines = await readStoredImageEngines(paths);
+  engines.activeEngineId = "checkpoint";
+  await writeStoredImageEngines(paths, engines);
   return getModelLibrary();
 }
 
@@ -2240,6 +2367,233 @@ export async function searchHuggingFaceLlmModels(options: { query: string; limit
   const json = (await response.json()) as Array<Record<string, unknown>>;
   const cards = json.map(normalizeHuggingFaceModelCard).filter((model) => model.ggufFiles.length || model.tags.includes("gguf"));
   return Promise.all(cards.map(withHuggingFaceModelFileSizes));
+}
+
+type StoredImageEngines = {
+  activeEngineId: string;
+  engines: Omit<ImageGenerationEngine, "installed" | "missingComponents" | "active">[];
+};
+
+function imageEnginesPath(paths: RuntimePaths): string {
+  return join(paths.root, ".illustmk", "image-engines.json");
+}
+
+async function readStoredImageEngines(paths: RuntimePaths): Promise<StoredImageEngines> {
+  try {
+    const parsed = JSON.parse(await readFile(imageEnginesPath(paths), "utf8")) as Partial<StoredImageEngines>;
+    return {
+      activeEngineId: parsed.activeEngineId || "checkpoint",
+      engines: Array.isArray(parsed.engines) ? parsed.engines : []
+    };
+  } catch {
+    return { activeEngineId: "checkpoint", engines: [] };
+  }
+}
+
+async function writeStoredImageEngines(paths: RuntimePaths, value: StoredImageEngines): Promise<void> {
+  await mkdir(dirname(imageEnginesPath(paths)), { recursive: true });
+  await writeFile(imageEnginesPath(paths), JSON.stringify(value, null, 2), "utf8");
+}
+
+export async function getImageGenerationEngines(): Promise<ImageGenerationEngine[]> {
+  const paths = await ensureRuntimeFiles();
+  const stored = await readStoredImageEngines(paths);
+  const checkpoint: ImageGenerationEngine = {
+    id: "checkpoint",
+    name: "Checkpoint / SD系",
+    kind: "checkpoint",
+    installed: true,
+    missingComponents: [],
+    active: stored.activeEngineId === "checkpoint",
+    installedAt: "",
+    updatedAt: ""
+  };
+  const engines = await Promise.all(stored.engines.map(async (engine) => {
+    const missingComponents: string[] = [];
+    if (!engine.diffusionModel || !(await exists(join(paths.diffusionModels, engine.diffusionModel)))) missingComponents.push("Diffusion Model");
+    if (!engine.textEncoder || !(await exists(join(paths.textEncoders, engine.textEncoder)))) missingComponents.push("Text Encoder");
+    if (!engine.vae || !(await exists(join(paths.vae, engine.vae)))) missingComponents.push("VAE");
+    if (engine.format === "gguf" && !(await exists(join(paths.nativeComfy, "custom_nodes", "ComfyUI-GGUF")))) {
+      missingComponents.push("ComfyUI-GGUF");
+    }
+    return {
+      ...engine,
+      installed: missingComponents.length === 0,
+      missingComponents,
+      active: stored.activeEngineId === engine.id
+    };
+  }));
+  if (!engines.some((engine) => engine.active) && !checkpoint.active) checkpoint.active = true;
+  return [checkpoint, ...engines];
+}
+
+export async function setActiveImageGenerationEngine(id: string): Promise<ImageGenerationEngine[]> {
+  const paths = await ensureRuntimeFiles();
+  const engines = await getImageGenerationEngines();
+  const target = engines.find((engine) => engine.id === id);
+  if (!target) throw new Error("画像生成エンジンが見つかりません。");
+  if (!target.installed) throw new Error(`画像生成エンジンの構成が不足しています: ${target.missingComponents.join("、")}`);
+  const stored = await readStoredImageEngines(paths);
+  stored.activeEngineId = id;
+  await writeStoredImageEngines(paths, stored);
+  return getImageGenerationEngines();
+}
+
+export async function searchHuggingFaceImageEngines(options: { query?: string; limit?: number }): Promise<ImageEngineCatalogCard[]> {
+  const query = options.query?.trim() || "Qwen Image";
+  const params = new URLSearchParams({
+    search: query,
+    pipeline_tag: "text-to-image",
+    sort: "downloads",
+    direction: "-1",
+    limit: String(options.limit ?? 20),
+    full: "true"
+  });
+  const url = `https://huggingface.co/api/models?${params.toString()}`;
+  let response: Response;
+  try {
+    response = await fetch(url, {
+      headers: { Accept: "application/json", ...(await huggingFaceAuthHeader()) },
+      signal: AbortSignal.timeout(30000)
+    });
+  } catch (error) {
+    throw new Error(formatFetchFailure("Hugging Face画像モデル検索", url, error));
+  }
+  if (!response.ok) throw new Error(`Hugging Face画像モデル検索に失敗しました: HTTP ${response.status}`);
+  const models = await response.json() as Array<Record<string, unknown>>;
+  const detailed = await Promise.all(models.map(async (model) => {
+    const id = String(model.id ?? model.modelId ?? "");
+    if (!id) return null;
+    try {
+      const detailResponse = await fetch(`https://huggingface.co/api/models/${id}?blobs=true`, {
+        headers: { Accept: "application/json", ...(await huggingFaceAuthHeader()) },
+        signal: AbortSignal.timeout(30000)
+      });
+      if (!detailResponse.ok) return null;
+      return normalizeImageEngineCatalogCard(await detailResponse.json() as Record<string, unknown>);
+    } catch {
+      return null;
+    }
+  }));
+  return detailed.filter((model): model is ImageEngineCatalogCard => Boolean(model?.diffusionFiles.length && model.textEncoderFiles.length && model.vaeFiles.length));
+}
+
+function normalizeImageEngineCatalogCard(item: Record<string, unknown>): ImageEngineCatalogCard {
+  const id = String(item.id ?? item.modelId ?? "");
+  const siblings = Array.isArray(item.siblings) ? item.siblings : [];
+  const files = siblings.flatMap((value): Array<ImageEngineFile> => {
+    if (!value || typeof value !== "object") return [];
+    const sibling = value as { rfilename?: unknown; size?: unknown; lfs?: { size?: unknown } };
+    const path = String(sibling.rfilename ?? "");
+    const lower = path.toLowerCase();
+    if (!lower.endsWith(".safetensors") && !lower.endsWith(".gguf")) return [];
+    const rawSize = Number(sibling.size ?? sibling.lfs?.size ?? NaN);
+    const sizeBytes = Number.isFinite(rawSize) && rawSize > 0 ? rawSize : null;
+    return [{
+      path,
+      name: basename(path),
+      sizeBytes,
+      sizeLabel: sizeBytes ? formatBytes(sizeBytes) : "サイズ不明",
+      format: lower.endsWith(".gguf") ? "gguf" : "safetensors"
+    }];
+  });
+  const diffusionFiles = files.filter((file) => {
+    const lower = file.path.toLowerCase();
+    return !lower.includes("text_encoder")
+      && !lower.includes("vae/")
+      && !lower.includes("/vae")
+      && !lower.includes("-mlx-")
+      && !lower.includes("nvfp4")
+      && !/-\d{5}-of-\d{5}\./.test(lower)
+      && /qwen.*image|diffusion|unet/.test(lower);
+  });
+  const textEncoderFiles = files.filter((file) => /text_encoder|qwen3vl|qwen3\.5.*pe/.test(file.path.toLowerCase()));
+  const vaeFiles = files.filter((file) => /(^|\/)vae\/|[_\-.]vae[_\-.]/.test(file.path.toLowerCase()));
+  return {
+    id,
+    name: id.split("/").pop() ?? id,
+    author: id.includes("/") ? id.split("/")[0] : "",
+    downloads: Number(item.downloads ?? 0),
+    likes: Number(item.likes ?? 0),
+    updatedAt: item.lastModified ? String(item.lastModified) : null,
+    tags: Array.isArray(item.tags) ? item.tags.map(String) : [],
+    pageUrl: `https://huggingface.co/${id}`,
+    diffusionFiles,
+    textEncoderFiles,
+    vaeFiles
+  };
+}
+
+export async function installImageGenerationEngine(
+  request: InstallImageEngineRequest,
+  onLog: RuntimeLogSink
+): Promise<ImageGenerationEngine[]> {
+  const paths = await ensureRuntimeFiles();
+  const diffusion = request.model.diffusionFiles.find((file) => file.path === request.diffusionFile);
+  const textEncoder = request.model.textEncoderFiles.find((file) => file.path === request.textEncoderFile)
+    ?? request.model.textEncoderFiles.find((file) => /int8/i.test(file.name))
+    ?? request.model.textEncoderFiles[0];
+  const vae = request.model.vaeFiles.find((file) => file.path === request.vaeFile) ?? request.model.vaeFiles[0];
+  if (!diffusion || !textEncoder || !vae) throw new Error("画像生成エンジンの構成ファイルを決定できませんでした。");
+  const components: Array<{ file: ImageEngineFile; targetType: DownloadRequest["targetType"] }> = [
+    { file: diffusion, targetType: "diffusionModels" },
+    { file: textEncoder, targetType: "textEncoders" },
+    { file: vae, targetType: "vae" }
+  ];
+  for (const component of components) {
+    const targetPath = join(paths[component.targetType], component.file.name);
+    const targetStat = await stat(targetPath).catch(() => null);
+    if (targetStat?.isFile() && (!component.file.sizeBytes || targetStat.size === component.file.sizeBytes)) {
+      onLog({ level: "info", line: `導入済みのためスキップ: ${component.file.name}` });
+      continue;
+    }
+    if (targetStat) {
+      onLog({ level: "stderr", line: `不完全なファイルを再取得します: ${component.file.name} (${formatBytes(targetStat.size)} / ${component.file.sizeLabel})` });
+      await rm(targetPath, { force: true });
+    }
+    const encodedPath = component.file.path.split("/").map(encodeURIComponent).join("/");
+    await downloadModel({
+      url: `https://huggingface.co/${request.model.id}/resolve/main/${encodedPath}`,
+      targetType: component.targetType,
+      fileName: component.file.name,
+      source: "huggingface",
+      operationId: request.operationId
+    }, onLog);
+  }
+  const stored = await readStoredImageEngines(paths);
+  const id = createHash("sha1").update(`${request.model.id}:${diffusion.name}:${textEncoder.name}:${vae.name}`).digest("hex").slice(0, 20);
+  const now = new Date().toISOString();
+  const existing = stored.engines.find((engine) => engine.id === id);
+  const engine: StoredImageEngines["engines"][number] = {
+    id,
+    name: `${request.model.name} / ${diffusion.name.replace(/\.(safetensors|gguf)$/i, "")}`,
+    kind: "qwen-image",
+    repositoryId: request.model.id,
+    sourcePageUrl: request.model.pageUrl,
+    diffusionModel: diffusion.name,
+    textEncoder: textEncoder.name,
+    vae: vae.name,
+    format: diffusion.format,
+    installedAt: existing?.installedAt ?? now,
+    updatedAt: now
+  };
+  stored.engines = [engine, ...stored.engines.filter((item) => item.id !== id)];
+  stored.activeEngineId = id;
+  await writeStoredImageEngines(paths, stored);
+  await writeNativeExtraModelPaths(paths);
+  return getImageGenerationEngines();
+}
+
+export async function deleteImageGenerationEngine(id: string): Promise<ImageGenerationEngine[]> {
+  const paths = await ensureRuntimeFiles();
+  const stored = await readStoredImageEngines(paths);
+  const engine = stored.engines.find((item) => item.id === id);
+  if (!engine) return getImageGenerationEngines();
+  if (stored.activeEngineId === id) throw new Error("使用中の画像生成エンジンは削除できません。先に別のエンジンへ切り替えてください。");
+  if (engine.diffusionModel) await rm(join(paths.diffusionModels, engine.diffusionModel), { force: true });
+  stored.engines = stored.engines.filter((item) => item.id !== id);
+  await writeStoredImageEngines(paths, stored);
+  return getImageGenerationEngines();
 }
 
 export async function getOllamaStatus(ollamaUrl = "http://127.0.0.1:11434"): Promise<OllamaStatus> {
@@ -3503,6 +3857,20 @@ async function promptHistoryMissingAssets(entry: PromptHistoryEntry, paths: Runt
     paths.controlnet
   ]);
 
+  const imageEngineId = settings?.generationRequest?.imageEngineId?.trim();
+  if (imageEngineId && imageEngineId !== "checkpoint") {
+    const imageEngine = (await getImageGenerationEngines()).find((engine) => engine.id === imageEngineId);
+    if (!imageEngine?.installed) {
+      checks.push(["画像生成エンジン", imageEngineId, join(paths.root, ".illustmk", "missing-image-engines")]);
+    } else {
+      checks.push(
+        ["画像生成エンジン/Diffusion Model", imageEngine.diffusionModel, paths.diffusionModels],
+        ["画像生成エンジン/Text Encoder", imageEngine.textEncoder, paths.textEncoders],
+        ["画像生成エンジン/VAE", imageEngine.vae, paths.vae]
+      );
+    }
+  }
+
   const missing: string[] = [];
   const seen = new Set<string>();
   for (const [kind, name, dir] of checks) {
@@ -4208,7 +4576,7 @@ function fetchFailureReason(name: string, code: string, message: string): string
     return "DNS解決に失敗しました。ネットワーク接続またはDNS設定を確認してください。";
   }
   if (code === "ECONNRESET") {
-    return "接続が途中で切断されました。回線、プロキシ、VPN、Civitai側の制限を確認してください。";
+    return "接続が途中で切断されました。回線、プロキシ、VPN、接続先サービス側の制限を確認してください。";
   }
   if (code === "ECONNREFUSED") {
     return "接続が拒否されました。ネットワーク制限または相手先の状態を確認してください。";
@@ -4216,7 +4584,7 @@ function fetchFailureReason(name: string, code: string, message: string): string
   if (code.includes("CERT") || code.includes("TLS")) {
     return "TLS/証明書の検証に失敗しました。プロキシやネットワークフィルタを確認してください。";
   }
-  return "通信処理が失敗しました。ネットワーク環境とCivitai側の状態を確認してください。";
+  return "通信処理が失敗しました。ネットワーク環境と接続先サービス側の状態を確認してください。";
 }
 
 async function getComfyLoraNames(comfyUrl: string): Promise<Set<string> | null> {
@@ -4239,6 +4607,16 @@ export async function runTestGeneration(request: TestGenerationRequest): Promise
   const paths = getRuntimePaths();
   if (request.sceneConditioning) {
     return runSceneCompositeGeneration(request, paths);
+  }
+  const engines = await getImageGenerationEngines();
+  const activeEngine = request.imageEngineId
+    ? engines.find((engine) => engine.id === request.imageEngineId)
+    : engines.find((engine) => engine.active);
+  if (request.imageEngineId && !activeEngine) {
+    return { ok: false, message: `履歴で使用した画像生成エンジンが現在のDataPathにありません: ${request.imageEngineId}` };
+  }
+  if (activeEngine?.kind === "qwen-image") {
+    return runQwenImageGeneration(request, paths, activeEngine);
   }
   const modelInfo = await inspectModelFile(join(paths.checkpoints, request.checkpoint));
   const externalVae = request.vae?.trim();
@@ -4400,6 +4778,91 @@ export async function runTestGeneration(request: TestGenerationRequest): Promise
   return submitComfyWorkflow(request.comfyUrl, workflow, paths);
 }
 
+async function runQwenImageGeneration(
+  request: TestGenerationRequest,
+  paths: RuntimePaths,
+  engine: ImageGenerationEngine
+): Promise<TestGenerationResult> {
+  if (!engine.installed || !engine.diffusionModel || !engine.textEncoder || !engine.vae || !engine.format) {
+    return { ok: false, message: `Qwen Imageエンジンの構成が不足しています: ${engine.missingComponents.join("、")}` };
+  }
+  if (request.loras?.length) {
+    return { ok: false, message: "現在選択中のQwen ImageエンジンではSDXL/Illustrious用LoRAを利用できません。生成タブのLoRA選択を解除してください。" };
+  }
+  if (request.poseConditioning?.enabled) {
+    return { ok: false, message: "現在選択中のQwen Image 2.1ワークフローは既存SDXL用ControlNetに対応していません。デッサンを無効にして生成してください。" };
+  }
+  const requiredNodes = [
+    engine.format === "gguf" ? "UnetLoaderGGUF" : "UNETLoader",
+    "QwenImage21Cache",
+    "TextEncodeQwenImage21",
+    "CLIPLoader",
+    "VAELoader"
+  ];
+  const missingNodes = await missingComfyNodes(request.comfyUrl, requiredNodes);
+  if (missingNodes.length) {
+    return {
+      ok: false,
+      message: `Qwen Image用ComfyUIノードが不足しています: ${missingNodes.join("、")}。環境タブのComfyUI「インストール」を再実行してからComfyUIを再起動してください。`
+    };
+  }
+  const workflow: Record<string, { class_type: string; inputs: Record<string, unknown> }> = {
+    "1": {
+      class_type: engine.format === "gguf" ? "UnetLoaderGGUF" : "UNETLoader",
+      inputs: engine.format === "gguf"
+        ? { unet_name: engine.diffusionModel }
+        : { unet_name: engine.diffusionModel, weight_dtype: "default" }
+    },
+    "2": { class_type: "QwenImage21Cache", inputs: { model: ["1", 0], device: "auto", dtype: "default" } },
+    "3": { class_type: "CLIPLoader", inputs: { clip_name: engine.textEncoder, type: "qwen_image", device: "default" } },
+    "4": { class_type: "VAELoader", inputs: { vae_name: engine.vae } },
+    "5": {
+      class_type: "TextEncodeQwenImage21",
+      inputs: {
+        clip: ["3", 0],
+        prompt: request.prompt,
+        negative_prompt: request.negativePrompt,
+        resolution: Math.max(request.width, request.height)
+      }
+    },
+    "6": { class_type: "EmptyLatentImage", inputs: { width: request.width, height: request.height, batch_size: 1 } },
+    "7": {
+      class_type: "KSampler",
+      inputs: {
+        seed: normalizeSeed(request.seed),
+        steps: request.steps,
+        cfg: request.cfg,
+        sampler_name: "euler",
+        scheduler: "simple",
+        denoise: 1,
+        model: ["2", 0],
+        positive: ["5", 0],
+        negative: ["5", 1],
+        latent_image: ["6", 0]
+      }
+    },
+    "8": { class_type: "VAEDecode", inputs: { samples: ["7", 0], vae: ["4", 0] } },
+    "9": { class_type: "SaveImage", inputs: { filename_prefix: "illustmk_qwen_image", images: ["8", 0] } }
+  };
+  return submitComfyWorkflow(request.comfyUrl, workflow, paths, `Qwen Image生成が完了しました。エンジン: ${engine.name}`);
+}
+
+async function missingComfyNodes(comfyUrl: string, names: string[]): Promise<string[]> {
+  const missing: string[] = [];
+  await Promise.all(names.map(async (name) => {
+    try {
+      const response = await fetch(`${comfyUrl.replace(/\/$/, "")}/object_info/${encodeURIComponent(name)}`, {
+        signal: AbortSignal.timeout(10000)
+      });
+      const json = response.ok ? await response.json() as Record<string, unknown> : {};
+      if (!response.ok || !json[name]) missing.push(name);
+    } catch {
+      missing.push(name);
+    }
+  }));
+  return missing;
+}
+
 async function runSceneCompositeGeneration(request: TestGenerationRequest, paths: RuntimePaths): Promise<TestGenerationResult> {
   const scene = request.sceneConditioning;
   if (!scene) return { ok: false, message: "総合生成のシーン情報がありません。" };
@@ -4491,19 +4954,8 @@ async function runSceneCompositeGeneration(request: TestGenerationRequest, paths
 
 async function ensureBackgroundRemovalModel(paths: RuntimePaths, comfyUrl: string): Promise<void> {
   const targetPath = join(paths.backgroundRemoval, backgroundRemovalModelName);
-  let installedNow = false;
-  if (!(await exists(targetPath))) {
-    await mkdir(paths.backgroundRemoval, { recursive: true });
-    const temporaryPath = `${targetPath}.partial`;
-    await rm(temporaryPath, { force: true });
-    const response = await fetch(backgroundRemovalModelUrl);
-    if (!response.ok || !response.body) {
-      throw new Error(`背景除去モデルの取得に失敗しました: HTTP ${response.status}`);
-    }
-    await pipeline(response.body as unknown as NodeJS.ReadableStream, createWriteStream(temporaryPath));
-    await rename(temporaryPath, targetPath);
-    installedNow = true;
-  }
+  const installedNow = !(await exists(targetPath));
+  await ensureBackgroundRemovalModelFile(paths, () => undefined);
   if (!installedNow && await comfyRecognizesBackgroundRemovalModel(comfyUrl)) return;
   const localUrl = /^https?:\/\/(?:127\.0\.0\.1|localhost)(?::\d+)?(?:\/|$)/i.test(comfyUrl);
   const managedPid = localUrl ? await managedComfyPidForPaths(paths) : null;
@@ -5384,9 +5836,11 @@ async function writeNativeExtraModelPaths(paths: RuntimePaths): Promise<void> {
   const yaml = `illustmk:
   base_path: ${paths.root}
   checkpoints: models/checkpoints
+  diffusion_models: models/diffusion_models
   loras: models/loras
   vae: models/vae
   clip: models/clip
+  text_encoders: models/text_encoders
   controlnet: models/controlnet
   background_removal: models/background_removal
 `;

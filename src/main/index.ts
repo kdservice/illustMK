@@ -8,6 +8,7 @@ import {
   deleteLoraTrainingProject,
   deleteModelFile,
   deleteModelLibraryEntry,
+  deleteImageGenerationEngine,
   deleteSavedPose,
   deleteIllustrationTag,
   deletePromptHistoryEntry,
@@ -24,6 +25,7 @@ import {
   getDataPaths,
   getStatus,
   getModelLibrary,
+  getImageGenerationEngines,
   getSavedPoses,
   getOpenPoseAsset,
   extractPoseKeypoints,
@@ -44,6 +46,7 @@ import {
   importLoraFile,
   installOllama,
   installNativeRuntime,
+  installImageGenerationEngine,
   installPosePreprocessor,
   pullOllamaModel,
   pauseLoraTrainingProject,
@@ -51,11 +54,13 @@ import {
   searchCivitaiModelPage,
   searchCivitaiModels,
   searchHuggingFaceLlmModels,
+  searchHuggingFaceImageEngines,
   saveAppSettings,
   saveModelLibraryEntry,
   savePose,
   searchOpenPoseCatalog,
   setActiveModelLibraryEntry,
+  setActiveImageGenerationEngine,
   addDataPath,
   saveIllustrationTag,
   saveLoraCaptionWorkspace,
@@ -96,6 +101,7 @@ import {
   type ImportModelAssetRequest,
   type DownloadCivitaiModelRequest,
   type DownloadDirectModelRequest,
+  type InstallImageEngineRequest,
   type ModelAssetType,
   type SaveModelLibraryEntryRequest,
   type LoraTrainingRunParams,
@@ -399,6 +405,19 @@ function registerIpc(): void {
       });
     })
   );
+  ipcMain.handle("image-engines:list", () => getImageGenerationEngines());
+  ipcMain.handle("image-engines:set-active", (_event, id: string) => setActiveImageGenerationEngine(id));
+  ipcMain.handle("image-engines:search", (_event, options: { query?: string; limit?: number }) => searchHuggingFaceImageEngines(options));
+  ipcMain.handle("image-engines:install", (event, request: InstallImageEngineRequest) =>
+    installImageGenerationEngine(request, (log) => {
+      event.sender.send("runtime:operation-log", {
+        id: request.operationId ?? "image-engine-install",
+        level: log.level,
+        line: log.line
+      });
+    })
+  );
+  ipcMain.handle("image-engines:delete", (_event, id: string) => deleteImageGenerationEngine(id));
   ipcMain.handle("poses:list", () => getSavedPoses());
   ipcMain.handle("poses:save", (_event, request) => savePose(request));
   ipcMain.handle("poses:delete", (_event, id: string) => deleteSavedPose(id));

@@ -345,6 +345,72 @@ label {
   align-content: start;
 }
 
+.image-engine-manager {
+  display: grid;
+  gap: 10px;
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px solid #22365d;
+}
+
+.subsection-heading,
+.image-engine-card,
+.image-engine-result,
+.image-engine-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.subsection-heading {
+  justify-content: space-between;
+}
+
+.image-engine-list,
+.image-engine-results {
+  display: grid;
+  gap: 8px;
+  max-height: 240px;
+  overflow: auto;
+}
+
+.image-engine-card,
+.image-engine-result {
+  min-width: 0;
+  padding: 9px;
+  border: 1px solid #263b65;
+  border-radius: 6px;
+  background: #091429;
+}
+
+.image-engine-card.active {
+  border-color: #ef5867;
+  background: #281019;
+}
+
+.image-engine-card > div:first-child,
+.image-engine-result > div:first-child {
+  display: grid;
+  min-width: 0;
+  flex: 1;
+  gap: 3px;
+}
+
+.image-engine-card span,
+.image-engine-card small,
+.image-engine-result span {
+  color: #9fb2d4;
+}
+
+.image-engine-actions {
+  flex: 0 0 auto;
+}
+
+.image-engine-result select {
+  min-width: 220px;
+  max-width: 42%;
+}
+
 .checkpoint-linked-assets {
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 10px;

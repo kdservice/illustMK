@@ -10,6 +10,9 @@ import type {
   DownloadRequest,
   DownloadResult,
   HuggingFaceLlmModelCard,
+  ImageEngineCatalogCard,
+  ImageGenerationEngine,
+  InstallImageEngineRequest,
   LlmChatMessage,
   LlmChatRequest,
   ModelAssetType,
@@ -123,6 +126,15 @@ const api = {
       ipcRenderer.invoke("models:download-civitai", request),
     downloadDirect: (request: { url: string; fileName?: string; targetType: ModelAssetType; baseModel?: string; usage?: string; operationId?: string }): Promise<ModelLibraryEntry[]> =>
       ipcRenderer.invoke("models:download-direct", request)
+  },
+  imageEngines: {
+    list: (): Promise<ImageGenerationEngine[]> => ipcRenderer.invoke("image-engines:list"),
+    setActive: (id: string): Promise<ImageGenerationEngine[]> => ipcRenderer.invoke("image-engines:set-active", id),
+    search: (options: { query?: string; limit?: number }): Promise<ImageEngineCatalogCard[]> =>
+      ipcRenderer.invoke("image-engines:search", options),
+    install: (request: InstallImageEngineRequest): Promise<ImageGenerationEngine[]> =>
+      ipcRenderer.invoke("image-engines:install", request),
+    delete: (id: string): Promise<ImageGenerationEngine[]> => ipcRenderer.invoke("image-engines:delete", id)
   },
   poses: {
     list: (): Promise<SavedPose[]> => ipcRenderer.invoke("poses:list"),
