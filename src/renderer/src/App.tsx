@@ -4502,7 +4502,7 @@ function App() {
               )}
             </div>
             <div className="image-memo-panel">
-              <textarea value={imageMemo} onChange={(event) => setImageMemo(event.target.value)} placeholder="この画像のメモ" />
+              <textarea rows={1} value={imageMemo} onChange={(event) => setImageMemo(event.target.value)} placeholder="この画像のメモ" />
               <button className="tiny-button" disabled={!lastHistoryId || action.busy} onClick={() => void saveCurrentHistoryMemo()}>
                 <Save size={14} />
                 更新
