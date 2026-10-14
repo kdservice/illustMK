@@ -5519,6 +5519,8 @@ function App() {
                             背景を復元
                           </button>
                         ) : null}
+                      </div>
+                      <div className="history-card-actions">
                         <button className="icon-button danger" onClick={() => void deletePromptHistory(entry)} title="削除">
                           <Trash2 size={15} />
                         </button>
