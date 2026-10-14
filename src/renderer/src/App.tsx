@@ -2726,7 +2726,9 @@ function App() {
         title: character.title,
         prompt: characterRequest.prompt,
         negativePrompt: characterRequest.negativePrompt,
-        placement: character.placement
+        placement: character.placement,
+        imagePath: character.generatedImagePath,
+        imageDataUrl: character.generatedImageDataUrl
       };
     });
     const hasScene = sceneCharactersForRequest.length > 0 || Boolean(scene.background);
@@ -2759,6 +2761,8 @@ function App() {
       sceneConditioning: hasScene ? {
         backgroundPrompt: backgroundRequest.prompt,
         backgroundNegativePrompt: backgroundRequest.negativePrompt,
+        backgroundImagePath: scene.background?.generatedImagePath,
+        backgroundImageDataUrl: scene.background?.generatedImageDataUrl,
         characters: regionalCharacters
       } : undefined
     };
@@ -2813,11 +2817,29 @@ function App() {
       negativeOptionTagIds: backgroundHistory?.negativeOptionTagIds ?? negativeOptionTagIds,
       positiveLoraTriggerIds: backgroundHistory ? [] : positiveLoraTriggerIds,
       memo: imageMemo,
-      generationSettings: buildGenerationHistorySettings(request, scope),
+      generationSettings: buildGenerationHistorySettings(request, scope, result.ok ? result : undefined),
       imagePath: result.imagePath,
       imageDataUrl: result.imageDataUrl
     });
     return { result: resultWithDuration, history, durationText };
+  }
+
+  function rememberGeneratedSceneSource(scope: GenerationScope, result: TestGenerationResult, characterId?: string): void {
+    if (!result.ok || !(result.imagePath || result.imageDataUrl)) return;
+    if (scope === "character" && characterId) {
+      setSceneCharacters((current) => current.map((character) => character.id === characterId ? {
+        ...character,
+        generatedImagePath: result.imagePath,
+        generatedImageDataUrl: result.imagePath ? undefined : result.imageDataUrl
+      } : character));
+    }
+    if (scope === "background") {
+      setSceneBackground((current) => current ? {
+        ...current,
+        generatedImagePath: result.imagePath,
+        generatedImageDataUrl: result.imagePath ? undefined : result.imageDataUrl
+      } : current);
+    }
   }
 
   async function waitWhileRepeatPaused(): Promise<void> {
@@ -2833,6 +2855,7 @@ function App() {
       scope === "character" ? "キャラクタを生成中" : scope === "background" ? "背景を生成中" : "シーンを総合生成中",
       async () => {
         const startedAt = performance.now();
+        const targetCharacterId = scope === "character" ? activeSceneCharacter?.id : undefined;
         const restoredScope = restoredGenerationSettings?.generationScope ?? "character";
         const usesRestoredRequest = Boolean(
           restoredRequestApplies &&
@@ -2869,7 +2892,9 @@ function App() {
         appendLog("info", `ComfyUI Negative Prompt: ${request.negativePrompt}`);
         appendLog("info", `ComfyUI LoRA: ${requestLoras.length ? requestLoras.map((lora) => `${lora.name} model=${lora.modelStrength} clip=${lora.clipStrength}`).join(", ") : "なし"}`);
         appendLog("info", `ComfyUI Size/Steps/CFG/Seed: ${request.width}x${request.height} / ${request.steps} / ${request.cfg} / ${request.seed}`);
-        return generateAndSave(request, startedAt, scope);
+        const generated = await generateAndSave(request, startedAt, scope);
+        rememberGeneratedSceneSource(scope, generated.result, targetCharacterId);
+        return generated;
       },
       ({ result, history }) => {
         setGenerationResult(result);
@@ -2934,6 +2959,7 @@ function App() {
           appendLog("info", `ComfyUI LoRA: ${requestLoras.length ? requestLoras.map((lora) => `${lora.name} model=${lora.modelStrength} clip=${lora.clipStrength}`).join(", ") : "なし"}`);
           appendLog("info", `ComfyUI Size/Steps/CFG/Seed: ${request.width}x${request.height} / ${request.steps} / ${request.cfg} / ${request.seed}`);
           const { result, history, durationText } = await generateAndSave(request, startedAt, scope);
+          rememberGeneratedSceneSource(scope, result, scope === "character" ? activeSceneCharacter?.id : undefined);
           setGenerationResult(result);
           setPromptHistory(history);
           setLastHistoryId(history[0]?.id ?? null);
@@ -3120,7 +3146,11 @@ function App() {
     ? restoredGenerationSettings.generationRequest
     : currentTestRequest;
 
-  function buildGenerationHistorySettings(request: TestGenerationRequest, scope: GenerationScope): PromptGenerationSettings {
+  function buildGenerationHistorySettings(
+    request: TestGenerationRequest,
+    scope: GenerationScope,
+    generatedResult?: TestGenerationResult
+  ): PromptGenerationSettings {
     const background = scope === "background" ? sceneBackground : null;
     const historyScene = currentGenerationScene();
     if (scope === "background" && historyScene.background) {
@@ -3132,7 +3162,15 @@ function App() {
       if (historyCharacter) {
         historyCharacter.settings.seedMode = "fixed";
         historyCharacter.settings.seedValue = request.seed;
+        if (generatedResult?.imagePath || generatedResult?.imageDataUrl) {
+          historyCharacter.generatedImagePath = generatedResult.imagePath;
+          historyCharacter.generatedImageDataUrl = generatedResult.imagePath ? undefined : generatedResult.imageDataUrl;
+        }
       }
+    }
+    if (scope === "background" && historyScene.background && (generatedResult?.imagePath || generatedResult?.imageDataUrl)) {
+      historyScene.background.generatedImagePath = generatedResult.imagePath;
+      historyScene.background.generatedImageDataUrl = generatedResult.imagePath ? undefined : generatedResult.imageDataUrl;
     }
     if (scope === "scene") {
       if (historyScene.background) {

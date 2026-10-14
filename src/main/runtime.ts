@@ -19,6 +19,8 @@ const defaultLoraRunParams: LoraTrainingRunParams = {
   networkDim: 16,
   learningRate: "1e-4"
 };
+const backgroundRemovalModelName = "birefnet.safetensors";
+const backgroundRemovalModelUrl = "https://huggingface.co/Comfy-Org/BiRefNet/resolve/main/background_removal/birefnet.safetensors";
 
 export type RuntimePaths = {
   root: string;
@@ -33,6 +35,7 @@ export type RuntimePaths = {
   vae: string;
   clip: string;
   controlnet: string;
+  backgroundRemoval: string;
   otherModels: string;
   outputs: string;
   workflows: string;
@@ -421,11 +424,15 @@ export type SceneConditioningCharacter = {
   prompt: string;
   negativePrompt: string;
   placement: SceneCharacterPlacement;
+  imagePath?: string;
+  imageDataUrl?: string;
 };
 
 export type SceneConditioning = {
   backgroundPrompt: string;
   backgroundNegativePrompt: string;
+  backgroundImagePath?: string;
+  backgroundImageDataUrl?: string;
   characters: SceneConditioningCharacter[];
 };
 
@@ -663,6 +670,8 @@ export type GenerationSceneCharacter = {
   title: string;
   settings: SceneCharacterSettings;
   placement: SceneCharacterPlacement;
+  generatedImagePath?: string;
+  generatedImageDataUrl?: string;
 };
 
 export type GenerationSceneBackground = {
@@ -687,6 +696,8 @@ export type GenerationSceneBackground = {
   seedMode: GenerationSeedMode;
   seedValue: number;
   seedRange: string;
+  generatedImagePath?: string;
+  generatedImageDataUrl?: string;
 };
 
 export type GenerationSceneSettings = {
@@ -877,6 +888,7 @@ function getRuntimePathsForRoot(runtimeRootPath: string): RuntimePaths {
     vae: join(root, "models", "vae"),
     clip: join(root, "models", "clip"),
     controlnet: join(root, "models", "controlnet"),
+    backgroundRemoval: join(root, "models", "background_removal"),
     otherModels: join(root, "models", "other"),
     outputs: join(root, "outputs"),
     workflows: join(root, "workflows"),
@@ -1061,6 +1073,7 @@ export async function ensureRuntimeFiles(): Promise<RuntimePaths> {
     mkdir(paths.vae, { recursive: true }),
     mkdir(paths.clip, { recursive: true }),
     mkdir(paths.controlnet, { recursive: true }),
+    mkdir(paths.backgroundRemoval, { recursive: true }),
     mkdir(paths.otherModels, { recursive: true }),
     mkdir(paths.outputs, { recursive: true }),
     mkdir(paths.workflows, { recursive: true }),
@@ -4224,6 +4237,9 @@ async function getComfyLoraNames(comfyUrl: string): Promise<Set<string> | null> 
 
 export async function runTestGeneration(request: TestGenerationRequest): Promise<TestGenerationResult> {
   const paths = getRuntimePaths();
+  if (request.sceneConditioning) {
+    return runSceneCompositeGeneration(request, paths);
+  }
   const modelInfo = await inspectModelFile(join(paths.checkpoints, request.checkpoint));
   const externalVae = request.vae?.trim();
   const externalClip = request.clip?.trim();
@@ -4286,19 +4302,8 @@ export async function runTestGeneration(request: TestGenerationRequest): Promise
   applyLorasToWorkflow(workflow, requestedLoras, clipSource);
   workflow["6"].inputs.text = request.prompt;
   workflow["7"].inputs.text = request.negativePrompt;
-  let positiveSource: [string, number] = ["6", 0];
-  let negativeSource: [string, number] = ["7", 0];
-  if (request.sceneConditioning?.characters.length) {
-    const sceneSources = applySceneConditioning(
-      workflow,
-      request.sceneConditioning,
-      workflow["6"].inputs.clip as [string, number],
-      request.width,
-      request.height
-    );
-    positiveSource = sceneSources.positive;
-    negativeSource = sceneSources.negative;
-  }
+  const positiveSource: [string, number] = ["6", 0];
+  const negativeSource: [string, number] = ["7", 0];
   workflow["3"].inputs.positive = positiveSource;
   workflow["3"].inputs.negative = negativeSource;
   if (request.poseConditioning?.enabled) {
@@ -4392,8 +4397,167 @@ export async function runTestGeneration(request: TestGenerationRequest): Promise
   workflow["3"].inputs.steps = request.steps;
   workflow["3"].inputs.cfg = request.cfg;
 
+  return submitComfyWorkflow(request.comfyUrl, workflow, paths);
+}
+
+async function runSceneCompositeGeneration(request: TestGenerationRequest, paths: RuntimePaths): Promise<TestGenerationResult> {
+  const scene = request.sceneConditioning;
+  if (!scene) return { ok: false, message: "総合生成のシーン情報がありません。" };
+  const backgroundSource = scene.backgroundImageDataUrl || scene.backgroundImagePath;
+  if (!backgroundSource) {
+    return { ok: false, message: "背景の生成画像がありません。先に背景タブで背景を単独生成してください。" };
+  }
+  const missingCharacters = scene.characters.filter((character) => !(character.imageDataUrl || character.imagePath));
+  if (missingCharacters.length) {
+    return {
+      ok: false,
+      message: `生成画像がないキャラクターがあります: ${missingCharacters.map((character) => character.title).join(", ")}\n先に各キャラを単独生成してください。`
+    };
+  }
+
+  await ensureBackgroundRemovalModel(paths, request.comfyUrl);
+  const backgroundImageName = await uploadGenerationSource(request.comfyUrl, backgroundSource, "background");
+  const workflow: Record<string, { class_type: string; inputs: Record<string, unknown> }> = {
+    "1": { class_type: "LoadImage", inputs: { image: backgroundImageName } },
+    "2": {
+      class_type: "ImageScale",
+      inputs: {
+        image: ["1", 0],
+        upscale_method: "lanczos",
+        width: request.width,
+        height: request.height,
+        crop: "center"
+      }
+    },
+    "3": { class_type: "LoadBackgroundRemovalModel", inputs: { bg_removal_name: backgroundRemovalModelName } }
+  };
+
+  let compositeSource: [string, number] = ["2", 0];
+  const characters = [...scene.characters].sort((left, right) => left.placement.zIndex - right.placement.zIndex);
+  characters.forEach((character, index) => {
+    const nodeBase = 100 + index * 5;
+    const loadId = String(nodeBase);
+    const maskId = String(nodeBase + 1);
+    const cropId = String(nodeBase + 2);
+    const croppedMaskId = String(nodeBase + 3);
+    const compositeId = String(nodeBase + 4);
+    const area = sceneCharacterArea(character.placement, characters.length, request.width, request.height);
+    workflow[loadId] = { class_type: "LoadImage", inputs: { image: "" } };
+    workflow[maskId] = {
+      class_type: "RemoveBackground",
+      inputs: { bg_removal_model: ["3", 0], image: [loadId, 0] }
+    };
+    workflow[cropId] = {
+      class_type: "ImageCropToMask",
+      inputs: {
+        images: [loadId, 0],
+        masks: [maskId, 0],
+        width: area.width,
+        height: area.height,
+        pad_factor: 1.08,
+        grow_mask: 0,
+        background: "#000000"
+      }
+    };
+    workflow[croppedMaskId] = {
+      class_type: "RemoveBackground",
+      inputs: { bg_removal_model: ["3", 0], image: [cropId, 0] }
+    };
+    workflow[compositeId] = {
+      class_type: "ImageCompositeMasked",
+      inputs: {
+        destination: compositeSource,
+        source: [cropId, 0],
+        x: area.x,
+        y: area.y,
+        resize_source: false,
+        mask: [croppedMaskId, 0]
+      }
+    };
+    compositeSource = [compositeId, 0];
+  });
+
+  await Promise.all(characters.map(async (character, index) => {
+    const source = character.imageDataUrl || character.imagePath;
+    if (!source) return;
+    workflow[String(100 + index * 5)].inputs.image = await uploadGenerationSource(request.comfyUrl, source, `character-${index + 1}`);
+  }));
+  workflow["9000"] = {
+    class_type: "SaveImage",
+    inputs: { filename_prefix: "illustmk_scene", images: compositeSource }
+  };
+  return submitComfyWorkflow(request.comfyUrl, workflow, paths, "総合生成が完了しました。");
+}
+
+async function ensureBackgroundRemovalModel(paths: RuntimePaths, comfyUrl: string): Promise<void> {
+  const targetPath = join(paths.backgroundRemoval, backgroundRemovalModelName);
+  let installedNow = false;
+  if (!(await exists(targetPath))) {
+    await mkdir(paths.backgroundRemoval, { recursive: true });
+    const temporaryPath = `${targetPath}.partial`;
+    await rm(temporaryPath, { force: true });
+    const response = await fetch(backgroundRemovalModelUrl);
+    if (!response.ok || !response.body) {
+      throw new Error(`背景除去モデルの取得に失敗しました: HTTP ${response.status}`);
+    }
+    await pipeline(response.body as unknown as NodeJS.ReadableStream, createWriteStream(temporaryPath));
+    await rename(temporaryPath, targetPath);
+    installedNow = true;
+  }
+  if (!installedNow && await comfyRecognizesBackgroundRemovalModel(comfyUrl)) return;
+  const localUrl = /^https?:\/\/(?:127\.0\.0\.1|localhost)(?::\d+)?(?:\/|$)/i.test(comfyUrl);
+  const managedPid = localUrl ? await managedComfyPidForPaths(paths) : null;
+  if (!managedPid) {
+    throw new Error("背景除去モデルを導入しましたが、接続中のComfyUIにはまだ認識されていません。接続先ComfyUIを再起動してください。");
+  }
+  await writeNativeExtraModelPaths(paths);
+  await stopNativeRuntime(() => undefined);
+  await startNativeRuntime(() => undefined);
+  if (!(await comfyRecognizesBackgroundRemovalModel(comfyUrl))) {
+    throw new Error("ComfyUI再起動後も背景除去モデルを認識できませんでした。ComfyUIログを確認してください。");
+  }
+}
+
+async function comfyRecognizesBackgroundRemovalModel(comfyUrl: string): Promise<boolean> {
+  try {
+    const response = await fetch(`${comfyUrl.replace(/\/$/, "")}/object_info/LoadBackgroundRemovalModel`, {
+      signal: AbortSignal.timeout(10000)
+    });
+    if (!response.ok) return false;
+    const json = await response.json() as Record<string, unknown>;
+    return JSON.stringify(json).includes(backgroundRemovalModelName);
+  } catch {
+    return false;
+  }
+}
+
+async function uploadGenerationSource(comfyUrl: string, source: string, label: string): Promise<string> {
+  const dataUrl = source.startsWith("data:image/") ? source : await imageDataUrl(source);
+  const match = dataUrl.match(/^data:(image\/(?:png|jpeg|webp));base64,(.+)$/);
+  if (!match) throw new Error(`${label}画像の形式が不正です。`);
+  const mime = match[1];
+  const extension = mime === "image/jpeg" ? "jpg" : mime.split("/")[1];
+  const fileName = `illustmk-${label}-${randomUUID()}.${extension}`;
+  const form = new FormData();
+  form.append("image", new Blob([Buffer.from(match[2], "base64")], { type: mime }), fileName);
+  form.append("type", "input");
+  form.append("overwrite", "true");
+  const response = await fetch(`${comfyUrl.replace(/\/$/, "")}/upload/image`, { method: "POST", body: form });
+  if (!response.ok) throw new Error(`${label}画像のComfyUIアップロードに失敗しました: HTTP ${response.status}\n${await response.text()}`);
+  const json = (await response.json()) as { name?: string; subfolder?: string };
+  if (!json.name) throw new Error(`${label}画像名がComfyUIから返りませんでした。`);
+  return json.subfolder ? `${json.subfolder}/${json.name}` : json.name;
+}
+
+async function submitComfyWorkflow(
+  comfyUrl: string,
+  workflow: Record<string, { class_type: string; inputs: Record<string, unknown> }>,
+  paths: RuntimePaths,
+  successMessage = "テスト生成が完了しました。"
+): Promise<TestGenerationResult> {
+
   const before = new Set(await listFiles(paths.outputs));
-  const promptResponse = await fetch(`${request.comfyUrl.replace(/\/$/, "")}/prompt`, {
+  const promptResponse = await fetch(`${comfyUrl.replace(/\/$/, "")}/prompt`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ prompt: workflow })
@@ -4412,7 +4576,7 @@ export async function runTestGeneration(request: TestGenerationRequest): Promise
   const deadline = Date.now() + 1000 * 300;
   while (Date.now() < deadline) {
     await delay(1500);
-    const history = await getPromptHistory(request.comfyUrl, promptId);
+    const history = await getPromptHistory(comfyUrl, promptId);
     const errorMessage = extractPromptError(history);
     if (errorMessage) {
       return {
@@ -4423,11 +4587,11 @@ export async function runTestGeneration(request: TestGenerationRequest): Promise
     }
     const historyImage = findPromptHistoryImage(history, paths.outputs);
     if (historyImage) {
-      const resolvedImage = await resolvePromptHistoryImage(request.comfyUrl, historyImage);
+      const resolvedImage = await resolvePromptHistoryImage(comfyUrl, historyImage);
       if (!resolvedImage) continue;
       return {
         ok: true,
-        message: "テスト生成が完了しました。",
+        message: successMessage,
         imagePath: resolvedImage.path,
         imageDataUrl: resolvedImage.dataUrl,
         promptId
@@ -4439,7 +4603,7 @@ export async function runTestGeneration(request: TestGenerationRequest): Promise
       const imagePath = join(paths.outputs, fresh);
       return {
         ok: true,
-        message: "テスト生成が完了しました。",
+        message: successMessage,
         imagePath,
         imageDataUrl: await imageDataUrl(imagePath),
         promptId
@@ -4452,77 +4616,6 @@ export async function runTestGeneration(request: TestGenerationRequest): Promise
     message: "生成完了を待機しましたが、新しい画像を確認できませんでした。",
     promptId
   };
-}
-
-function applySceneConditioning(
-  workflow: Record<string, { class_type: string; inputs: Record<string, unknown> }>,
-  scene: SceneConditioning,
-  clipSource: [string, number],
-  canvasWidth: number,
-  canvasHeight: number
-): { positive: [string, number]; negative: [string, number] } {
-  const characters = [...scene.characters].sort((left, right) => left.placement.zIndex - right.placement.zIndex);
-  const characterCount = characters.length;
-  workflow["6"].inputs.text = joinPromptParts(
-    scene.backgroundPrompt,
-    `masterpiece, best quality, coherent scene composition, exactly ${characterCount} distinct people, ${characterCount} characters`
-  );
-  workflow["7"].inputs.text = joinPromptParts(
-    scene.backgroundNegativePrompt,
-    "low quality, worst quality, blurry, bad anatomy, duplicate person, extra person, merged bodies"
-  );
-
-  let positiveSource: [string, number] = ["6", 0];
-  let negativeSource: [string, number] = ["7", 0];
-  characters.forEach((character, index) => {
-    const nodeBase = 1000 + index * 6;
-    const positiveEncodeId = String(nodeBase);
-    const positiveAreaId = String(nodeBase + 1);
-    const positiveCombineId = String(nodeBase + 2);
-    const negativeEncodeId = String(nodeBase + 3);
-    const negativeAreaId = String(nodeBase + 4);
-    const negativeCombineId = String(nodeBase + 5);
-    const area = sceneCharacterArea(character.placement, characterCount, canvasWidth, canvasHeight);
-
-    workflow[positiveEncodeId] = {
-      class_type: "CLIPTextEncode",
-      inputs: {
-        text: joinPromptParts(
-          character.prompt,
-          `character ${index + 1} of ${characterCount}, one distinct person, ${character.title}`
-        ),
-        clip: clipSource
-      }
-    };
-    workflow[positiveAreaId] = {
-      class_type: "ConditioningSetArea",
-      inputs: { conditioning: [positiveEncodeId, 0], ...area, strength: 1 }
-    };
-    workflow[positiveCombineId] = {
-      class_type: "ConditioningCombine",
-      inputs: { conditioning_1: positiveSource, conditioning_2: [positiveAreaId, 0] }
-    };
-    positiveSource = [positiveCombineId, 0];
-
-    workflow[negativeEncodeId] = {
-      class_type: "CLIPTextEncode",
-      inputs: {
-        text: joinPromptParts(character.negativePrompt, "duplicate person, extra limbs, merged body"),
-        clip: clipSource
-      }
-    };
-    workflow[negativeAreaId] = {
-      class_type: "ConditioningSetArea",
-      inputs: { conditioning: [negativeEncodeId, 0], ...area, strength: 1 }
-    };
-    workflow[negativeCombineId] = {
-      class_type: "ConditioningCombine",
-      inputs: { conditioning_1: negativeSource, conditioning_2: [negativeAreaId, 0] }
-    };
-    negativeSource = [negativeCombineId, 0];
-  });
-
-  return { positive: positiveSource, negative: negativeSource };
 }
 
 function sceneCharacterArea(
@@ -4551,10 +4644,6 @@ function alignedDimension(value: number, maximum: number): number {
 
 function alignedOffset(value: number, maximum: number): number {
   return Math.max(0, Math.min(Math.floor(maximum / 8) * 8, Math.round(value / 8) * 8));
-}
-
-function joinPromptParts(...parts: string[]): string {
-  return parts.map((part) => part.trim()).filter(Boolean).join(", ");
 }
 
 async function uploadPoseImage(comfyUrl: string, imageDataUrl: string): Promise<string> {
@@ -5299,6 +5388,7 @@ async function writeNativeExtraModelPaths(paths: RuntimePaths): Promise<void> {
   vae: models/vae
   clip: models/clip
   controlnet: models/controlnet
+  background_removal: models/background_removal
 `;
   await writeFile(join(paths.nativeComfy, "extra_model_paths.yaml"), yaml, "utf8");
 }
