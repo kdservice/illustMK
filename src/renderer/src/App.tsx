@@ -27,6 +27,7 @@ import {
 import type {
   CivitaiModelCard,
   CivitaiRequiredComponent,
+  ComfyRuntimeMode,
   DataPathEntry,
   DownloadRequest,
   GenerationLora,
@@ -398,7 +399,7 @@ function App() {
   const [modelDirectUsage, setModelDirectUsage] = useState("");
   const [modelImportOpen, setModelImportOpen] = useState(false);
   const [modelImportType, setModelImportType] = useState<ModelAssetType>("checkpoint");
-  const [runtimeTab, setRuntimeTab] = useState<"macos" | "docker">("macos");
+  const [runtimeTab, setRuntimeTab] = useState<ComfyRuntimeMode>("macos");
   const [modelAddMode, setModelAddMode] = useState<"catalog" | "url">("catalog");
   const [generateTab, setGenerateTab] = useState<"character" | "prompt" | "lora" | "options" | "pose">("prompt");
   const logViewRef = useRef<HTMLDivElement | null>(null);
@@ -645,7 +646,7 @@ function App() {
       void saveSettings();
     }, 600);
     return () => window.clearTimeout(timer);
-  }, [ollamaUrl, settingsLoaded]);
+  }, [ollamaUrl, runtimeTab, settingsLoaded]);
 
   useEffect(() => {
     if (!status) return;
@@ -1546,6 +1547,7 @@ function App() {
     setHuggingFaceApiKey(settings.huggingFaceApiKey);
     setOllamaUrl(settings.ollamaUrl);
     setOllamaModel(settings.ollamaModel);
+    setRuntimeTab(settings.comfyRuntimeMode);
     setLlmPullName(settings.ollamaModel);
     setOllamaStatus(await window.illustMK.ollama.status(settings.ollamaUrl));
     setSettingsLoaded(true);
@@ -1553,7 +1555,7 @@ function App() {
 
   async function saveSettings(): Promise<void> {
     await runAction("設定を保存中", () =>
-      window.illustMK.settings.save({ civitaiApiKey, huggingFaceApiKey, ollamaUrl, ollamaModel })
+      window.illustMK.settings.save({ civitaiApiKey, huggingFaceApiKey, ollamaUrl, ollamaModel, comfyRuntimeMode: runtimeTab })
     );
   }
 
@@ -3526,8 +3528,11 @@ function App() {
                 <button className={runtimeTab === "macos" ? "runtime-tab active" : "runtime-tab"} onClick={() => setRuntimeTab("macos")}>
                   macOS <span>{status?.activeRuntime === "macos" ? "ACTIVE" : ""}</span>
                 </button>
+                <button className={runtimeTab === "linux" ? "runtime-tab active" : "runtime-tab"} onClick={() => setRuntimeTab("linux")}>
+                  Linux <span>{status?.activeRuntime === "linux" ? "ACTIVE" : ""}</span>
+                </button>
                 <button className={runtimeTab === "docker" ? "runtime-tab active" : "runtime-tab"} onClick={() => setRuntimeTab("docker")}>
-                  Docker <span>LEGACY</span>
+                  Docker <span>{status?.activeRuntime === "docker" ? "ACTIVE" : "LEGACY"}</span>
                 </button>
               </div>
               <div className="field">
@@ -3540,21 +3545,21 @@ function App() {
                 </div>
               </div>
 
-              {runtimeTab === "macos" ? (
+              {runtimeTab !== "docker" ? (
                 <div className="button-row compact-actions">
-                  <button onClick={() => void runStreamOperation("native-init", "macOSランタイムを初期化中")}>
+                  <button onClick={() => void runStreamOperation(runtimeTab === "linux" ? "linux-init" : "native-init", `${runtimeTab === "linux" ? "Linux" : "macOS"}ランタイムを初期化中`)}>
                     <FolderOpen size={17} />
                     初期化
                   </button>
-                  <button onClick={() => void runStreamOperation("native-install", "macOS ComfyUIをインストール中")}>
+                  <button onClick={() => void runStreamOperation(runtimeTab === "linux" ? "linux-install" : "native-install", `${runtimeTab === "linux" ? "Linux" : "macOS"} ComfyUIをインストール中`)}>
                     <Download size={17} />
                     インストール
                   </button>
-                  <button onClick={() => void runStreamOperation("native-start", "macOS ComfyUIを開始中")}>
+                  <button onClick={() => void runStreamOperation(runtimeTab === "linux" ? "linux-start" : "native-start", `${runtimeTab === "linux" ? "Linux" : "macOS"} ComfyUIを開始中`)}>
                     <Play size={17} />
                     開始
                   </button>
-                  <button onClick={() => void runStreamOperation("native-stop", "macOS ComfyUIを停止中")}>
+                  <button onClick={() => void runStreamOperation(runtimeTab === "linux" ? "linux-stop" : "native-stop", `${runtimeTab === "linux" ? "Linux" : "macOS"} ComfyUIを停止中`)}>
                     <Square size={17} />
                     停止
                   </button>
@@ -3573,9 +3578,9 @@ function App() {
               )}
 
               <div className="paths">
-                <p>アプリ: /Users/kds/Projects/illustMK</p>
-                <p>ランタイム: {paths?.root ?? "/Volumes/ARC-8050T2/illustMK"}</p>
-                <p>macOS ComfyUI: {paths?.nativeComfy ?? "未初期化"}</p>
+                <p>アプリ: illustMK</p>
+                <p>ランタイム: {paths?.root ?? "未初期化"}</p>
+                <p>{runtimeTab === "linux" ? "Linux" : runtimeTab === "docker" ? "Docker" : "macOS"} ComfyUI: {runtimeTab === "linux" ? paths?.linuxComfy ?? "未初期化" : runtimeTab === "docker" ? paths?.docker ?? "未初期化" : paths?.nativeComfy ?? "未初期化"}</p>
               </div>
               <div className="image-engine-manager">
                 <div className="subsection-heading">
@@ -6455,7 +6460,7 @@ function StatusGrid({
 }: {
   status: RuntimeStatus | null;
   ollamaStatus?: OllamaStatus | null;
-  runtimeTab: "macos" | "docker";
+  runtimeTab: ComfyRuntimeMode;
   ollamaModel: string;
   selectedCheckpoint: RuntimeStatus["checkpoints"][number] | null;
   checkpointBaseModel: string;
@@ -6469,7 +6474,21 @@ function StatusGrid({
           { label: "Docker API", value: status?.dockerDaemonReady ? "接続OK" : "未起動", tone: status?.dockerDaemonReady ? "ok" : "warn" },
           { label: "Compose", value: status?.composeCommand ? "OK" : "未検出", tone: status?.composeCommand ? "ok" : "error" }
         ]
-      : [{ label: "ComfyUI", value: status?.comfyReachable ? "接続中" : status?.nativeRunning ? "起動中" : "未接続", tone: status?.comfyReachable ? "ok" : status?.nativeRunning ? "warn" : "error" }];
+      : [{
+          label: "ComfyUI",
+          value: status?.comfyReachable
+            ? "接続中"
+            : runtimeTab === "linux" && status?.linuxRunning
+              ? "起動中"
+              : runtimeTab === "macos" && status?.nativeRunning
+                ? "起動中"
+                : "未接続",
+          tone: status?.comfyReachable
+            ? "ok"
+            : runtimeTab === "linux" && status?.linuxRunning || runtimeTab === "macos" && status?.nativeRunning
+              ? "warn"
+              : "error"
+        }];
 
   const ollamaValue = ollamaStatus?.reachable && ollamaStatus.dataLinked ? "接続OK" : ollamaStatus?.reachable ? "保存先NG" : ollamaStatus?.installed ? "未起動" : "未検出";
   const ollamaTone: StatusTone = ollamaStatus?.reachable && ollamaStatus.dataLinked ? "ok" : ollamaStatus?.installed ? "warn" : "error";

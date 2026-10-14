@@ -2,7 +2,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { closeSync, createReadStream, createWriteStream, openSync, readFileSync } from "node:fs";
 import { access, cp, lstat, mkdir, readFile, readlink, readdir, rename, rm, stat, symlink, unlink, writeFile } from "node:fs/promises";
 import { basename, dirname, join, relative, resolve } from "node:path";
-import { cpus, homedir } from "node:os";
+import { arch, cpus, homedir } from "node:os";
 import { Transform } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import { execFile, spawn, type ChildProcess, type ChildProcessWithoutNullStreams, type ExecFileOptions } from "node:child_process";
@@ -53,6 +53,12 @@ export type RuntimePaths = {
   nativePython: string;
   nativeLog: string;
   nativePid: string;
+  linux: string;
+  linuxComfy: string;
+  linuxVenv: string;
+  linuxPython: string;
+  linuxLog: string;
+  linuxPid: string;
   docker: string;
   logs: string;
   downloads: string;
@@ -88,11 +94,15 @@ type DataPathConfig = {
 
 export type RuntimeStatus = {
   runtimeRoot: string;
-  activeRuntime: "macos" | "docker";
+  activeRuntime: ComfyRuntimeMode;
   nativeReady: boolean;
   nativeInstalled: boolean;
   nativeRunning: boolean;
   nativePid: number | null;
+  linuxReady: boolean;
+  linuxInstalled: boolean;
+  linuxRunning: boolean;
+  linuxPid: number | null;
   dockerDesktopInstalled: boolean;
   dockerDesktopPath: string | null;
   dockerAvailable: boolean;
@@ -365,7 +375,10 @@ export type AppSettings = {
   huggingFaceApiKey: string;
   ollamaUrl: string;
   ollamaModel: string;
+  comfyRuntimeMode: ComfyRuntimeMode;
 };
+
+export type ComfyRuntimeMode = "macos" | "linux" | "docker";
 
 export type OllamaModelInfo = {
   name: string;
@@ -842,7 +855,8 @@ export type RuntimeLogEvent = {
 export type RuntimeLogSink = (event: RuntimeLogEvent) => void;
 
 const appDataRoot = process.env.ILLUSTMK_APP_DATA_ROOT ?? join(process.cwd(), ".illustmk");
-const defaultRuntimeRoot = process.env.ILLUSTMK_RUNTIME_ROOT ?? "/Volumes/ARC-8050T2/illustMK";
+const defaultRuntimeRoot = process.env.ILLUSTMK_RUNTIME_ROOT ??
+  (process.platform === "linux" ? join(homedir(), "illustMK-data") : "/Volumes/ARC-8050T2/illustMK");
 const settingsPath = join(appDataRoot, "settings.json");
 const dataPathsPath = join(appDataRoot, "data-paths.json");
 const llmChatHistoryPath = join(appDataRoot, "llm-chat-history.json");
@@ -927,6 +941,7 @@ export function getRuntimePaths(): RuntimePaths {
 function getRuntimePathsForRoot(runtimeRootPath: string): RuntimePaths {
   const root = resolve(runtimeRootPath);
   const native = join(root, "native");
+  const linux = join(root, "linux");
   const docker = join(root, "docker", "comfyui");
   const ollama = join(root, "llm", "ollama");
   const loraRuntime = join(root, "lora-runtime");
@@ -961,6 +976,12 @@ function getRuntimePathsForRoot(runtimeRootPath: string): RuntimePaths {
     nativePython: join(native, "venv", "bin", "python"),
     nativeLog: join(native, "logs", "comfyui.log"),
     nativePid: join(native, "comfyui.pid"),
+    linux,
+    linuxComfy: join(linux, "ComfyUI"),
+    linuxVenv: join(linux, "venv"),
+    linuxPython: join(linux, "venv", "bin", "python"),
+    linuxLog: join(linux, "logs", "comfyui.log"),
+    linuxPid: join(linux, "comfyui.pid"),
     docker,
     logs: join(root, "logs"),
     downloads: join(root, "downloads"),
@@ -1045,7 +1066,9 @@ export async function addDataPath(
 ): Promise<DataPathEntry[]> {
   const config = await readDataPathConfig();
   const previousPaths = getRuntimePaths();
-  const restartNative = Boolean(options.activate && await managedComfyPidForPaths(previousPaths));
+  const runtimeMode = (await getAppSettings()).comfyRuntimeMode;
+  const restartNative = Boolean(options.activate && runtimeMode === "macos" && await managedComfyPidForPaths(previousPaths));
+  const restartLinux = Boolean(options.activate && runtimeMode === "linux" && await managedComfyPid(previousPaths, previousPaths.linuxPid));
   const targetPath = resolve(path);
   const now = new Date().toISOString();
   let entry = config.entries.find((item) => resolve(item.path) === targetPath);
@@ -1058,10 +1081,12 @@ export async function addDataPath(
   }
   if (options.activate && config.activeId !== entry.id) {
     if (restartNative) await stopNativeRuntimeForPaths(previousPaths, onLog);
+    if (restartLinux) await stopLinuxRuntimeForPaths(previousPaths, onLog);
     config.activeId = entry.id;
   }
   await writeDataPathConfig(config);
   if (restartNative && await exists(getRuntimePaths().nativePython)) await startNativeRuntime(onLog);
+  if (restartLinux && await exists(getRuntimePaths().linuxPython)) await startLinuxRuntime(onLog);
   return getDataPaths();
 }
 
@@ -1070,11 +1095,15 @@ export async function switchDataPath(id: string, onLog: RuntimeLogSink = () => u
   if (!config.entries.some((entry) => entry.id === id)) throw new Error("指定されたDataPathが見つかりません。");
   if (config.activeId === id) return getDataPaths();
   const previousPaths = getRuntimePaths();
-  const restartNative = Boolean(await managedComfyPidForPaths(previousPaths));
+  const runtimeMode = (await getAppSettings()).comfyRuntimeMode;
+  const restartNative = Boolean(runtimeMode === "macos" && await managedComfyPidForPaths(previousPaths));
+  const restartLinux = Boolean(runtimeMode === "linux" && await managedComfyPid(previousPaths, previousPaths.linuxPid));
   if (restartNative) await stopNativeRuntimeForPaths(previousPaths, onLog);
+  if (restartLinux) await stopLinuxRuntimeForPaths(previousPaths, onLog);
   config.activeId = id;
   await writeDataPathConfig(config);
   if (restartNative && await exists(getRuntimePaths().nativePython)) await startNativeRuntime(onLog);
+  if (restartLinux && await exists(getRuntimePaths().linuxPython)) await startLinuxRuntime(onLog);
   return getDataPaths();
 }
 
@@ -1104,7 +1133,12 @@ async function inspectDataPathStatus(path: string): Promise<DataPathStatus> {
     const pathStat = await stat(path);
     if (!pathStat.isDirectory()) return "エラー";
     const paths = getRuntimePathsForRoot(path);
-    return (await exists(join(paths.nativeComfy, "main.py"))) || (await exists(paths.nativePython)) ? "インストール済み" : "未インストール";
+    return (await exists(join(paths.nativeComfy, "main.py"))) ||
+      (await exists(paths.nativePython)) ||
+      (await exists(join(paths.linuxComfy, "main.py"))) ||
+      (await exists(paths.linuxPython))
+      ? "インストール済み"
+      : "未インストール";
   } catch {
     return "エラー";
   }
@@ -1141,6 +1175,8 @@ export async function ensureRuntimeFiles(): Promise<RuntimePaths> {
     mkdir(join(paths.loraRuntime, "logs"), { recursive: true }),
     mkdir(paths.native, { recursive: true }),
     mkdir(join(paths.native, "logs"), { recursive: true }),
+    mkdir(paths.linux, { recursive: true }),
+    mkdir(join(paths.linux, "logs"), { recursive: true }),
     mkdir(paths.ollamaModels, { recursive: true }),
     mkdir(join(paths.ollama, "logs"), { recursive: true }),
     mkdir(paths.docker, { recursive: true }),
@@ -1151,6 +1187,7 @@ export async function ensureRuntimeFiles(): Promise<RuntimePaths> {
   await writeFile(paths.composeFile, composeText(paths), "utf8");
   await writeFile(join(paths.workflows, "phase1-test-generation.json"), JSON.stringify(testWorkflowTemplate(), null, 2), "utf8");
   await writeNativeExtraModelPaths(paths);
+  await writeLinuxExtraModelPaths(paths);
   await syncNativeControlNetLinks(paths);
   return paths;
 }
@@ -1163,11 +1200,23 @@ export async function getAppSettings(): Promise<AppSettings> {
       civitaiApiKey: parsed.civitaiApiKey ?? "",
       huggingFaceApiKey: parsed.huggingFaceApiKey ?? "",
       ollamaUrl: parsed.ollamaUrl ?? "http://127.0.0.1:11434",
-      ollamaModel: parsed.ollamaModel ?? "qwen2.5:3b-instruct"
+      ollamaModel: parsed.ollamaModel ?? "qwen2.5:3b-instruct",
+      comfyRuntimeMode: normalizeComfyRuntimeMode(parsed.comfyRuntimeMode)
     };
   } catch {
-    return { civitaiApiKey: "", huggingFaceApiKey: "", ollamaUrl: "http://127.0.0.1:11434", ollamaModel: "qwen2.5:3b-instruct" };
+    return {
+      civitaiApiKey: "",
+      huggingFaceApiKey: "",
+      ollamaUrl: "http://127.0.0.1:11434",
+      ollamaModel: "qwen2.5:3b-instruct",
+      comfyRuntimeMode: process.platform === "linux" ? "linux" : "macos"
+    };
   }
+}
+
+function normalizeComfyRuntimeMode(value: unknown): ComfyRuntimeMode {
+  if (value === "linux" || value === "docker" || value === "macos") return value;
+  return process.platform === "linux" ? "linux" : "macos";
 }
 
 export async function saveAppSettings(settings: AppSettings): Promise<AppSettings> {
@@ -1176,7 +1225,8 @@ export async function saveAppSettings(settings: AppSettings): Promise<AppSetting
     civitaiApiKey: settings.civitaiApiKey.trim(),
     huggingFaceApiKey: settings.huggingFaceApiKey.trim(),
     ollamaUrl: settings.ollamaUrl.trim() || "http://127.0.0.1:11434",
-    ollamaModel: settings.ollamaModel.trim() || "qwen2.5:3b-instruct"
+    ollamaModel: settings.ollamaModel.trim() || "qwen2.5:3b-instruct",
+    comfyRuntimeMode: normalizeComfyRuntimeMode(settings.comfyRuntimeMode)
   };
   await writeFile(settingsPath, JSON.stringify(safeSettings, null, 2), "utf8");
   return safeSettings;
@@ -1192,6 +1242,8 @@ export async function getStatus(comfyUrl = `http://127.0.0.1:${comfyPort}`): Pro
     pathsReady,
     nativeInstalled,
     nativeRunning,
+    linuxInstalled,
+    linuxRunning,
     composeReady,
     comfyReachable,
     checkpoints,
@@ -1203,7 +1255,8 @@ export async function getStatus(comfyUrl = `http://127.0.0.1:${comfyPort}`): Pro
     controlnet,
     outputs,
     containerState,
-    systemUsage
+    systemUsage,
+    appSettings
   ] =
     await Promise.all([
       findDockerDesktop(),
@@ -1213,6 +1266,8 @@ export async function getStatus(comfyUrl = `http://127.0.0.1:${comfyPort}`): Pro
       exists(paths.models),
       exists(paths.nativePython),
       isNativeRunning(),
+      exists(paths.linuxPython),
+      isLinuxRunning(),
       exists(paths.composeFile),
       checkComfy(comfyUrl),
       listModelFiles(paths.checkpoints),
@@ -1224,16 +1279,21 @@ export async function getStatus(comfyUrl = `http://127.0.0.1:${comfyPort}`): Pro
       listModelFiles(paths.controlnet),
       listFiles(paths.outputs),
       getContainerState(),
-      getSystemUsage()
+      getSystemUsage(),
+      getAppSettings()
     ]);
 
   return {
     runtimeRoot: paths.root,
-    activeRuntime: "macos",
+    activeRuntime: appSettings.comfyRuntimeMode,
     nativeReady: pathsReady && nativeInstalled,
     nativeInstalled,
     nativeRunning,
     nativePid: await readNativePid(),
+    linuxReady: pathsReady && linuxInstalled,
+    linuxInstalled,
+    linuxRunning,
+    linuxPid: await readLinuxPid(),
     dockerDesktopInstalled: Boolean(dockerDesktopPath),
     dockerDesktopPath,
     dockerAvailable: docker.ok,
@@ -1290,6 +1350,19 @@ function getCpuUsagePercent(): number | null {
 }
 
 async function getGpuUsagePercent(): Promise<{ percent: number | null; message?: string }> {
+  if (process.platform === "linux") {
+    try {
+      const { stdout } = await execFileAsync(
+        "nvidia-smi",
+        ["--query-gpu=utilization.gpu", "--format=csv,noheader,nounits"],
+        { timeout: 1200 }
+      );
+      const values = stdout.split(/\r?\n/).map(Number).filter(Number.isFinite);
+      if (values.length) return { percent: Math.max(...values) };
+    } catch {
+      return { percent: null, message: "NVIDIA GPU使用率を取得できません" };
+    }
+  }
   try {
     const { stdout } = await execFileAsync("/usr/sbin/ioreg", ["-r", "-d", "1", "-c", "IOAccelerator"], { timeout: 1200 });
     const matches = [...stdout.matchAll(/"Device Utilization %"\s*=\s*(\d+)/g)].map((match) => Number(match[1]));
@@ -1342,7 +1415,17 @@ async function installManagedComfyCustomNode(
   repositoryUrl: string,
   onLog: RuntimeLogSink
 ): Promise<void> {
-  const target = join(paths.nativeComfy, "custom_nodes", directoryName);
+  return installManagedComfyCustomNodeForRuntime(paths.nativeComfy, paths.nativePython, directoryName, repositoryUrl, onLog);
+}
+
+async function installManagedComfyCustomNodeForRuntime(
+  comfyPath: string,
+  pythonPath: string,
+  directoryName: string,
+  repositoryUrl: string,
+  onLog: RuntimeLogSink
+): Promise<void> {
+  const target = join(comfyPath, "custom_nodes", directoryName);
   if (!(await exists(target))) {
     await mkdir(dirname(target), { recursive: true });
     await spawnNativeCommand("git", ["clone", "--depth", "1", repositoryUrl, target], onLog);
@@ -1356,7 +1439,7 @@ async function installManagedComfyCustomNode(
   }
   const requirements = join(target, "requirements.txt");
   if (await exists(requirements)) {
-    await spawnNativeCommand(paths.nativePython, ["-m", "pip", "install", "-r", requirements], onLog, { cwd: target });
+    await spawnNativeCommand(pythonPath, ["-m", "pip", "install", "-r", requirements], onLog, { cwd: target });
   }
 }
 
@@ -1384,7 +1467,7 @@ export async function installLoraRuntime(onLog: RuntimeLogSink): Promise<string>
 
   const venvPython = await resolveLoraVenvPython(onLog);
   if (await shouldRebuildLoraVenv(paths, onLog)) {
-    onLog({ level: "info", line: `LoRA venv をMPS優先で作り直します: ${paths.loraVenv}` });
+    onLog({ level: "info", line: `LoRA venv を再構築します: ${paths.loraVenv}` });
     await rm(paths.loraVenv, { recursive: true, force: true });
   }
 
@@ -1404,9 +1487,11 @@ export async function installLoraRuntime(onLog: RuntimeLogSink): Promise<string>
     onLog,
     { cwd: paths.loraScripts }
   );
-  const mpsStatus = await getLoraMpsStatus(paths.loraPython);
-  onLog({ level: mpsStatus.available ? "info" : "stderr", line: mpsStatus.message });
-  if (!mpsStatus.available) {
+  const acceleratorStatus = process.platform === "linux"
+    ? await getLinuxTorchStatus(paths.loraPython)
+    : await getLoraMpsStatus(paths.loraPython);
+  onLog({ level: acceleratorStatus.available ? "info" : "stderr", line: acceleratorStatus.message });
+  if (!acceleratorStatus.available && process.platform === "darwin") {
     throw new Error("LoRA学習環境のMPS / Metal acceleration が有効になりませんでした。ログのtorch/macOS情報を確認してください。");
   }
   return "LoRA学習環境のインストールが完了しました。";
@@ -1515,6 +1600,119 @@ export async function cleanupNativeRuntime(onLog: RuntimeLogSink): Promise<strin
   await stopNativeRuntime(onLog).catch((error) => onLog({ level: "stderr", line: normalizeCommandError(error) }));
   await rm(getRuntimePaths().native, { recursive: true, force: true });
   return "macOS ComfyUI環境を削除しました。モデル/出力は残しています。";
+}
+
+function assertLinuxHost(): void {
+  if (process.platform !== "linux") {
+    throw new Error("LinuxモードはLinux上でのみ実行できます。");
+  }
+}
+
+export async function initLinuxRuntime(onLog: RuntimeLogSink): Promise<string> {
+  assertLinuxHost();
+  const paths = await ensureRuntimeFiles();
+  onLog({ level: "info", line: `Linux runtime: ${paths.linux}` });
+  onLog({ level: "info", line: "共有モデルディレクトリと出力先を準備しました。" });
+  return "Linuxランタイムを初期化しました。";
+}
+
+export async function installLinuxRuntime(onLog: RuntimeLogSink): Promise<string> {
+  assertLinuxHost();
+  const paths = await ensureRuntimeFiles();
+  if (!(await canRun("python3", ["--version"]))) {
+    throw new Error("python3が見つかりません。先にsetup-linux.shを実行してください。");
+  }
+  if (!(await exists(paths.linuxComfy))) {
+    await spawnNativeCommand("git", ["clone", "--depth", "1", "https://github.com/comfyanonymous/ComfyUI.git", paths.linuxComfy], onLog);
+  } else {
+    onLog({ level: "info", line: "Linux ComfyUI は既に存在します。" });
+    try {
+      await spawnNativeCommand("git", ["-C", paths.linuxComfy, "pull", "--ff-only"], onLog);
+    } catch (error) {
+      onLog({ level: "stderr", line: `ComfyUI更新はスキップしました: ${normalizeCommandError(error)}` });
+    }
+  }
+  if (!(await exists(paths.linuxPython))) {
+    await spawnNativeCommand("python3", ["-m", "venv", paths.linuxVenv], onLog);
+  } else {
+    onLog({ level: "info", line: "Linux venv は既に存在します。" });
+  }
+  await writeLinuxExtraModelPaths(paths);
+  await spawnNativeCommand(paths.linuxPython, ["-m", "pip", "install", "--upgrade", "pip", "setuptools", "wheel"], onLog);
+  await spawnNativeCommand(paths.linuxPython, ["-m", "pip", "install", "-r", join(paths.linuxComfy, "requirements.txt")], onLog);
+  await installManagedComfyCustomNodeForRuntime(paths.linuxComfy, paths.linuxPython, "comfyui_controlnet_aux", "https://github.com/Fannovel16/comfyui_controlnet_aux.git", onLog);
+  await installManagedComfyCustomNodeForRuntime(paths.linuxComfy, paths.linuxPython, "ComfyUI-GGUF", "https://github.com/leejet/ComfyUI-GGUF.git", onLog);
+  await ensureBackgroundRemovalModelFile(paths, onLog);
+  const accelerator = await getLinuxTorchStatus(paths.linuxPython);
+  onLog({ level: accelerator.available ? "info" : "stderr", line: accelerator.message });
+  return "Linux ComfyUI環境、ControlNet補助ノード、ComfyUI-GGUF、BiRefNetのインストールが完了しました。";
+}
+
+export async function startLinuxRuntime(onLog: RuntimeLogSink): Promise<string> {
+  assertLinuxHost();
+  const paths = await ensureRuntimeFiles();
+  if (!(await exists(paths.linuxPython)) || !(await exists(join(paths.linuxComfy, "main.py")))) {
+    throw new Error("Linux ComfyUI環境が未インストールです。先にLinuxタブの「インストール」を実行してください。");
+  }
+  if (await checkComfy(`http://127.0.0.1:${comfyPort}`)) {
+    const activePid = await managedComfyPid(paths, paths.linuxPid);
+    if (activePid) return "Linux ComfyUI は既に接続可能です。";
+    throw new Error("ポート8188で別のComfyUIが動作しています。先に停止してからLinuxモードを開始してください。");
+  }
+  await writeLinuxExtraModelPaths(paths);
+  await writeFile(paths.linuxLog, "", "utf8");
+  onLog({ level: "info", line: "Linux ComfyUI を起動します。" });
+  const logFd = openSync(paths.linuxLog, "a");
+  const child = spawn(
+    paths.linuxPython,
+    ["main.py", "--listen", "127.0.0.1", "--port", String(comfyPort), "--output-directory", paths.outputs],
+    {
+      cwd: paths.linuxComfy,
+      detached: true,
+      stdio: ["ignore", logFd, logFd],
+      env: { ...process.env, PYTHONUNBUFFERED: "1" }
+    }
+  );
+  closeSync(logFd);
+  await writeFile(paths.linuxPid, String(child.pid ?? ""), "utf8");
+  onLog({ level: "info", line: `ComfyUIログ: ${paths.linuxLog}` });
+  child.unref();
+  if (!(await waitForComfy(`http://127.0.0.1:${comfyPort}`, 120000))) {
+    throw new Error("Linux ComfyUIの起動を待ちましたが、API接続を確認できませんでした。ログを確認してください。");
+  }
+  return "Linux ComfyUI を起動しました。";
+}
+
+export async function stopLinuxRuntime(onLog: RuntimeLogSink): Promise<string> {
+  assertLinuxHost();
+  const paths = getRuntimePaths();
+  const pid = await managedComfyPid(paths, paths.linuxPid);
+  if (!pid) return "アプリ管理対象のLinux ComfyUIは動作していません。";
+  onLog({ level: "info", line: `Linux ComfyUI を停止します: pid=${pid}` });
+  process.kill(pid, "SIGTERM");
+  await delay(1500);
+  await unlink(paths.linuxPid).catch(() => undefined);
+  return "Linux ComfyUI を停止しました。";
+}
+
+async function stopLinuxRuntimeForPaths(paths: RuntimePaths, onLog: RuntimeLogSink): Promise<void> {
+  const pid = await managedComfyPid(paths, paths.linuxPid);
+  if (!pid) return;
+  onLog({ level: "info", line: `Linux ComfyUI を停止します: pid=${pid}` });
+  process.kill(pid, "SIGTERM");
+  await delay(1500);
+  await unlink(paths.linuxPid).catch(() => undefined);
+}
+
+export async function showLinuxLogs(onLog: RuntimeLogSink): Promise<string> {
+  assertLinuxHost();
+  const logPath = getRuntimePaths().linuxLog;
+  if (!(await exists(logPath))) return "Linux ComfyUIログはまだありません。";
+  const text = await readFile(logPath, "utf8");
+  for (const line of text.split(/\r?\n/).slice(-200)) {
+    if (line.trim()) onLog({ level: /Traceback|Error/i.test(line) ? "stderr" : "stdout", line });
+  }
+  return "Linux ComfyUIログを取得しました。";
 }
 
 export async function cleanupDockerRuntime(onLog: RuntimeLogSink): Promise<string> {
@@ -2217,7 +2415,9 @@ export async function extractPoseKeypoints(request: PoseExtractionRequest): Prom
 
 export async function getPosePreprocessorStatus(comfyUrl = `http://127.0.0.1:${comfyPort}`): Promise<PosePreprocessorStatus> {
   const paths = getRuntimePaths();
-  const installed = await exists(join(paths.nativeComfy, "custom_nodes", "comfyui_controlnet_aux"));
+  const mode = (await getAppSettings()).comfyRuntimeMode;
+  const comfyPath = mode === "linux" ? paths.linuxComfy : paths.nativeComfy;
+  const installed = await exists(join(comfyPath, "custom_nodes", "comfyui_controlnet_aux"));
   if (!(await checkComfy(comfyUrl))) {
     return { installed, available: false, message: installed ? "導入済み。ComfyUI起動後に確認します。" : "未導入" };
   }
@@ -2233,20 +2433,30 @@ export async function getPosePreprocessorStatus(comfyUrl = `http://127.0.0.1:${c
 
 export async function installPosePreprocessor(onLog: RuntimeLogSink): Promise<string> {
   const paths = await ensureRuntimeFiles();
-  if (!(await exists(paths.nativePython)) || !(await exists(paths.nativeComfy))) {
-    throw new Error("先にmacOS ComfyUI環境をインストールしてください。");
+  const mode = (await getAppSettings()).comfyRuntimeMode;
+  const linux = mode === "linux";
+  const pythonPath = linux ? paths.linuxPython : paths.nativePython;
+  const comfyPath = linux ? paths.linuxComfy : paths.nativeComfy;
+  if (!(await exists(pythonPath)) || !(await exists(comfyPath))) {
+    throw new Error(`先に${linux ? "Linux" : "macOS"} ComfyUI環境をインストールしてください。`);
   }
-  const target = join(paths.nativeComfy, "custom_nodes", "comfyui_controlnet_aux");
+  const target = join(comfyPath, "custom_nodes", "comfyui_controlnet_aux");
   const wasRunning = await checkComfy(`http://127.0.0.1:${comfyPort}`);
-  if (wasRunning) await stopNativeRuntime(onLog);
+  if (wasRunning) {
+    if (linux) await stopLinuxRuntime(onLog);
+    else await stopNativeRuntime(onLog);
+  }
   if (!(await exists(target))) {
     await mkdir(dirname(target), { recursive: true });
     await spawnNativeCommand("git", ["clone", "--depth", "1", "https://github.com/Fannovel16/comfyui_controlnet_aux.git", target], onLog);
   } else {
     onLog({ level: "info", line: "ComfyUI ControlNet Auxiliary Preprocessors は導入済みです。" });
   }
-  await spawnNativeCommand(paths.nativePython, ["-m", "pip", "install", "-r", join(target, "requirements.txt")], onLog, { cwd: target });
-  if (wasRunning) await startNativeRuntime(onLog);
+  await spawnNativeCommand(pythonPath, ["-m", "pip", "install", "-r", join(target, "requirements.txt")], onLog, { cwd: target });
+  if (wasRunning) {
+    if (linux) await startLinuxRuntime(onLog);
+    else await startNativeRuntime(onLog);
+  }
   return wasRunning ? "DWPoseをインストールし、ComfyUIを再起動しました。" : "DWPoseをインストールしました。ComfyUI起動後に利用できます。";
 }
 
@@ -2399,6 +2609,8 @@ async function writeStoredImageEngines(paths: RuntimePaths, value: StoredImageEn
 export async function getImageGenerationEngines(): Promise<ImageGenerationEngine[]> {
   const paths = await ensureRuntimeFiles();
   const stored = await readStoredImageEngines(paths);
+  const runtimeMode = (await getAppSettings()).comfyRuntimeMode;
+  const comfyPath = runtimeMode === "linux" ? paths.linuxComfy : paths.nativeComfy;
   const checkpoint: ImageGenerationEngine = {
     id: "checkpoint",
     name: "Checkpoint / SD系",
@@ -2414,7 +2626,7 @@ export async function getImageGenerationEngines(): Promise<ImageGenerationEngine
     if (!engine.diffusionModel || !(await exists(join(paths.diffusionModels, engine.diffusionModel)))) missingComponents.push("Diffusion Model");
     if (!engine.textEncoder || !(await exists(join(paths.textEncoders, engine.textEncoder)))) missingComponents.push("Text Encoder");
     if (!engine.vae || !(await exists(join(paths.vae, engine.vae)))) missingComponents.push("VAE");
-    if (engine.format === "gguf" && !(await exists(join(paths.nativeComfy, "custom_nodes", "ComfyUI-GGUF")))) {
+    if (engine.format === "gguf" && !(await exists(join(comfyPath, "custom_nodes", "ComfyUI-GGUF")))) {
       missingComponents.push("ComfyUI-GGUF");
     }
     return {
@@ -2598,7 +2810,7 @@ export async function deleteImageGenerationEngine(id: string): Promise<ImageGene
 }
 
 export async function getOllamaStatus(ollamaUrl = "http://127.0.0.1:11434"): Promise<OllamaStatus> {
-  const appPath = await findOllamaApp();
+  const appPath = await findOllamaApp() ?? await findOllamaBinary();
   const paths = getRuntimePaths();
   const dataLinked = await isOllamaDataLinked();
   try {
@@ -2681,7 +2893,9 @@ export async function startOllama(): Promise<string> {
 
   const appPath = await findOllamaApp();
   if (!appPath) {
-    throw new Error("Ollama.app が見つかりません。公式サイトからOllamaをインストールしてください。");
+    throw new Error(process.platform === "linux"
+      ? "Ollamaが見つかりません。環境タブからインストールしてください。"
+      : "Ollama.app が見つかりません。公式サイトからOllamaをインストールしてください。");
   }
   await execFileAsync("open", [appPath], { timeout: 10000 });
   return "Ollama.app を起動しました。アプリ起動では保存先が標準設定になる場合があります。";
@@ -2691,13 +2905,25 @@ export async function installOllama(onLog: RuntimeLogSink): Promise<string> {
   await ensureRuntimeFiles();
   await ensureOllamaDataLink(onLog);
 
-  const current = await findOllamaApp();
+  const current = await findOllamaApp() ?? await findOllamaBinary();
   if (current) {
-    onLog({ level: "info", line: `Ollama.app は既に存在します: ${current}` });
-    return `Ollama.app は既にインストール済みです。Ollamaデータ保存先: ${getRuntimePaths().ollama}`;
+    onLog({ level: "info", line: `Ollama は既に存在します: ${current}` });
+    return `Ollama は既にインストール済みです。Ollamaデータ保存先: ${getRuntimePaths().ollama}`;
   }
 
   const paths = await ensureRuntimeFiles();
+  if (process.platform === "linux") {
+    const architecture = arch() === "arm64" ? "arm64" : "amd64";
+    const archivePath = join(paths.downloads, `ollama-linux-${architecture}.tgz`);
+    const url = `https://ollama.com/download/ollama-linux-${architecture}.tgz`;
+    onLog({ level: "info", line: `Ollama Linux ${architecture}版をダウンロードします。` });
+    await downloadFileWithProgress(url, archivePath, onLog);
+    await mkdir(paths.linux, { recursive: true });
+    await spawnNativeCommand("tar", ["-xzf", archivePath, "-C", paths.linux], onLog);
+    const binary = join(paths.linux, "bin", "ollama");
+    if (!(await exists(binary))) throw new Error(`Ollamaバイナリを展開できませんでした: ${binary}`);
+    return `Ollama Linux版をインストールしました: ${binary}`;
+  }
   const dmgPath = join(paths.downloads, "Ollama.dmg");
   onLog({ level: "info", line: "Ollama.dmg を公式サイトからダウンロードします。" });
   await downloadFileWithProgress("https://ollama.com/download/Ollama.dmg", dmgPath, onLog);
@@ -2744,6 +2970,13 @@ export async function uninstallOllama(onLog: RuntimeLogSink): Promise<string> {
       await rm(appPath, { recursive: true, force: true });
       removed += 1;
     }
+  }
+  const linuxOllamaRoot = getRuntimePaths().linux;
+  if (process.platform === "linux" && await exists(join(linuxOllamaRoot, "bin", "ollama"))) {
+    onLog({ level: "info", line: `削除: ${join(linuxOllamaRoot, "bin", "ollama")}` });
+    await rm(join(linuxOllamaRoot, "bin"), { recursive: true, force: true });
+    await rm(join(linuxOllamaRoot, "lib", "ollama"), { recursive: true, force: true });
+    removed += 1;
   }
   return removed ? "Ollama.app をアンインストールしました。" : "削除対象のOllama.appは見つかりませんでした。";
 }
@@ -3577,8 +3810,10 @@ export async function trainLoraTrainingProject(
 
   await writeFile(paths.loraLog, "", "utf8");
   onLog({ level: "info", line: `LoRA学習ログ: ${paths.loraLog}` });
-  const mpsStatus = await getLoraMpsStatus(paths.loraPython);
-  onLog({ level: mpsStatus.available ? "info" : "stderr", line: mpsStatus.message });
+  const acceleratorStatus = process.platform === "linux"
+    ? await getLinuxTorchStatus(paths.loraPython)
+    : await getLoraMpsStatus(paths.loraPython);
+  onLog({ level: acceleratorStatus.available ? "info" : "stderr", line: acceleratorStatus.message });
   const outputBaseName = project.outputName.replace(/\.safetensors$/i, "");
   const sourceLora = options.sourceLora?.trim() ?? "";
   if (sourceLora && !(await exists(join(paths.loras, sourceLora)))) {
@@ -3604,6 +3839,9 @@ export async function trainLoraTrainingProject(
     level: "info",
     line: `LoRA学習パラメータ: resolution=${runParams.resolution}, repeats=${runParams.repeats}, epochs=${runParams.epochs}, network_dim=${runParams.networkDim}, lr=${runParams.learningRate}`
   });
+  const trainingPrecision = process.platform === "linux"
+    ? (acceleratorStatus.available ? "fp16" : "no")
+    : "bf16";
   const commandArgs = [
     "sdxl_train_network.py",
     "--pretrained_model_name_or_path",
@@ -3644,9 +3882,9 @@ export async function trainLoraTrainingProject(
     "--max_data_loader_n_workers",
     "0",
     "--save_precision",
-    "bf16",
+    trainingPrecision,
     "--mixed_precision",
-    "bf16"
+    trainingPrecision
   ];
   if (resumeStatePath) {
     commandArgs.push("--resume", resumeStatePath);
@@ -3663,8 +3901,8 @@ export async function trainLoraTrainingProject(
 
   try {
     const acceleratePath = join(paths.loraVenv, "bin", "accelerate");
-    if (mpsStatus.available && await exists(acceleratePath)) {
-      await spawnNativeCommand(acceleratePath, ["launch", "--num_processes", "1", "--mixed_precision", "bf16", ...commandArgs], onLog, {
+    if (acceleratorStatus.available && await exists(acceleratePath)) {
+      await spawnNativeCommand(acceleratePath, ["launch", "--num_processes", "1", "--mixed_precision", trainingPrecision, ...commandArgs], onLog, {
         cwd: paths.loraScripts,
         logPath: paths.loraLog,
         processKey: loraTrainingProcessKey(id)
@@ -4225,7 +4463,11 @@ async function resolveLoraVenvPython(onLog: RuntimeLogSink): Promise<string> {
       return "/opt/homebrew/bin/python3.10";
     }
   }
-  throw new Error("LoRA MPS用のPython 3.10〜3.12が見つかりません。Homebrewのpython@3.10インストールにも失敗しました。");
+  throw new Error(
+    process.platform === "linux"
+      ? "LoRA用のPython 3.10〜3.12が見つかりません。先にsetup-linux.shを実行してください。"
+      : "LoRA MPS用のPython 3.10〜3.12が見つかりません。Homebrewのpython@3.10インストールにも失敗しました。"
+  );
 }
 
 async function shouldRebuildLoraVenv(paths: RuntimePaths, onLog: RuntimeLogSink): Promise<boolean> {
@@ -4235,7 +4477,7 @@ async function shouldRebuildLoraVenv(paths: RuntimePaths, onLog: RuntimeLogSink)
     onLog({ level: "info", line: `LoRA venv Pythonが${version || "不明"}のため再構築します。MPS優先では3.10〜3.11を使います。` });
     return true;
   }
-  if (await pythonHasModule(paths.loraPython, "torch")) {
+  if (process.platform === "darwin" && await pythonHasModule(paths.loraPython, "torch")) {
     const mpsStatus = await getLoraMpsStatus(paths.loraPython);
     if (!mpsStatus.available) {
       onLog({ level: "stderr", line: mpsStatus.message });
@@ -4304,6 +4546,25 @@ async function getLoraMpsStatus(pythonPath: string): Promise<{ available: boolea
       available: false,
       message: `MPS / Metal acceleration: 確認失敗 ${normalizeCommandError(error)}`
     };
+  }
+}
+
+async function getLinuxTorchStatus(pythonPath: string): Promise<{ available: boolean; message: string }> {
+  try {
+    const { stdout } = await execFileAsync(
+      pythonPath,
+      [
+        "-c",
+        "import json, torch; print(json.dumps({'cuda': torch.cuda.is_available(), 'torch': torch.__version__, 'device': torch.cuda.get_device_name(0) if torch.cuda.is_available() else None}))"
+      ],
+      { timeout: 10000 }
+    );
+    const parsed = JSON.parse(stdout.trim()) as { cuda?: boolean; torch?: string; device?: string | null };
+    return parsed.cuda
+      ? { available: true, message: `CUDA acceleration: 利用可能 (${parsed.device ?? "GPU"}, torch ${parsed.torch ?? "unknown"})` }
+      : { available: false, message: `CUDA acceleration: 利用不可。CPUで実行します (torch ${parsed.torch ?? "unknown"})` };
+  } catch (error) {
+    return { available: false, message: `Linux PyTorch確認失敗: ${normalizeCommandError(error)}` };
   }
 }
 
@@ -5563,6 +5824,7 @@ async function findOllamaApp(): Promise<string | null> {
 
 async function findOllamaBinary(): Promise<string | null> {
   const candidates = [
+    join(getRuntimePaths().linux, "bin", "ollama"),
     "/opt/homebrew/bin/ollama",
     "/usr/local/bin/ollama",
     "/usr/bin/ollama",
@@ -5981,6 +6243,22 @@ async function writeNativeExtraModelPaths(paths: RuntimePaths): Promise<void> {
   await writeFile(join(paths.nativeComfy, "extra_model_paths.yaml"), yaml, "utf8");
 }
 
+async function writeLinuxExtraModelPaths(paths: RuntimePaths): Promise<void> {
+  if (!(await exists(paths.linuxComfy))) return;
+  const yaml = `illustmk:
+  base_path: ${paths.root}
+  checkpoints: models/checkpoints
+  diffusion_models: models/diffusion_models
+  loras: models/loras
+  vae: models/vae
+  clip: models/clip
+  text_encoders: models/text_encoders
+  controlnet: models/controlnet
+  background_removal: models/background_removal
+`;
+  await writeFile(join(paths.linuxComfy, "extra_model_paths.yaml"), yaml, "utf8");
+}
+
 async function waitForComfy(comfyUrl: string, timeoutMs: number): Promise<boolean> {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
@@ -6003,6 +6281,11 @@ async function readNativePid(): Promise<number | null> {
   return managedComfyPidForPaths(getRuntimePaths());
 }
 
+async function readLinuxPid(): Promise<number | null> {
+  const paths = getRuntimePaths();
+  return managedComfyPid(paths, paths.linuxPid);
+}
+
 async function readPidFile(path: string): Promise<number | null> {
   try {
     const text = await readFile(path, "utf8");
@@ -6015,6 +6298,11 @@ async function readPidFile(path: string): Promise<number | null> {
 
 async function isNativeRunning(): Promise<boolean> {
   return Boolean(await managedComfyPidForPaths(getRuntimePaths()));
+}
+
+async function isLinuxRunning(): Promise<boolean> {
+  const paths = getRuntimePaths();
+  return Boolean(await managedComfyPid(paths, paths.linuxPid));
 }
 
 async function processCommand(pid: number): Promise<string> {
@@ -6034,7 +6322,11 @@ function isManagedComfyCommand(command: string): boolean {
 }
 
 async function managedComfyPidForPaths(paths: RuntimePaths): Promise<number | null> {
-  const pid = await readPidFile(paths.nativePid);
+  return managedComfyPid(paths, paths.nativePid);
+}
+
+async function managedComfyPid(paths: RuntimePaths, pidPath: string): Promise<number | null> {
+  const pid = await readPidFile(pidPath);
   if (pid) {
     const command = await processCommand(pid);
     if (isManagedComfyCommand(command) && command.includes(paths.outputs)) return pid;

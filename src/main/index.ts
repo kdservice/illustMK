@@ -46,6 +46,8 @@ import {
   importLoraFile,
   installOllama,
   installNativeRuntime,
+  initLinuxRuntime,
+  installLinuxRuntime,
   installImageGenerationEngine,
   installPosePreprocessor,
   pullOllamaModel,
@@ -69,7 +71,9 @@ import {
   sendLlmChatPrompt,
   showComfyContainerLogs,
   showNativeLogs,
+  showLinuxLogs,
   startNativeRuntime,
+  startLinuxRuntime,
   startDockerEngine,
   startOllama,
   startRuntime,
@@ -79,6 +83,7 @@ import {
   stopDockerEngine,
   stopLoraTrainingProject,
   stopNativeRuntime,
+  stopLinuxRuntime,
   stopOllama,
   switchDataPath,
   uninstallOllama,
@@ -302,6 +307,12 @@ function registerIpc(): void {
       if (request.operation === "native-install") {
         return await installNativeRuntime((log) => sendLog(log.level, log.line));
       }
+      if (request.operation === "linux-init") {
+        return await initLinuxRuntime((log) => sendLog(log.level, log.line));
+      }
+      if (request.operation === "linux-install") {
+        return await installLinuxRuntime((log) => sendLog(log.level, log.line));
+      }
       if (request.operation === "pose-preprocessor-install") {
         return await installPosePreprocessor((log) => sendLog(log.level, log.line));
       }
@@ -322,6 +333,15 @@ function registerIpc(): void {
       }
       if (request.operation === "native-logs") {
         return await showNativeLogs((log) => sendLog(log.level, log.line));
+      }
+      if (request.operation === "linux-start") {
+        return await startLinuxRuntime((log) => sendLog(log.level, log.line));
+      }
+      if (request.operation === "linux-stop") {
+        return await stopLinuxRuntime((log) => sendLog(log.level, log.line));
+      }
+      if (request.operation === "linux-logs") {
+        return await showLinuxLogs((log) => sendLog(log.level, log.line));
       }
       if (request.operation === "docker-cleanup") {
         return await cleanupDockerRuntime((log) => sendLog(log.level, log.line));
