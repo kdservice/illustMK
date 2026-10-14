@@ -4396,10 +4396,6 @@ function App() {
                 <Plus size={17} />
                 新規
               </button>
-              <button disabled={action.busy || !selectedLoraProject || selectedLoraProject.status === "running"} onClick={openEditLoraDialog}>
-                <Pencil size={17} />
-                編集
-              </button>
               <button disabled={action.busy} onClick={() => void importLoraProjectFile()}>
                 <Plus size={17} />
                 インポート
@@ -4407,10 +4403,6 @@ function App() {
               <button disabled={action.busy} onClick={() => setLoraCatalogOpen(true)}>
                 <Download size={17} />
                 カタログ
-              </button>
-              <button disabled={action.busy} onClick={() => void loadLoraProjects()}>
-                <RefreshCw size={17} />
-                更新
               </button>
               <button className="danger" disabled={action.busy || !selectedLoraProject || selectedLoraProject.status === "running"} onClick={() => void deleteSelectedLoraProject()}>
                 <Trash2 size={17} />
