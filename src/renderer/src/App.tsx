@@ -327,6 +327,7 @@ function App() {
   const [poseTitle, setPoseTitle] = useState("");
   const [promptHistory, setPromptHistory] = useState<PromptHistoryEntry[]>([]);
   const [promptHistoryOpen, setPromptHistoryOpen] = useState(false);
+  const [historyPreviewEntry, setHistoryPreviewEntry] = useState<PromptHistoryEntry | null>(null);
   const [restoredGenerationSettings, setRestoredGenerationSettings] = useState<PromptGenerationSettings | null>(null);
   const [imagePreviewOpen, setImagePreviewOpen] = useState(false);
   const [loraProjects, setLoraProjects] = useState<LoraTrainingProject[]>([]);
@@ -1609,6 +1610,12 @@ function App() {
     });
   }
 
+  function resolveSceneImageDataUrl(path?: string, dataUrl?: string): string | undefined {
+    if (dataUrl) return dataUrl;
+    if (!path) return undefined;
+    return promptHistory.find((entry) => entry.imagePath === path)?.imageDataUrl;
+  }
+
   function applyPromptHistory(entry: PromptHistoryEntry): void {
     if (entry.restorable === false) {
       window.alert(`この履歴は現在のDataPathで不足があります。\n${(entry.missingAssets ?? []).join("\n")}`);
@@ -1618,6 +1625,16 @@ function App() {
     let restoredActiveCharacter: GenerationSceneCharacter | undefined;
     if (settings?.scene) {
       const restoredScene = structuredClone(settings.scene);
+      restoredScene.characters = restoredScene.characters.map((character) => ({
+        ...character,
+        generatedImageDataUrl: resolveSceneImageDataUrl(character.generatedImagePath, character.generatedImageDataUrl)
+      }));
+      if (restoredScene.background) {
+        restoredScene.background.generatedImageDataUrl = resolveSceneImageDataUrl(
+          restoredScene.background.generatedImagePath,
+          restoredScene.background.generatedImageDataUrl
+        );
+      }
       const requestScene = settings.generationRequest?.sceneConditioning;
       if (restoredScene.background && requestScene) {
         restoredScene.background.generatedImagePath ??= requestScene.backgroundImagePath;
@@ -1923,6 +1940,7 @@ function App() {
     const restored: GenerationSceneCharacter = {
       ...structuredClone(character),
       id: crypto.randomUUID(),
+      generatedImageDataUrl: resolveSceneImageDataUrl(character.generatedImagePath, character.generatedImageDataUrl),
       placement: { ...defaultCharacterPlacement, zIndex: current.length + 1 }
     };
     setSceneCharacters([...current, restored]);
@@ -1932,7 +1950,11 @@ function App() {
   }
 
   function restoreBackgroundFromHistory(background: GenerationSceneBackground): void {
-    const restored = normalizeSceneBackground({ ...structuredClone(background), id: sceneBackground?.id ?? crypto.randomUUID() });
+    const restored = normalizeSceneBackground({
+      ...structuredClone(background),
+      id: sceneBackground?.id ?? crypto.randomUUID(),
+      generatedImageDataUrl: resolveSceneImageDataUrl(background.generatedImagePath, background.generatedImageDataUrl)
+    });
     setSceneBackground(restored);
     setSceneCharacters((current) => current.map((character, index) => ({
       ...character,
@@ -2958,14 +2980,14 @@ function App() {
       setSceneCharacters((current) => current.map((character) => character.id === characterId ? {
         ...character,
         generatedImagePath: result.imagePath,
-        generatedImageDataUrl: result.imagePath ? undefined : result.imageDataUrl
+        generatedImageDataUrl: result.imageDataUrl
       } : character));
     }
     if (scope === "background") {
       setSceneBackground((current) => current ? {
         ...current,
         generatedImagePath: result.imagePath,
-        generatedImageDataUrl: result.imagePath ? undefined : result.imageDataUrl
+        generatedImageDataUrl: result.imageDataUrl
       } : current);
     }
   }
@@ -4630,6 +4652,14 @@ function App() {
                     <Trash2 size={16} />
                   </button>
                 </div>
+                {sceneBackground.generatedImageDataUrl || sceneBackground.generatedImagePath ? (
+                  <div className="scene-generated-background-preview">
+                    <img
+                      src={imageUrl(sceneBackground.generatedImageDataUrl ?? sceneBackground.generatedImagePath ?? "")}
+                      alt={`${sceneBackground.title}の生成済み背景`}
+                    />
+                  </div>
+                ) : null}
                 <div className="field">
                   <label>タイトル</label>
                   <input value={sceneBackground.title} onChange={(event) => updateSceneBackground({ title: event.target.value })} />
@@ -4768,28 +4798,40 @@ function App() {
             </div>
             {generateTab === "character" ? (
               <div className="scene-character-settings">
-                <div className="scene-editor-heading">
-                  <div>
-                    <strong>{activeSceneCharacter.title}</strong>
-                    <span>キャラ単体を復元した場合、配置は中央の初期値になります。</span>
+                <div className={`scene-character-settings-layout${activeSceneCharacter.generatedImageDataUrl || activeSceneCharacter.generatedImagePath ? " has-image" : ""}`}>
+                  {activeSceneCharacter.generatedImageDataUrl || activeSceneCharacter.generatedImagePath ? (
+                    <div className="scene-generated-character-preview">
+                      <img
+                        src={imageUrl(activeSceneCharacter.generatedImageDataUrl ?? activeSceneCharacter.generatedImagePath ?? "")}
+                        alt={`${activeSceneCharacter.title}の生成済みキャラ`}
+                      />
+                    </div>
+                  ) : null}
+                  <div className="scene-character-settings-fields">
+                    <div className="scene-editor-heading">
+                      <div>
+                        <strong>{activeSceneCharacter.title}</strong>
+                        <span>キャラ単体を復元した場合、配置は中央の初期値になります。</span>
+                      </div>
+                      <button className="icon-button danger" onClick={removeActiveSceneItem} title="キャラをシーンから削除">
+                        <Trash2 size={16} />
+                      </button>
+                    </div>
+                    <div className="field">
+                      <label>キャラ名</label>
+                      <input value={activeSceneCharacter.title} onChange={(event) => updateActiveCharacterTitle(event.target.value)} />
+                    </div>
+                    <div className="scene-placement-grid">
+                      <div className="field"><label>横位置 (%)</label><input type="number" min="0" max="100" value={activeSceneCharacter.placement.x} onChange={(event) => updateActiveCharacterPlacement({ x: Number(event.target.value) })} /></div>
+                      <div className="field"><label>縦位置 (%)</label><input type="number" min="0" max="100" value={activeSceneCharacter.placement.y} onChange={(event) => updateActiveCharacterPlacement({ y: Number(event.target.value) })} /></div>
+                      <div className="field"><label>拡大率 (%)</label><input type="number" min="10" max="300" value={activeSceneCharacter.placement.scale} onChange={(event) => updateActiveCharacterPlacement({ scale: Number(event.target.value) })} /></div>
+                      <div className="field"><label>重なり順</label><input type="number" min="1" value={activeSceneCharacter.placement.zIndex} onChange={(event) => updateActiveCharacterPlacement({ zIndex: Number(event.target.value) })} /></div>
+                    </div>
+                    <div className="button-row">
+                      <button onClick={() => setCharacterLibraryOpen(true)}><RefreshCw size={16} />保存済みキャラから復元</button>
+                      <button className="primary" onClick={saveActiveCharacterPreset}><Save size={16} />キャラ設定を保存</button>
+                    </div>
                   </div>
-                  <button className="icon-button danger" onClick={removeActiveSceneItem} title="キャラをシーンから削除">
-                    <Trash2 size={16} />
-                  </button>
-                </div>
-                <div className="field">
-                  <label>キャラ名</label>
-                  <input value={activeSceneCharacter.title} onChange={(event) => updateActiveCharacterTitle(event.target.value)} />
-                </div>
-                <div className="scene-placement-grid">
-                  <div className="field"><label>横位置 (%)</label><input type="number" min="0" max="100" value={activeSceneCharacter.placement.x} onChange={(event) => updateActiveCharacterPlacement({ x: Number(event.target.value) })} /></div>
-                  <div className="field"><label>縦位置 (%)</label><input type="number" min="0" max="100" value={activeSceneCharacter.placement.y} onChange={(event) => updateActiveCharacterPlacement({ y: Number(event.target.value) })} /></div>
-                  <div className="field"><label>拡大率 (%)</label><input type="number" min="10" max="300" value={activeSceneCharacter.placement.scale} onChange={(event) => updateActiveCharacterPlacement({ scale: Number(event.target.value) })} /></div>
-                  <div className="field"><label>重なり順</label><input type="number" min="1" value={activeSceneCharacter.placement.zIndex} onChange={(event) => updateActiveCharacterPlacement({ zIndex: Number(event.target.value) })} /></div>
-                </div>
-                <div className="button-row">
-                  <button onClick={() => setCharacterLibraryOpen(true)}><RefreshCw size={16} />保存済みキャラから復元</button>
-                  <button className="primary" onClick={saveActiveCharacterPreset}><Save size={16} />キャラ設定を保存</button>
                 </div>
               </div>
             ) : generateTab === "prompt" ? (
@@ -5429,13 +5471,18 @@ function App() {
               {promptHistory.length ? (
                 promptHistory.map((entry) => (
                   <article className="prompt-history-card" key={entry.id}>
-                    <div className="prompt-history-thumb">
+                    <button
+                      className="prompt-history-thumb"
+                      disabled={!(entry.imageDataUrl || entry.imagePath)}
+                      onClick={() => setHistoryPreviewEntry(entry)}
+                      title={entry.imageDataUrl || entry.imagePath ? "生成画像を拡大表示" : "生成画像なし"}
+                    >
                       {entry.imageDataUrl || entry.imagePath ? (
                         <img src={imageUrl(entry.imageDataUrl ?? entry.imagePath ?? "")} alt="生成履歴サムネイル" />
                       ) : (
                         <ImageIcon size={24} />
                       )}
-                    </div>
+                    </button>
                     <div className="prompt-history-body">
                       <header>
                         <strong>{entry.checkpoint || "checkpoint未選択"}</strong>
@@ -5491,6 +5538,24 @@ function App() {
                 <Trash2 size={17} />
                 履歴削除
               </button>
+            </div>
+          </section>
+        </div>
+      ) : null}
+      {historyPreviewEntry && (historyPreviewEntry.imageDataUrl || historyPreviewEntry.imagePath) ? (
+        <div className="modal-backdrop history-image-preview-backdrop" onClick={() => setHistoryPreviewEntry(null)}>
+          <section className="modal-panel image-preview-modal" onClick={(event) => event.stopPropagation()}>
+            <div className="modal-header">
+              <PanelTitle icon={<ImageIcon size={18} />} title="履歴画像プレビュー" />
+              <button className="icon-button" onClick={() => setHistoryPreviewEntry(null)} title="閉じる">
+                <Square size={16} />
+              </button>
+            </div>
+            <div className="image-preview-frame">
+              <img
+                src={imageUrl(historyPreviewEntry.imageDataUrl ?? historyPreviewEntry.imagePath ?? "")}
+                alt="生成履歴の拡大画像"
+              />
             </div>
           </section>
         </div>
