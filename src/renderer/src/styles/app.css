@@ -9,6 +9,27 @@
 
 * {
   box-sizing: border-box;
+  scrollbar-color: #40547d #081125;
+  scrollbar-width: thin;
+}
+
+*::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+*::-webkit-scrollbar-track {
+  background: #081125;
+}
+
+*::-webkit-scrollbar-thumb {
+  border: 2px solid #081125;
+  border-radius: 999px;
+  background: #40547d;
+}
+
+*::-webkit-scrollbar-thumb:hover {
+  background: #5871a3;
 }
 
 body {
@@ -77,10 +98,19 @@ label {
 
 .app-shell {
   height: 100vh;
-  padding: 18px;
+  padding: 40px 18px 18px;
   display: flex;
   flex-direction: column;
   overflow: hidden;
+}
+
+.window-drag-region {
+  position: fixed;
+  inset: 0 0 auto;
+  z-index: 10000;
+  height: 36px;
+  background: #071020;
+  -webkit-app-region: drag;
 }
 
 .topbar {
@@ -3599,6 +3629,15 @@ label {
   flex: 0 0 auto;
 }
 
+.global-log.collapsed {
+  height: 46px;
+  min-height: 46px;
+  max-height: 46px;
+  resize: none;
+  padding-top: 8px;
+  padding-bottom: 8px;
+}
+
 .progress-header {
   display: flex;
   align-items: center;
@@ -3608,6 +3647,32 @@ label {
   color: #dbe7ff;
   font-size: 13px;
   font-weight: 800;
+}
+
+.global-log.collapsed .progress-header {
+  margin-bottom: 0;
+}
+
+.log-title {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.log-title > span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.log-collapse-button {
+  width: 28px;
+  min-width: 28px;
+  min-height: 28px;
+  padding: 0;
+  border-color: transparent;
+  background: transparent;
 }
 
 .log-actions {
@@ -3620,6 +3685,17 @@ label {
   min-height: 28px;
   padding: 0 10px;
   font-size: 12px;
+}
+
+.tiny-button.active {
+  border-color: #44bcff;
+  background: #15335f;
+}
+
+.tiny-button.active:disabled {
+  border-color: #26375f;
+  color: #66728f;
+  background: #121d36;
 }
 
 .progress-bar {
@@ -3662,13 +3738,13 @@ label {
 
 .log-line {
   display: grid;
-  grid-template-columns: 62px minmax(0, 1fr);
+  grid-template-columns: 72px minmax(0, 1fr);
   gap: 8px;
   margin: 0;
   padding: 3px 0;
   color: #aab9d7;
   font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
-  font-size: 11px;
+  font-size: 13px;
   line-height: 1.4;
   overflow-wrap: anywhere;
 }

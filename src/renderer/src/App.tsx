@@ -4,6 +4,8 @@ import {
   Boxes,
   Bot,
   CheckCircle2,
+  ChevronDown,
+  ChevronRight,
   CircleAlert,
   Download,
   ExternalLink,
@@ -370,6 +372,7 @@ function App() {
   const [usageHistory, setUsageHistory] = useState<UsageSample[]>([]);
   const [logs, setLogs] = useState<LogLine[]>([]);
   const [autoFollowLogs, setAutoFollowLogs] = useState(true);
+  const [logCollapsed, setLogCollapsed] = useState(false);
   const [downloadProgress, setDownloadProgress] = useState<number | null>(null);
   const [settingsLoaded, setSettingsLoaded] = useState(false);
   const [mainTab, setMainTab] = useState<"environment" | "models" | "llm" | "lora" | "generate">("environment");
@@ -3385,6 +3388,7 @@ function App() {
 
   return (
     <main className="app-shell">
+      <div className="window-drag-region" aria-hidden="true" />
       <header className="topbar">
         <div className="topbar-brand">
           <div className="brand-mark">IM</div>
@@ -5838,7 +5842,7 @@ function App() {
           </section>
         </div>
       ) : null}
-      <section className="log-dock global-log">
+      <section className={logCollapsed ? "log-dock global-log collapsed" : "log-dock global-log"}>
         <LogPanel
           action={action}
           logs={logs}
@@ -5847,6 +5851,9 @@ function App() {
           onLatest={jumpToLatestLog}
           onClear={() => setLogs([])}
           downloadProgress={downloadProgress}
+          collapsed={logCollapsed}
+          autoFollow={autoFollowLogs}
+          onToggleCollapsed={() => setLogCollapsed((current) => !current)}
         />
       </section>
     </main>
@@ -6312,7 +6319,10 @@ function LogPanel({
   onScroll,
   onLatest,
   onClear,
-  downloadProgress
+  downloadProgress,
+  collapsed,
+  autoFollow,
+  onToggleCollapsed
 }: {
   action: ActionState;
   logs: LogLine[];
@@ -6321,38 +6331,55 @@ function LogPanel({
   onLatest: () => void;
   onClear: () => void;
   downloadProgress: number | null;
+  collapsed: boolean;
+  autoFollow: boolean;
+  onToggleCollapsed: () => void;
 }) {
   return (
     <>
       <div className="progress-header">
-        <span>{action.busy ? `処理中: ${action.message}` : `ログ: ${action.message}`}</span>
+        <div className="log-title">
+          <button
+            className="log-collapse-button"
+            onClick={onToggleCollapsed}
+            title={collapsed ? "ログを展開" : "ログを折りたたむ"}
+            aria-label={collapsed ? "ログを展開" : "ログを折りたたむ"}
+          >
+            {collapsed ? <ChevronRight size={16} /> : <ChevronDown size={16} />}
+          </button>
+          <span>{action.busy ? `処理中: ${action.message}` : `ログ: ${action.message}`}</span>
+        </div>
         <div className="log-actions">
-          <button className="tiny-button" onClick={onLatest}>
+          <button className={autoFollow ? "tiny-button active" : "tiny-button"} disabled={collapsed} onClick={onLatest}>
             Latest
           </button>
-          <button className="tiny-button" onClick={onClear}>
+          <button className="tiny-button" disabled={collapsed} onClick={onClear}>
             Clear
           </button>
         </div>
       </div>
-      <div className={downloadProgress !== null ? "progress-bar determinate" : action.busy ? "progress-bar active" : "progress-bar"}>
-        <span style={downloadProgress !== null ? { width: `${downloadProgress}%` } : undefined} />
-      </div>
-      <div className="log-view" ref={logViewRef} onScroll={onScroll}>
-        {logs.length ? (
-          logs.map((log, index) => (
-            <p key={`${log.id}-${index}`} className={`log-line ${log.level}`}>
-              <span>{log.time}</span>
-              {log.line}
-            </p>
-          ))
-        ) : (
-          <p className="log-line info">
-            <span>--:--:--</span>
-            ログはここに表示されます。
-          </p>
-        )}
-      </div>
+      {!collapsed ? (
+        <>
+          <div className={downloadProgress !== null ? "progress-bar determinate" : action.busy ? "progress-bar active" : "progress-bar"}>
+            <span style={downloadProgress !== null ? { width: `${downloadProgress}%` } : undefined} />
+          </div>
+          <div className="log-view" ref={logViewRef} onScroll={onScroll}>
+            {logs.length ? (
+              logs.map((log, index) => (
+                <p key={`${log.id}-${index}`} className={`log-line ${log.level}`}>
+                  <span>{log.time}</span>
+                  {log.line}
+                </p>
+              ))
+            ) : (
+              <p className="log-line info">
+                <span>--:--:--</span>
+                ログはここに表示されます。
+              </p>
+            )}
+          </div>
+        </>
+      ) : null}
     </>
   );
 }
