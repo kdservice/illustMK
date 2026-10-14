@@ -4618,7 +4618,10 @@ async function getComfyLoraNames(comfyUrl: string): Promise<Set<string> | null> 
   }
 }
 
-export async function runTestGeneration(request: TestGenerationRequest): Promise<TestGenerationResult> {
+export async function runTestGeneration(
+  request: TestGenerationRequest,
+  onLog: RuntimeLogSink = () => undefined
+): Promise<TestGenerationResult> {
   const paths = getRuntimePaths();
   const engines = await getImageGenerationEngines();
   const activeEngine = request.imageEngineId
@@ -4631,7 +4634,7 @@ export async function runTestGeneration(request: TestGenerationRequest): Promise
     if (activeEngine?.kind === "qwen-image") {
       return { ok: false, message: "Qwen Image画像生成エンジンでの総合img2img生成は現在未対応です。Checkpoint画像生成エンジンへ切り替えてください。" };
     }
-    return runSceneCompositeGeneration(request, paths);
+    return runSceneCompositeGeneration(request, paths, onLog);
   }
   if (activeEngine?.kind === "qwen-image") {
     return runQwenImageGeneration(request, paths, activeEngine);
@@ -4881,7 +4884,11 @@ async function missingComfyNodes(comfyUrl: string, names: string[]): Promise<str
   return missing;
 }
 
-async function runSceneCompositeGeneration(request: TestGenerationRequest, paths: RuntimePaths): Promise<TestGenerationResult> {
+async function runSceneCompositeGeneration(
+  request: TestGenerationRequest,
+  paths: RuntimePaths,
+  onLog: RuntimeLogSink
+): Promise<TestGenerationResult> {
   const scene = request.sceneConditioning;
   if (!scene) return { ok: false, message: "総合生成のシーン情報がありません。" };
   const backgroundSource = scene.backgroundImageDataUrl || scene.backgroundImagePath;
@@ -4896,7 +4903,9 @@ async function runSceneCompositeGeneration(request: TestGenerationRequest, paths
     };
   }
 
-  await ensureBackgroundRemovalModel(paths, request.comfyUrl);
+  onLog({ level: "info", line: "総合生成: BiRefNet背景除去モデルを確認中（GPU処理前）" });
+  await ensureBackgroundRemovalModel(paths, request.comfyUrl, onLog);
+  onLog({ level: "info", line: "総合生成: 背景画像をComfyUIへアップロード中" });
   const backgroundImageName = await uploadGenerationSource(request.comfyUrl, backgroundSource, "background");
   const workflow: Record<string, { class_type: string; inputs: Record<string, unknown> }> = {
     "1": { class_type: "LoadImage", inputs: { image: backgroundImageName } },
@@ -4958,12 +4967,14 @@ async function runSceneCompositeGeneration(request: TestGenerationRequest, paths
     compositeSource = [compositeId, 0];
   });
 
+  onLog({ level: "info", line: `総合生成: キャラクター画像 ${characters.length}件をComfyUIへアップロード中` });
   await Promise.all(characters.map(async (character, index) => {
     const source = character.imageDataUrl || character.imagePath;
     if (!source) return;
     workflow[String(100 + index * 5)].inputs.image = await uploadGenerationSource(request.comfyUrl, source, `character-${index + 1}`);
   }));
 
+  onLog({ level: "info", line: "総合生成: Checkpoint・LoRA・VAE構成を確認中" });
   const modelInfo = await inspectModelFile(join(paths.checkpoints, request.checkpoint));
   const externalVae = request.vae?.trim();
   const externalClip = request.clip?.trim();
@@ -5049,30 +5060,41 @@ async function runSceneCompositeGeneration(request: TestGenerationRequest, paths
     class_type: "SaveImage",
     inputs: { filename_prefix: "illustmk_scene_refined", images: ["9304", 0] }
   };
+  onLog({ level: "info", line: "総合生成: ComfyUIへimg2imgワークフローを投入中" });
   return submitComfyWorkflow(
     request.comfyUrl,
     workflow,
     paths,
-    `総合img2img生成が完了しました。仮合成をDenoise ${refinementDenoise.toFixed(2)}で馴染ませました。`
+    `総合img2img生成が完了しました。仮合成をDenoise ${refinementDenoise.toFixed(2)}で馴染ませました。`,
+    onLog
   );
 }
 
-async function ensureBackgroundRemovalModel(paths: RuntimePaths, comfyUrl: string): Promise<void> {
+async function ensureBackgroundRemovalModel(
+  paths: RuntimePaths,
+  comfyUrl: string,
+  onLog: RuntimeLogSink
+): Promise<void> {
   const targetPath = join(paths.backgroundRemoval, backgroundRemovalModelName);
   const installedNow = !(await exists(targetPath));
-  await ensureBackgroundRemovalModelFile(paths, () => undefined);
-  if (!installedNow && await comfyRecognizesBackgroundRemovalModel(comfyUrl)) return;
+  await ensureBackgroundRemovalModelFile(paths, onLog);
+  if (!installedNow && await comfyRecognizesBackgroundRemovalModel(comfyUrl)) {
+    onLog({ level: "info", line: "総合生成: BiRefNetはComfyUIで利用可能です。" });
+    return;
+  }
   const localUrl = /^https?:\/\/(?:127\.0\.0\.1|localhost)(?::\d+)?(?:\/|$)/i.test(comfyUrl);
   const managedPid = localUrl ? await managedComfyPidForPaths(paths) : null;
   if (!managedPid) {
     throw new Error("背景除去モデルを導入しましたが、接続中のComfyUIにはまだ認識されていません。接続先ComfyUIを再起動してください。");
   }
+  onLog({ level: "info", line: "総合生成: BiRefNetを認識させるためComfyUIを再起動します。" });
   await writeNativeExtraModelPaths(paths);
-  await stopNativeRuntime(() => undefined);
-  await startNativeRuntime(() => undefined);
+  await stopNativeRuntime(onLog);
+  await startNativeRuntime(onLog);
   if (!(await comfyRecognizesBackgroundRemovalModel(comfyUrl))) {
     throw new Error("ComfyUI再起動後も背景除去モデルを認識できませんでした。ComfyUIログを確認してください。");
   }
+  onLog({ level: "info", line: "総合生成: BiRefNetの認識を確認しました。" });
 }
 
 async function comfyRecognizesBackgroundRemovalModel(comfyUrl: string): Promise<boolean> {
@@ -5110,7 +5132,8 @@ async function submitComfyWorkflow(
   comfyUrl: string,
   workflow: Record<string, { class_type: string; inputs: Record<string, unknown> }>,
   paths: RuntimePaths,
-  successMessage = "テスト生成が完了しました。"
+  successMessage = "テスト生成が完了しました。",
+  onLog: RuntimeLogSink = () => undefined
 ): Promise<TestGenerationResult> {
 
   const before = new Set(await listFiles(paths.outputs));
@@ -5129,10 +5152,16 @@ async function submitComfyWorkflow(
   if (!promptId) {
     return { ok: false, message: "ComfyUIからprompt_idが返りませんでした。" };
   }
+  onLog({ level: "info", line: `ComfyUIへ投入しました。Prompt ID: ${promptId}` });
 
   const deadline = Date.now() + 1000 * 300;
+  let lastWaitingLog = 0;
   while (Date.now() < deadline) {
     await delay(1500);
+    if (Date.now() - lastWaitingLog >= 15000) {
+      lastWaitingLog = Date.now();
+      onLog({ level: "info", line: `ComfyUIで生成中です。Prompt ID: ${promptId}` });
+    }
     const history = await getPromptHistory(comfyUrl, promptId);
     const errorMessage = extractPromptError(history);
     if (errorMessage) {
@@ -6037,7 +6066,10 @@ async function sha256File(path: string): Promise<string> {
 }
 
 async function downloadFileWithProgress(url: string, targetPath: string, onLog: RuntimeLogSink): Promise<void> {
-  const response = await fetch(url, { headers: { "User-Agent": "illustMK/0.1" } });
+  const response = await fetch(url, {
+    headers: { "User-Agent": "illustMK/0.1" },
+    signal: AbortSignal.timeout(30 * 60 * 1000)
+  });
   if (!response.ok || !response.body) {
     throw new Error(`ダウンロードに失敗しました: HTTP ${response.status}`);
   }

@@ -446,7 +446,18 @@ function registerIpc(): void {
   ipcMain.handle("poses:preprocessor-status", (_event, comfyUrl?: string) => getPosePreprocessorStatus(comfyUrl));
   ipcMain.handle("poses:analyze", (_event, request: PoseVisionRequest) => analyzePoseImageWithOllama(request));
   ipcMain.handle("runtime:search-huggingface-llm", (_event, options) => searchHuggingFaceLlmModels(options));
-  ipcMain.handle("runtime:test-generate", (_event, request: TestGenerationRequest) => runTestGeneration(request));
+  ipcMain.handle("runtime:test-generate", async (event, request: TestGenerationRequest) => {
+    const operationId = `generation-${Date.now()}`;
+    const sendLog = (level: "info" | "stdout" | "stderr", line: string) => {
+      event.sender.send("runtime:operation-log", { id: operationId, level, line });
+    };
+    try {
+      return await runTestGeneration(request, (log) => sendLog(log.level, log.line));
+    } catch (error) {
+      sendLog("stderr", error instanceof Error ? error.message : String(error));
+      throw error;
+    }
+  });
   ipcMain.handle("prompt-history:list", () => getSavedPromptHistory());
   ipcMain.handle("prompt-history:save", (_event, request: SavePromptHistoryRequest) => savePromptHistoryEntry(request));
   ipcMain.handle("prompt-history:update-memo", (_event, request: UpdatePromptHistoryMemoRequest) => updatePromptHistoryMemo(request));
