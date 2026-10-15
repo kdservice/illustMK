@@ -1,6 +1,6 @@
 import { app, BrowserWindow, dialog, ipcMain, screen, shell, type OpenDialogOptions, type Rectangle } from "electron";
-import { mkdir, readFile, stat, writeFile } from "node:fs/promises";
-import { join } from "node:path";
+import { copyFile, mkdir, readFile, stat, writeFile } from "node:fs/promises";
+import { basename, extname, join } from "node:path";
 import {
   buildRuntime,
   buildRuntimeWithLogs,
@@ -529,6 +529,20 @@ function registerIpc(): void {
     }
     shell.showItemInFolder(path);
     return "";
+  });
+  ipcMain.handle("app:save-image", async (_event, sourcePath: string) => {
+    const sourceStat = await stat(sourcePath).catch(() => null);
+    if (!sourceStat?.isFile()) throw new Error("書き出す生成画像が見つかりません。");
+    const extension = extname(sourcePath).replace(/^\./, "").toLowerCase() || "png";
+    const options = {
+      title: "生成画像を書き出す",
+      defaultPath: basename(sourcePath),
+      filters: [{ name: "画像", extensions: [extension] }]
+    };
+    const result = mainWindow ? await dialog.showSaveDialog(mainWindow, options) : await dialog.showSaveDialog(options);
+    if (result.canceled || !result.filePath) return null;
+    if (result.filePath !== sourcePath) await copyFile(sourcePath, result.filePath);
+    return result.filePath;
   });
   ipcMain.handle("app:open-external", (_event, url: string) => shell.openExternal(url));
 }

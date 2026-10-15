@@ -556,6 +556,9 @@ function App() {
   const canGenerateCharacter = Boolean(canGenerate && activeSceneCharacter);
   const canGenerateBackground = Boolean(canGenerate && sceneBackground);
   const canGenerateScene = Boolean(canGenerate && (sceneCharacters.length || sceneBackground));
+  const currentGeneratedImagePath = generationResult?.imagePath
+    ?? (lastHistoryId ? promptHistory.find((entry) => entry.id === lastHistoryId)?.imagePath : undefined)
+    ?? null;
   const canDownloadLlm = Boolean(ollamaStatus?.reachable && ollamaStatus.dataLinked && llmPullName.trim() && !action.busy);
   const canSendLlmPrompt = Boolean(ollamaStatus?.reachable && ollamaStatus.dataLinked && ollamaModel.trim() && llmPrompt.trim() && !action.busy);
   const llmPromptDisabledReason = useMemo(() => {
@@ -2749,6 +2752,13 @@ function App() {
     });
   }
 
+  async function exportCurrentGeneratedImage(): Promise<void> {
+    if (!currentGeneratedImagePath) return;
+    await runAction("生成画像を書き出し中", () => window.illustMK.app.saveImage(currentGeneratedImagePath), (savedPath) => {
+      if (savedPath) appendLog("info", `生成画像を書き出しました: ${savedPath}`);
+    });
+  }
+
   function openRepeatMemoEditor(item: RepeatGenerationItem): void {
     if (!item.historyId) return;
     setRepeatMemoEditingItemId(item.id);
@@ -4568,9 +4578,19 @@ function App() {
             <PanelTitle icon={<ImageIcon size={18} />} title="テスト生成" />
             <div className="preview-stage" style={{ aspectRatio: `${generationWidth} / ${generationHeight}` }}>
               {lastImage ? (
-                <button className="preview-image-button" type="button" onClick={() => setImagePreviewOpen(true)} title="拡大表示">
-                  <img src={imageUrl(lastImage)} alt="Generated preview" />
-                </button>
+                <>
+                  <button className="preview-image-button" type="button" onClick={() => setImagePreviewOpen(true)} title="拡大表示">
+                    <img src={imageUrl(lastImage)} alt="Generated preview" />
+                  </button>
+                  <div className="preview-file-actions">
+                    <button className="icon-button" type="button" disabled={!currentGeneratedImagePath || action.busy} onClick={() => void exportCurrentGeneratedImage()} title="ファイルへ書き出す">
+                      <Download size={17} />
+                    </button>
+                    <button className="icon-button" type="button" disabled={!currentGeneratedImagePath} onClick={() => currentGeneratedImagePath && void window.illustMK.app.openPath(currentGeneratedImagePath)} title="Finderで表示">
+                      <FolderOpen size={17} />
+                    </button>
+                  </div>
+                </>
               ) : (
                 <div className="placeholder">
                   <ImageIcon size={42} />

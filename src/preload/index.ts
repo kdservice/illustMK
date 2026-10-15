@@ -197,6 +197,7 @@ const api = {
   },
   app: {
     openPath: (path: string): Promise<string> => ipcRenderer.invoke("app:open-path", path),
+    saveImage: (path: string): Promise<string | null> => ipcRenderer.invoke("app:save-image", path),
     openExternal: (url: string): Promise<void> => ipcRenderer.invoke("app:open-external", url)
   }
 };

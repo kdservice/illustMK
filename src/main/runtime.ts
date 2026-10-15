@@ -148,6 +148,7 @@ export type DownloadRequest = {
   targetType: "checkpoints" | "diffusionModels" | "loras" | "vae" | "clip" | "textEncoders" | "controlnet" | "backgroundRemoval" | "otherModels";
   fileName?: string;
   sha256?: string;
+  sizeBytes?: number | null;
   source?: "civitai" | "huggingface" | "direct";
   operationId?: string;
 };
@@ -837,7 +838,7 @@ export type DeletePromptHistoryEntryRequest = {
   id: string;
 };
 
-type FetchContext = "Civitai検索" | "Civitaiダウンロード" | "Civitaiサムネイル" | "Hugging Face画像モデル検索" | "Hugging Faceダウンロード" | "モデルサムネイル" | "OpenPoses取得" | "ポーズ画像取得";
+type FetchContext = "ダウンロード" | "Civitai検索" | "Civitaiダウンロード" | "Civitaiサムネイル" | "Hugging Face画像モデル検索" | "Hugging Faceダウンロード" | "モデルサムネイル" | "OpenPoses取得" | "ポーズ画像取得";
 
 export type TestGenerationResult = {
   ok: boolean;
@@ -1865,60 +1866,31 @@ export async function downloadModel(request: DownloadRequest, onLog?: RuntimeLog
 
   const targetPath = join(targetDir, fileName);
   const temporaryPath = `${targetPath}.partial`;
-  await rm(temporaryPath, { force: true });
   const headers: Record<string, string> = {
     "User-Agent": "illustMK/0.1",
     ...(request.source === "civitai" || url.hostname.includes("civitai.com") ? await civitaiAuthHeader() : {}),
     ...(request.source === "huggingface" || url.hostname.includes("huggingface.co") ? await huggingFaceAuthHeader() : {})
   };
   const requestUrl = await withCivitaiToken(url);
-  let response: Response;
-  try {
-    response = await fetch(requestUrl, { headers });
-  } catch (error) {
-    throw new Error(formatFetchFailure(
-      request.source === "huggingface" || url.hostname.includes("huggingface.co") ? "Hugging Faceダウンロード" : "Civitaiダウンロード",
-      requestUrl.toString(),
-      error
-    ));
-  }
-  if (!response.ok || !response.body) {
-    throw new Error(downloadErrorMessage(response.status, url));
-  }
-
-  const totalBytes = Number(response.headers.get("content-length") ?? 0);
-  let receivedBytes = 0;
-  let lastProgressLog = 0;
   onLog?.({ level: "info", line: `保存先: ${targetPath}` });
-  onLog?.({
-    level: "info",
-    line: totalBytes > 0 ? `ダウンロード開始: 0 B / ${formatBytes(totalBytes)}` : "ダウンロード開始: サイズ不明"
-  });
-
-  const progressStream = new Transform({
-    transform(chunk: Buffer, _encoding, callback) {
-      receivedBytes += chunk.length;
-      const now = Date.now();
-      if (now - lastProgressLog >= 1000) {
-        lastProgressLog = now;
-        onLog?.({ level: "info", line: downloadProgressLine(receivedBytes, totalBytes) });
-      }
-      callback(null, chunk);
-    }
-  });
 
   let digest = "";
   try {
-    await pipeline(response.body as unknown as NodeJS.ReadableStream, progressStream, createWriteStream(temporaryPath));
-    onLog?.({ level: "info", line: downloadProgressLine(receivedBytes, totalBytes) });
+    await downloadFileWithProgress(requestUrl.toString(), temporaryPath, onLog ?? (() => undefined), {
+      headers,
+      expectedBytes: request.sizeBytes,
+      errorLabel: request.source === "huggingface" || url.hostname.includes("huggingface.co")
+        ? "Hugging Faceダウンロード"
+        : "Civitaiダウンロード"
+    });
     digest = await sha256File(temporaryPath);
     if (request.sha256 && digest.toLowerCase() !== request.sha256.toLowerCase()) {
+      await rm(temporaryPath, { force: true });
       throw new Error(`SHA256が一致しません: ${digest}`);
     }
     await rename(temporaryPath, targetPath);
   } catch (error) {
-    await rm(temporaryPath, { force: true });
-    throw error;
+    throw new Error(`${normalizeCommandError(error)}\n途中ファイルは保持しました。再実行すると続きから再開します。`);
   }
   onLog?.({ level: "info", line: `SHA256: ${digest}` });
 
@@ -2769,6 +2741,7 @@ export async function installImageGenerationEngine(
       url: `https://huggingface.co/${request.model.id}/resolve/main/${encodedPath}`,
       targetType: component.targetType,
       fileName: component.file.name,
+      sizeBytes: component.file.sizeBytes,
       source: "huggingface",
       operationId: request.operationId
     }, onLog);
@@ -6357,30 +6330,105 @@ async function sha256File(path: string): Promise<string> {
   return hash.digest("hex");
 }
 
-async function downloadFileWithProgress(url: string, targetPath: string, onLog: RuntimeLogSink): Promise<void> {
-  const response = await fetch(url, {
-    headers: { "User-Agent": "illustMK/0.1" },
-    signal: AbortSignal.timeout(30 * 60 * 1000)
-  });
-  if (!response.ok || !response.body) {
-    throw new Error(`ダウンロードに失敗しました: HTTP ${response.status}`);
+async function downloadFileWithProgress(
+  url: string,
+  targetPath: string,
+  onLog: RuntimeLogSink,
+  options: {
+    headers?: Record<string, string>;
+    expectedBytes?: number | null;
+    errorLabel?: FetchContext;
+    maxAttempts?: number;
+  } = {}
+): Promise<void> {
+  const maxAttempts = options.maxAttempts ?? 5;
+  const expectedBytes = Number(options.expectedBytes ?? 0);
+  let currentSize = (await stat(targetPath).catch(() => null))?.size ?? 0;
+  if (expectedBytes > 0 && currentSize === expectedBytes) {
+    onLog({ level: "info", line: `ダウンロード済み: ${formatBytes(currentSize)}` });
+    return;
   }
-  const totalBytes = Number(response.headers.get("content-length") ?? 0);
-  let receivedBytes = 0;
-  let lastProgressLog = 0;
-  const progressStream = new Transform({
-    transform(chunk: Buffer, _encoding, callback) {
-      receivedBytes += chunk.length;
-      const now = Date.now();
-      if (now - lastProgressLog >= 1000) {
-        lastProgressLog = now;
-        onLog({ level: "info", line: downloadProgressLine(receivedBytes, totalBytes) });
+  if (expectedBytes > 0 && currentSize > expectedBytes) {
+    await rm(targetPath, { force: true });
+    currentSize = 0;
+  }
+
+  let lastError: unknown = null;
+  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    const offset = currentSize;
+    const headers: Record<string, string> = {
+      "User-Agent": "illustMK/0.1",
+      ...options.headers,
+      ...(offset > 0 ? { Range: `bytes=${offset}-` } : {})
+    };
+    onLog({
+      level: "info",
+      line: offset > 0
+        ? `ダウンロードを再開します: ${formatBytes(offset)}から (試行 ${attempt}/${maxAttempts})`
+        : `ダウンロード開始 (試行 ${attempt}/${maxAttempts})`
+    });
+
+    try {
+      const response = await fetch(url, {
+        headers,
+        signal: AbortSignal.timeout(2 * 60 * 60 * 1000)
+      });
+      const contentRange = response.headers.get("content-range") ?? "";
+      const rangeTotal = Number(contentRange.match(/\/(\d+)$/)?.[1] ?? 0);
+      if (response.status === 416 && offset > 0 && (offset === rangeTotal || offset === expectedBytes)) {
+        onLog({ level: "info", line: `ダウンロード済み: ${formatBytes(offset)}` });
+        return;
       }
-      callback(null, chunk);
+      if (!response.ok || !response.body) {
+        throw new Error(`ダウンロードに失敗しました: HTTP ${response.status}`);
+      }
+
+      const append = response.status === 206 && offset > 0;
+      if (!append && offset > 0) {
+        onLog({ level: "info", line: "配信元がRange再開に未対応のため、先頭から再取得します。" });
+        await rm(targetPath, { force: true });
+        currentSize = 0;
+      }
+      let receivedBytes = append ? offset : 0;
+      const contentLength = Number(response.headers.get("content-length") ?? 0);
+      const totalBytes = rangeTotal || (contentLength > 0 ? receivedBytes + contentLength : expectedBytes);
+      let lastProgressLog = 0;
+      const progressStream = new Transform({
+        transform(chunk: Buffer, _encoding, callback) {
+          receivedBytes += chunk.length;
+          const now = Date.now();
+          if (now - lastProgressLog >= 1000) {
+            lastProgressLog = now;
+            onLog({ level: "info", line: downloadProgressLine(receivedBytes, totalBytes) });
+          }
+          callback(null, chunk);
+        }
+      });
+      await pipeline(
+        response.body as unknown as NodeJS.ReadableStream,
+        progressStream,
+        createWriteStream(targetPath, { flags: append ? "a" : "w" })
+      );
+      currentSize = (await stat(targetPath)).size;
+      const requiredBytes = expectedBytes || totalBytes;
+      if (requiredBytes > 0 && currentSize !== requiredBytes) {
+        throw new Error(`受信サイズが一致しません: ${formatBytes(currentSize)} / ${formatBytes(requiredBytes)}`);
+      }
+      onLog({ level: "info", line: downloadProgressLine(currentSize, requiredBytes) });
+      return;
+    } catch (error) {
+      lastError = error;
+      currentSize = (await stat(targetPath).catch(() => null))?.size ?? 0;
+      if (attempt >= maxAttempts) break;
+      const waitSeconds = Math.min(15, attempt * 3);
+      onLog({
+        level: "stderr",
+        line: `通信が中断しました: ${normalizeCommandError(error)}。${waitSeconds}秒後に${formatBytes(currentSize)}から再試行します。`
+      });
+      await delay(waitSeconds * 1000);
     }
-  });
-  await pipeline(response.body as unknown as NodeJS.ReadableStream, progressStream, createWriteStream(targetPath));
-  onLog({ level: "info", line: downloadProgressLine(receivedBytes, totalBytes) });
+  }
+  throw new Error(formatFetchFailure(options.errorLabel ?? "ダウンロード", url, lastError));
 }
 
 function parseMountPoint(output: string): string | null {

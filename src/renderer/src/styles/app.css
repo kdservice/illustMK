@@ -3505,6 +3505,7 @@ label {
 }
 
 .preview-stage {
+  position: relative;
   flex: 0 0 auto;
   width: min(100%, 720px);
   justify-self: center;
@@ -3515,6 +3516,25 @@ label {
   background: #050912;
   display: grid;
   place-items: center;
+}
+
+.preview-file-actions {
+  position: absolute;
+  top: 10px;
+  right: 10px;
+  display: flex;
+  gap: 6px;
+  z-index: 2;
+}
+
+.preview-file-actions .icon-button {
+  width: 36px;
+  height: 36px;
+  min-width: 36px;
+  padding: 0;
+  border-color: #34548b;
+  background: rgba(7, 16, 32, 0.9);
+  backdrop-filter: blur(6px);
 }
 
 .image-memo-panel {
