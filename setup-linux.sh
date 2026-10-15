@@ -29,7 +29,7 @@ echo "[1/5] Ubuntuパッケージを更新します"
 "${SUDO[@]}" apt-get update
 "${SUDO[@]}" apt-get install -y --no-install-recommends \
   ca-certificates curl gnupg git build-essential \
-  python3 python3-dev python3-pip python3-venv \
+  python3 python3-pip python3-venv \
   ffmpeg lsof xdg-utils \
   libasound2 libatk-bridge2.0-0 libatk1.0-0 libcups2 libdbus-1-3 \
   libdrm2 libgbm1 libglib2.0-0 libgtk-3-0 libnss3 libnotify4 \
